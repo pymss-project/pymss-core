@@ -1,6 +1,8 @@
+from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
+import torchaudio.functional as AF
 import yaml
 from ml_collections import ConfigDict
 from omegaconf import OmegaConf
@@ -10,6 +12,7 @@ from typing import Dict
 
 from .logger import get_separation_logger
 logger = get_separation_logger()
+
 
 def get_model_from_config(model_type, config_path):
     with open(config_path) as f:
@@ -38,6 +41,11 @@ def get_model_from_config(model_type, config_path):
     elif model_type == 'bs_roformer':
         from .modules.bs_roformer import BSRoformer
         model = BSRoformer(
+            **dict(config.model)
+        )
+    elif model_type == 'bs_roformer_hyperace':
+        from .modules.bs_roformer import BSRoformerHyperACE
+        model = BSRoformerHyperACE(
             **dict(config.model)
         )
     elif model_type == 'swin_upernet':
@@ -76,6 +84,9 @@ def get_model_from_config(model_type, config_path):
     return model, config
 
 def _getWindowingArray(window_size, fade_size):
+    if fade_size <= 0:
+        return torch.ones(window_size)
+
     fadein = torch.linspace(0, 1, fade_size)
     fadeout = torch.linspace(1, 0, fade_size)
     window = torch.ones(window_size)
@@ -84,88 +95,361 @@ def _getWindowingArray(window_size, fade_size):
     return window
 
 
+def _build_chunk_plan(total_length, chunk_size, step, fade_size):
+    starts = list(range(0, total_length, step))
+    windows = []
+    normal_window = _getWindowingArray(chunk_size, fade_size)
+
+    for start in starts:
+        length = min(chunk_size, total_length - start)
+        window = normal_window
+        if start == 0 or start + length >= total_length:
+            window = normal_window.clone()
+            if start == 0:
+                window[:fade_size] = 1
+            if start + length >= total_length:
+                fade_start = max(0, length - fade_size)
+                window[fade_start:length] = 1
+        windows.append(window)
+
+    return starts, windows
+
+
+def _get_inference_step(config, chunk_size):
+    overlap_size = config.inference.get('overlap_size', None)
+    if overlap_size is not None:
+        overlap_size = int(overlap_size)
+        if overlap_size < 0 or overlap_size >= chunk_size:
+            raise ValueError("inference.overlap_size must be >= 0 and < audio.chunk_size")
+        return chunk_size - overlap_size
+
+    return int(chunk_size // config.inference.num_overlap)
+
+
+def _complete_chunk_count(total_length, chunk_size, step):
+    if total_length < chunk_size:
+        return 0
+    return (total_length - chunk_size) // step + 1
+
+
+def _fold_windows(counter, windows, step, start_offset=0):
+    n_chunks = windows.shape[0]
+    if n_chunks == 0:
+        return
+
+    chunk_size = windows.shape[-1]
+    output_length = (n_chunks - 1) * step + chunk_size
+    counter_columns = windows.transpose(0, 1).unsqueeze(0)
+    folded_counter = nn.functional.fold(
+        counter_columns,
+        output_size=(1, output_length),
+        kernel_size=(1, chunk_size),
+        stride=(1, step),
+    )
+    counter[..., start_offset:start_offset + output_length] += folded_counter.view(1, 1, output_length)
+
+
+def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
+    n_chunks = chunks.shape[0]
+    if n_chunks == 0:
+        return
+
+    chunk_size = chunks.shape[-1]
+    output_length = (n_chunks - 1) * step + chunk_size
+    n_sources, n_channels = chunks.shape[1:3]
+
+    weighted = chunks * windows[:, None, None, :]
+    columns = weighted.permute(1, 2, 3, 0).reshape(1, n_sources * n_channels * chunk_size, n_chunks)
+    folded = nn.functional.fold(
+        columns,
+        output_size=(1, output_length),
+        kernel_size=(1, chunk_size),
+        stride=(1, step),
+    )
+    result[..., start_offset:start_offset + output_length] += folded.view(n_sources, n_channels, output_length)
+
+
+def _ensure_source_dim(x, chunk_batch):
+    if x.ndim == chunk_batch.ndim:
+        return x.unsqueeze(1)
+    return x
+
+
+def _get_compiled_chunk_model(model, sample_batch, mode):
+    target = _get_model_target(model)
+    cache = target.__dict__.setdefault('_pymss_compiled_chunk_models', {})
+    key = (
+        tuple(sample_batch.shape),
+        sample_batch.device.type,
+        sample_batch.device.index,
+        sample_batch.dtype,
+        mode,
+    )
+    compiled = cache.get(key)
+    if compiled is None:
+        compiled = torch.compile(model, mode=mode, fullgraph=False)
+        cache[key] = compiled
+    return compiled
+
+
+def _run_model_chunk_batch(model, arr, expected_batch_size=None):
+    target = _get_model_target(model)
+    compile_scope = target.__dict__.get('_pymss_torch_compile_scope')
+    compile_enabled = target.__dict__.get('_pymss_torch_compile_enabled', False)
+    use_fixed_compile = (
+        expected_batch_size is not None
+        and arr.shape[0] == expected_batch_size
+        and compile_enabled
+    )
+    if (
+        use_fixed_compile
+        and compile_scope == 'chunk'
+    ):
+        compiled_model = _get_compiled_chunk_model(
+            model,
+            arr,
+            target.__dict__.get('_pymss_torch_compile_mode', 'default'),
+        )
+        return compiled_model(arr)
+
+    if compile_enabled and compile_scope == 'core':
+        target.__dict__['_pymss_compile_core_this_call'] = use_fixed_compile
+        try:
+            return model(arr)
+        finally:
+            target.__dict__.pop('_pymss_compile_core_this_call', None)
+
+    return model(arr)
+
+
+def _set_model_inference_option(model, name, value):
+    target = model.module if hasattr(model, 'module') else model
+    if hasattr(target, name):
+        setattr(target, name, value)
+
+
+def _get_model_target(model):
+    return model.module if hasattr(model, 'module') else model
+
+
+def _set_model_stft_hop_length(model, hop_length):
+    target = _get_model_target(model)
+    if hop_length is None or not hasattr(target, 'stft_kwargs'):
+        return None
+
+    old_hop_length = target.stft_kwargs.get('hop_length', None)
+    target.stft_kwargs['hop_length'] = int(hop_length)
+    return old_hop_length
+
+
+def _resample_audio_tensor(audio, orig_freq, new_freq):
+    if int(orig_freq) == int(new_freq):
+        return audio
+    return AF.resample(audio, orig_freq=int(orig_freq), new_freq=int(new_freq))
+
+
+def _fit_audio_length(audio, length):
+    if audio.shape[-1] > length:
+        return audio[..., :length]
+    if audio.shape[-1] < length:
+        return nn.functional.pad(audio, (0, length - audio.shape[-1]))
+    return audio
+
+
+def _copy_config_with_scaled_inference(config, ratio):
+    scaled = deepcopy(config)
+
+    scaled.audio.chunk_size = max(4096, int(round(int(config.audio.chunk_size) * ratio)))
+    overlap_size = config.inference.get('overlap_size', None)
+    if overlap_size is not None:
+        scaled.inference.overlap_size = max(0, int(round(int(overlap_size) * ratio)))
+
+    return scaled
+
+
 def demix_track(config, model, mix, device, pbar=False):
     C = config.audio.chunk_size
-    N = config.inference.num_overlap
-    fade_size = C // 10
-    step = int(C // N)
+    step = _get_inference_step(config, C)
     border = C - step
+    fade_size = min(C // 10, border)
     batch_size = config.inference.batch_size
+    old_stft_hop_length = _set_model_stft_hop_length(
+        model,
+        config.inference.get('stft_hop_length', None)
+    )
 
-    length_init = mix.shape[-1]
+    try:
+        length_init = mix.shape[-1]
 
-    # Do pad from the beginning and end to account floating window results better
-    if length_init > 2 * border and (border > 0):
-        if mix.ndim == 1:
-            mix = mix.unsqueeze(0)  # [1, length]
-        mix = nn.functional.pad(mix, (border, border), mode='reflect')
+        # Do pad from the beginning and end to account floating window results better
+        if length_init > 2 * border and (border > 0):
+            if mix.ndim == 1:
+                mix = mix.unsqueeze(0)  # [1, length]
+            mix = nn.functional.pad(mix, (border, border), mode='reflect')
 
-    # windowingArray crossfades at segment boundaries to mitigate clicking artifacts
-    windowingArray = _getWindowingArray(C, fade_size)
+        # windowingArray crossfades at segment boundaries to mitigate clicking artifacts
+        chunk_starts, chunk_windows = _build_chunk_plan(mix.shape[1], C, step, fade_size)
 
-    with torch.cuda.amp.autocast(enabled=config.training.get('use_amp', True)):
-        with torch.inference_mode():
-            if config.training.target_instrument is not None:
-                req_shape = (1, ) + tuple(mix.shape)
-            else:
-                req_shape = (len(config.training.instruments),) + tuple(mix.shape)
+        with torch.cuda.amp.autocast(enabled=config.training.get('use_amp', True)):
+            with torch.inference_mode():
+                if config.training.target_instrument is not None:
+                    req_shape = (1, ) + tuple(mix.shape)
+                else:
+                    req_shape = (len(config.training.instruments),) + tuple(mix.shape)
 
-            result = torch.zeros(req_shape, dtype=torch.float32)
-            counter = torch.zeros(req_shape, dtype=torch.float32)
-            i = 0
-            batch_data = []
-            batch_locations = []
-            progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+                device_type = torch.device(device).type
+                is_cuda = device_type == 'cuda'
+                use_complete_fast_path = device_type in ('cuda', 'cpu')
+                result_device = device if use_complete_fast_path else 'cpu'
+                counter_shape = (1, 1, mix.shape[1]) if use_complete_fast_path else req_shape
+                result = torch.zeros(req_shape, dtype=torch.float32, device=result_device)
+                counter = torch.zeros(counter_shape, dtype=torch.float32, device=result_device)
+                progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+                mix_device = mix.to(device) if is_cuda else mix
+                _set_model_inference_option(
+                    model,
+                    'inference_layer_skip',
+                    config.inference.get('layer_skip', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_mask_mode',
+                    config.inference.get('mask_mode', 'full')
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_time_stride',
+                    int(config.inference.get('time_stride', 1))
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_transformer_band_limit',
+                    config.inference.get('transformer_band_limit', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_band_adaptive_depth',
+                    config.inference.get('band_adaptive_depth', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_time_layer_skip',
+                    config.inference.get('time_layer_skip', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_freq_layer_skip',
+                    config.inference.get('freq_layer_skip', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_time_attention_window',
+                    config.inference.get('time_attention_window', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_time_attention_window_schedule',
+                    config.inference.get('time_attention_window_schedule', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_active_band_limit',
+                    config.inference.get('active_band_limit', None)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_grouped_band_ops',
+                    config.inference.get('grouped_band_ops', True)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_rmsnorm_fp32',
+                    config.inference.get('rmsnorm_fp32', True)
+                )
+                _set_model_inference_option(
+                    model,
+                    'inference_mask_time_stride',
+                    int(config.inference.get('mask_time_stride', 1))
+                )
 
-            while i < mix.shape[1]:
-                # logger.info(i, i + C, mix.shape[1])
-                part = mix[:, i:i + C].to(device)
-                length = part.shape[-1]
-                if length < C:
-                    if length > C // 2 + 1:
-                        part = nn.functional.pad(input=part, pad=(0, C - length), mode='reflect')
-                    else:
-                        part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode='constant', value=0)
-                batch_data.append(part)
-                batch_locations.append((i, length))
-                i += step
+                complete_chunks = 0
+                if use_complete_fast_path:
+                    complete_chunks = _complete_chunk_count(mix.shape[1], C, step)
+                    if complete_chunks:
+                        full_inputs = mix_device.unfold(-1, C, step).permute(1, 0, 2)[:complete_chunks]
+                        full_windows = torch.stack(chunk_windows[:complete_chunks], dim=0).to(
+                            device=device,
+                            dtype=torch.float32,
+                        )
+                        _fold_windows(counter, full_windows, step)
 
-                if len(batch_data) >= batch_size or (i >= mix.shape[1]):
-                    arr = torch.stack(batch_data, dim=0)
-                    x = model(arr)
+                        for batch_start in range(0, complete_chunks, batch_size):
+                            batch_end = min(batch_start + batch_size, complete_chunks)
+                            arr = full_inputs[batch_start:batch_end].contiguous()
+                            x = _ensure_source_dim(_run_model_chunk_batch(model, arr, batch_size), arr).float()
+                            _fold_chunk_batch(
+                                result,
+                                x,
+                                full_windows[batch_start:batch_end],
+                                step,
+                                start_offset=batch_start * step,
+                            )
 
-                    window = windowingArray
-                    if i - step == 0:  # First audio chunk, no fadein
-                        window[:fade_size] = 1
-                    elif i >= mix.shape[1]:  # Last audio chunk, no fadeout
-                        window[-fade_size:] = 1
+                            if progress_bar:
+                                progress_bar.update(step * (batch_end - batch_start))
 
-                    for j in range(len(batch_locations)):
-                        start, l = batch_locations[j]
-                        result[..., start:start+l] += x[j][..., :l].cpu() * window[..., :l]
-                        counter[..., start:start+l] += window[..., :l]
+                        del full_inputs, full_windows
 
+                for batch_start in range(complete_chunks, len(chunk_starts), batch_size):
+                    batch_indices = range(batch_start, min(batch_start + batch_size, len(chunk_starts)))
                     batch_data = []
-                    batch_locations = []
+
+                    for idx in batch_indices:
+                        start = chunk_starts[idx]
+                        length = min(C, mix.shape[1] - start)
+                        part = mix_device[:, start:start + C]
+                        if length < C:
+                            if length > C // 2 + 1:
+                                part = nn.functional.pad(input=part, pad=(0, C - length), mode='reflect')
+                            else:
+                                part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode='constant', value=0)
+                        batch_data.append(part)
+
+                    arr = torch.stack(batch_data, dim=0)
+                    x = _ensure_source_dim(_run_model_chunk_batch(model, arr), arr)
+
+                    for j, idx in enumerate(batch_indices):
+                        start = chunk_starts[idx]
+                        length = min(C, mix.shape[1] - start)
+                        if is_cuda:
+                            window = chunk_windows[idx].to(device=device, dtype=torch.float32)
+                            result[..., start:start+length] += x[j][..., :length].float() * window[..., :length]
+                            counter[..., start:start+length] += window[..., :length]
+                        else:
+                            window = chunk_windows[idx]
+                            result[..., start:start+length] += x[j][..., :length].cpu() * window[..., :length]
+                            counter[..., start:start+length] += window[..., :length]
+
+                    if progress_bar:
+                        progress_bar.update(step * len(batch_data))
 
                 if progress_bar:
-                    progress_bar.update(step)
+                    progress_bar.close()
 
-            if progress_bar:
-                progress_bar.close()
+                estimated_sources = result / counter
+                estimated_sources = estimated_sources.cpu().numpy()
+                np.nan_to_num(estimated_sources, copy=False, nan=0.0)
 
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
-            np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+                if length_init > 2 * border and (border > 0):
+                    # Remove pad
+                    estimated_sources = estimated_sources[..., border:-border]
 
-            if length_init > 2 * border and (border > 0):
-                # Remove pad
-                estimated_sources = estimated_sources[..., border:-border]
-
-    if config.training.target_instrument is None:
-        return {k: v for k, v in zip(config.training.instruments, estimated_sources)}
-    else:
+        if config.training.target_instrument is None:
+            return {k: v for k, v in zip(config.training.instruments, estimated_sources)}
         return {k: v for k, v in zip([config.training.target_instrument], estimated_sources)}
+    finally:
+        if old_stft_hop_length is not None:
+            _get_model_target(model).stft_kwargs['hop_length'] = old_stft_hop_length
 
 
 def demix_track_demucs(config, model, mix, device, pbar=False):
@@ -224,6 +508,24 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
 
 def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None) -> Dict[str, NDArray]:
     mix = torch.tensor(mix, dtype=torch.float32)
+    source_sample_rate = int(config.audio.get('sample_rate', 44100))
+    inference_sample_rate = config.inference.get('resample_rate', None)
+    if model_type != 'htdemucs' and inference_sample_rate is not None:
+        inference_sample_rate = int(inference_sample_rate)
+        if inference_sample_rate > 0 and inference_sample_rate != source_sample_rate:
+            length_init = mix.shape[-1]
+            ratio = inference_sample_rate / source_sample_rate
+            mix = _resample_audio_tensor(mix, source_sample_rate, inference_sample_rate)
+            scaled_config = _copy_config_with_scaled_inference(config, ratio)
+            estimated = demix_track(scaled_config, model, mix, device, pbar=pbar)
+            return {
+                instrument: _fit_audio_length(
+                    _resample_audio_tensor(torch.from_numpy(source), inference_sample_rate, source_sample_rate),
+                    length_init
+                ).numpy()
+                for instrument, source in estimated.items()
+            }
+
     if model_type == 'htdemucs':
         return demix_track_demucs(config, model, mix, device, pbar=pbar)
     else:

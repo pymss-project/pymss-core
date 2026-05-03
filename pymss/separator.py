@@ -14,6 +14,51 @@ from pydub import AudioSegment
 from .utils import demix, get_model_from_config
 from .logger import get_separation_logger, set_log_level
 
+
+def _as_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on')
+    return bool(value)
+
+
+def _configure_torch_compile_cache(cache_dir):
+    cache_dir = cache_dir or '.torchinductor_cache'
+    os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR', cache_dir)
+    return cache_dir
+
+
+def _patch_inductor_duplicate_kernel_imports():
+    try:
+        import torch._dynamo.utils as dynamo_utils
+    except Exception:
+        return False
+
+    if getattr(dynamo_utils.import_submodule, '_pymss_inductor_patch', False):
+        return True
+
+    skip_kernel_modules = {'flex_attention', 'flex_decoding', 'mm_scaled_grouped'}
+
+    def patched_import_submodule(mod):
+        import importlib
+
+        base = os.path.dirname(mod.__file__)
+        for filename in sorted(os.listdir(base)):
+            if not filename.endswith('.py') or filename[0] == '_':
+                continue
+            name = filename[:-3]
+            if mod.__name__ == 'torch._inductor.kernel' and name in skip_kernel_modules:
+                continue
+            importlib.import_module(f'{mod.__name__}.{name}')
+
+    patched_import_submodule._pymss_inductor_patch = True
+    dynamo_utils.import_submodule = patched_import_submodule
+    return True
+
+
 class MSSeparator:
     def __init__(
             self,
@@ -31,8 +76,25 @@ class MSSeparator:
             inference_params = {
                 "batch_size": None,
                 "num_overlap": None,
+                "overlap_size": None,
                 "chunk_size": None,
-                "normalize": None
+                "normalize": None,
+                "mask_mode": None,
+                "resample_rate": None,
+                "float16_weights": None,
+                "rmsnorm_fp32": None,
+                "transformer_band_limit": None,
+                "band_adaptive_depth": None,
+                "time_stride": None,
+                "time_attention_window": None,
+                "time_attention_window_schedule": None,
+                "active_band_limit": None,
+                "mask_time_stride": None,
+                "stft_hop_length": None,
+                "torch_compile": None,
+                "torch_compile_mode": None,
+                "torch_compile_scope": None,
+                "torch_compile_cache_dir": None,
             }
     ):
 
@@ -111,15 +173,6 @@ class MSSeparator:
 
     def load_model(self):
         start_time = time()
-        model, config = get_model_from_config(self.model_type, self.config_path)
-
-        self.update_inference_params(config, self.inference_params)
-
-        self.logger.info(f"Separator params: model_type: {self.model_type}, model_path: {self.model_path}, config_path: {self.config_path}, output_folder: {self.store_dirs}")
-        self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
-        self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, num_overlap: {config.inference.get('num_overlap', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
-
         if self.model_type in ['htdemucs', 'apollo']:
             state_dict = torch.load(self.model_path, map_location=self.device, weights_only=False)
             if 'state' in state_dict:
@@ -128,24 +181,114 @@ class MSSeparator:
                 state_dict = state_dict['state_dict']
         else:
             state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
+
+        model_type = self.model_type
+        if self.model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict):
+            model_type = 'bs_roformer_hyperace'
+
+        model, config = get_model_from_config(model_type, self.config_path)
+
+        self.update_inference_params(config, self.inference_params)
+
+        self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}, config_path: {self.config_path}, output_folder: {self.store_dirs}")
+        self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
+        self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
+        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, num_overlap: {config.inference.get('num_overlap', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
+
         model.load_state_dict(state_dict)
 
         if len(self.device_ids) > 1:
             model = torch.nn.DataParallel(model, device_ids=self.device_ids)
         model = model.to(self.device)
+        if config.inference.get('float16_weights', False) and torch.device(self.device).type == 'cuda':
+            model = model.half()
+        model.eval()
+        model = self.maybe_compile_model(model, config)
 
         self.logger.debug(f"Loading model completed, duration: {time() - start_time:.2f} seconds")
         return model, config
+
+    def maybe_compile_model(self, model, config):
+        compile_value = config.inference.get('torch_compile', False)
+        if not _as_bool(compile_value):
+            return model
+
+        device_type = torch.device(self.device).type
+        if device_type != 'cuda':
+            self.logger.warning("torch_compile is only enabled for CUDA inference; skipping compile")
+            return model
+
+        mode = config.inference.get('torch_compile_mode', None)
+        if isinstance(compile_value, str) and compile_value.strip().lower() not in ('1', 'true', 'yes', 'on'):
+            mode = compile_value
+        mode = mode or 'default'
+        if mode == 'reduce-overhead':
+            self.logger.warning("torch_compile_mode='reduce-overhead' uses CUDA graphs and is unstable for this model; using 'default'")
+            mode = 'default'
+
+        cache_dir = _configure_torch_compile_cache(config.inference.get('torch_compile_cache_dir', '.torchinductor_cache'))
+        try:
+            import torch._inductor.config as inductor_config
+            inductor_config.triton.cudagraphs = False
+            inductor_config.triton.cudagraph_trees = False
+        except Exception:
+            pass
+
+        _patch_inductor_duplicate_kernel_imports()
+        torch.set_float32_matmul_precision('high')
+
+        scope = str(config.inference.get('torch_compile_scope', 'core')).strip().lower().replace('-', '_')
+        if scope in ('chunks', 'fixed_chunk', 'fixed_chunks'):
+            scope = 'chunk'
+        if scope not in ('core', 'chunk', 'model'):
+            self.logger.warning(f"Unknown torch_compile_scope='{scope}', using 'core'")
+            scope = 'core'
+
+        if scope == 'model':
+            self.logger.info(f"Enabling torch.compile: scope=model, mode={mode}, cache_dir={cache_dir}")
+            return torch.compile(model, mode=mode, fullgraph=False)
+
+        compile_target = model.module if hasattr(model, 'module') else model
+        compile_target.__dict__['_pymss_torch_compile_enabled'] = True
+        compile_target.__dict__['_pymss_torch_compile_mode'] = mode
+        compile_target.__dict__['_pymss_torch_compile_scope'] = scope
+        compile_target.__dict__['_pymss_torch_compile_cache_dir'] = cache_dir
+        self.logger.info(f"Enabling torch.compile: scope={scope}, mode={mode}, cache_dir={cache_dir}")
+        return model
     
     def update_inference_params(self, config, params):
         for key, value in {
             'batch_size': 'inference',
-            'num_overlap': 'inference', 
+            'num_overlap': 'inference',
+            'overlap_size': 'inference',
             'chunk_size': 'audio',
-            'normalize': 'inference'
+            'normalize': 'inference',
+            'mask_mode': 'inference',
+            'resample_rate': 'inference',
+            'float16_weights': 'inference',
+            'rmsnorm_fp32': 'inference',
+            'transformer_band_limit': 'inference',
+            'band_adaptive_depth': 'inference',
+            'time_stride': 'inference',
+            'time_attention_window': 'inference',
+            'time_attention_window_schedule': 'inference',
+            'active_band_limit': 'inference',
+            'mask_time_stride': 'inference',
+            'stft_hop_length': 'inference',
+            'torch_compile': 'inference',
+            'torch_compile_mode': 'inference',
+            'torch_compile_scope': 'inference',
+            'torch_compile_cache_dir': 'inference',
         }.items():
-            if config[value].get(key) and params[key] is not None:
-                config[value][key] = int(params[key]) if key != 'normalize' else params[key]
+            if params.get(key) is not None:
+                if key in ('normalize', 'float16_weights', 'rmsnorm_fp32', 'torch_compile'):
+                    config[value][key] = params[key]
+                elif key == 'mask_mode':
+                    config[value][key] = str(params[key])
+                elif key in ('band_adaptive_depth', 'time_attention_window_schedule', 'torch_compile_mode', 'torch_compile_scope', 'torch_compile_cache_dir'):
+                    config[value][key] = params[key]
+                else:
+                    config[value][key] = int(params[key])
         return config
 
     def process_folder(self, input_folder):
