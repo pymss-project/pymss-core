@@ -57,6 +57,108 @@ def _patch_inductor_duplicate_kernel_imports():
     return True
 
 
+def _select_device(device, device_ids, logger):
+    if device not in ['cpu', 'cuda', 'mps']:
+        if torch.cuda.is_available():
+            logger.debug("CUDA is available in Torch, setting Torch device to CUDA")
+            return f'cuda:{device_ids[0]}'
+        if torch.backends.mps.is_available():
+            logger.debug("Apple Silicon MPS/CoreML is available in Torch, setting Torch device to MPS")
+            return "mps"
+        return "cpu"
+
+    if device == "cpu":
+        logger.warning("No hardware acceleration could be configured, running in CPU mode")
+    return device
+
+
+def _load_state_dict(model_type, model_path, device):
+    if model_type in ['htdemucs', 'apollo']:
+        state_dict = torch.load(model_path, map_location=device, weights_only=False)
+        for key in ('state', 'state_dict'):
+            if key in state_dict:
+                state_dict = state_dict[key]
+        return state_dict
+    return torch.load(model_path, map_location=device, weights_only=True)
+
+
+def _runtime_model_type(model_type, state_dict):
+    if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict):
+        return 'bs_roformer_hyperace'
+    return model_type
+
+
+def _model_is_stereo(model_type, config):
+    return config.model.get("stereo", True) if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'] else True
+
+
+def _prepare_mix_channels(mix, is_stereo, logger):
+    if is_stereo and len(mix.shape) == 1:
+        logger.warning("Track is mono, but model is stereo, adding a second channel.")
+        return np.stack([mix, mix], axis=0)
+    if is_stereo and len(mix.shape) > 2:
+        logger.warning("Track has more than 2 channels, taking mean of all channels and adding a second channel.")
+        mono = np.mean(mix, axis=0)
+        return np.stack([mono, mono], axis=0)
+    if not is_stereo and len(mix.shape) != 1:
+        logger.warning("Track has more than 1 channels, but model is mono, taking mean of all channels.")
+        return np.mean(mix, axis=0)
+    return mix
+
+
+def _normalize_mix(mix, enabled, logger):
+    if not enabled:
+        return mix, None
+
+    mono = mix.mean(0)
+    mean = mono.mean()
+    std = mono.std()
+    logger.debug(f"Normalize mix with mean: {mean}, std: {std}")
+    return (mix - mean) / std, (mean, std)
+
+
+def _denormalize(estimates, stats):
+    return estimates if stats is None else estimates * stats[1] + stats[0]
+
+
+def _tta_variants(mix, use_tta, logger):
+    if not use_tta:
+        return [mix.copy()]
+    variants = [mix.copy(), mix[::-1].copy(), -1. * mix.copy()]
+    logger.debug(f"User needs to apply TTA, total tracks: {len(variants)}")
+    return variants
+
+
+def _merge_tta_results(results):
+    waveforms = results[0]
+    for index, result in enumerate(results[1:], start=1):
+        for stem, audio in result.items():
+            waveforms[stem] += audio[::-1].copy() if index == 1 else -1.0 * audio
+
+    for stem in waveforms:
+        waveforms[stem] = waveforms[stem] / len(results)
+    return waveforms
+
+
+def _build_results(waveforms, instruments, mix_orig, config, norm_stats, logger):
+    results = {
+        instr: _denormalize(waveforms[instr].T, norm_stats)
+        for instr in instruments
+    }
+
+    target_instrument = config.training.target_instrument
+    if target_instrument is None:
+        return results
+
+    other_instruments = [instr for instr in config.training.instruments if instr != target_instrument]
+    logger.debug(f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}")
+    if other_instruments:
+        secondary = other_instruments[0]
+        waveforms[secondary] = mix_orig - waveforms[target_instrument]
+        results[secondary] = _denormalize(waveforms[secondary].T, norm_stats)
+    return results
+
+
 class MSSeparator:
     def __init__(
             self,
@@ -108,21 +210,8 @@ class MSSeparator:
         self.log_system_info()
         self.check_ffmpeg_installed()
 
-        self.device = "cpu"
         self.device_ids = device_ids
-
-        if device not in ['cpu', 'cuda', 'mps']:
-            if torch.cuda.is_available():
-                self.device = "cuda"
-                self.device = f'cuda:{self.device_ids[0]}'
-                self.logger.debug("CUDA is available in Torch, setting Torch device to CUDA")
-            elif torch.backends.mps.is_available():
-                self.device = "mps"
-                self.logger.debug("Apple Silicon MPS/CoreML is available in Torch, setting Torch device to MPS")
-        else:
-            self.device = device
-            if self.device == "cpu":
-                self.logger.warning("No hardware acceleration could be configured, running in CPU mode")
+        self.device = _select_device(device, self.device_ids, self.logger)
 
         torch.backends.cudnn.benchmark = True
         self.logger.info(f'Using device: {self.device}, device_ids: {self.device_ids}')
@@ -159,18 +248,8 @@ class MSSeparator:
 
     def load_model(self):
         start_time = time()
-        if self.model_type in ['htdemucs', 'apollo']:
-            state_dict = torch.load(self.model_path, map_location=self.device, weights_only=False)
-            if 'state' in state_dict:
-                state_dict = state_dict['state']
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-        else:
-            state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
-
-        model_type = self.model_type
-        if self.model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict):
-            model_type = 'bs_roformer_hyperace'
+        state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
+        model_type = _runtime_model_type(self.model_type, state_dict)
 
         model, config = get_model_from_config(model_type, self.config_path)
 
@@ -297,89 +376,24 @@ class MSSeparator:
         return success_files
 
     def separate(self, mix):
-        isstereo = True
-        if self.model_type in ['bs_roformer', 'mel_band_roformer']:
-            isstereo = self.config.model.get("stereo", True)
-
-        if isstereo and len(mix.shape) == 1:
-            mix = np.stack([mix, mix], axis=0)
-            self.logger.warning("Track is mono, but model is stereo, adding a second channel.")
-        elif isstereo and len(mix.shape) > 2:
-            mix = np.mean(mix, axis=0) # if more than 2 channels, take mean
-            mix = np.stack([mix, mix], axis=0)
-            self.logger.warning("Track has more than 2 channels, taking mean of all channels and adding a second channel.")
-        elif not isstereo and len(mix.shape) != 1:
-            mix = np.mean(mix, axis=0) # if more than 2 channels, take mean
-            self.logger.warning("Track has more than 1 channels, but model is mono, taking mean of all channels.")
-
-        instruments = self.config.training.instruments.copy()
-        if self.config.training.target_instrument is not None:
-            instruments = [self.config.training.target_instrument]
+        mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
+        target = self.config.training.target_instrument
+        instruments = [target] if target is not None else self.config.training.instruments.copy()
+        if target is not None:
             self.logger.debug("Target instrument is not null, set primary_stem to target_instrument, secondary_stem will be calculated by mix - target_instrument")
 
         mix_orig = mix.copy()
-        if 'normalize' in self.config.inference and self.config.inference['normalize']:
-            mono = mix.mean(0)
-            mean = mono.mean()
-            std = mono.std()
-            mix = (mix - mean) / std
-            self.logger.debug(f"Normalize mix with mean: {mean}, std: {std}")
-
-        if self.use_tta:
-            track_proc_list = [mix.copy(), mix[::-1].copy(), -1. * mix.copy()]
-            self.logger.debug(f"User needs to apply TTA, total tracks: {len(track_proc_list)}")
-        else:
-            track_proc_list = [mix.copy()]
-
-        full_result = []
-        for mix in track_proc_list:
-            waveforms = demix(self.config, self.model, mix, self.device, pbar=True, model_type=self.model_type)
-            full_result.append(waveforms)
+        mix, norm_stats = _normalize_mix(mix, self.config.inference.get('normalize', False), self.logger)
+        full_result = [
+            demix(self.config, self.model, track, self.device, pbar=True, model_type=self.model_type)
+            for track in _tta_variants(mix, self.use_tta, self.logger)
+        ]
 
         self.logger.debug("Finished demixing tracks.")
-
-        waveforms = full_result[0]
-        for i in range(1, len(full_result)):
-            d = full_result[i]
-            for el in d:
-                if i == 2:
-                    waveforms[el] += -1.0 * d[el]
-                elif i == 1:
-                    waveforms[el] += d[el][::-1].copy()
-                else:
-                    waveforms[el] += d[el]
-        for el in waveforms:
-            waveforms[el] = waveforms[el] / len(full_result)
-
-        results = {}
+        waveforms = _merge_tta_results(full_result)
         self.logger.debug(f"Starting to extract waveforms for instruments: {instruments}")
-
-        for instr in instruments:
-            estimates = waveforms[instr].T
-
-            if 'normalize' in self.config.inference and self.config.inference['normalize']:
-                estimates = estimates * std + mean
-
-            results[instr] = estimates
-
-        if self.config.training.target_instrument is not None:
-            target_instrument = self.config.training.target_instrument
-            other_instruments = [instr for instr in self.config.training.instruments if instr != target_instrument]
-
-            self.logger.debug(f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}")
-
-            if other_instruments:
-                extract_instrumental = other_instruments[0]
-                waveforms[extract_instrumental] = mix_orig - waveforms[target_instrument]
-                estimates = waveforms[extract_instrumental].T
-
-                if 'normalize' in self.config.inference and self.config.inference['normalize']:
-                    estimates = estimates * std + mean
-
-                results[extract_instrumental] = estimates
-
+        results = _build_results(waveforms, instruments, mix_orig, self.config, norm_stats, self.logger)
         self.logger.debug("Separation process completed.")
-
         return results
 
     def save_audio(self, audio, sr, file_name, store_dir):
