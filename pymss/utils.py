@@ -28,9 +28,6 @@ def get_model_from_config(model_type, config_path):
     elif model_type == 'segm_models':
         from .modules.segm_models import Segm_Models_Net
         model = Segm_Models_Net(config)
-    elif model_type == 'torchseg':
-        from .modules.torchseg_models import Torchseg_Net
-        model = Torchseg_Net(config)
     elif model_type == 'mel_band_roformer':
         from .modules.bs_roformer import MelBandRoformer
         model = MelBandRoformer(
@@ -59,11 +56,6 @@ def get_model_from_config(model_type, config_path):
         model = Bandit(
             **config.kwargs
         )
-    elif model_type == 'scnet_unofficial':
-        from .modules.scnet_unofficial import SCNet
-        model = SCNet(
-            **config.model
-        )
     elif model_type == 'scnet':
         from .modules.scnet import SCNet
         model = SCNet(
@@ -72,9 +64,6 @@ def get_model_from_config(model_type, config_path):
     elif model_type == 'apollo':
         from .modules.look2hear import BaseModel
         model = BaseModel.apollo(**config.model)
-    elif model_type == 'bs_mamba2':
-        from .modules.ts_bs_mamba2 import Separator
-        model = Separator(**config.model)
     else:
         raise ValueError(f"Model type {model_type} not supported")
         # model = None
