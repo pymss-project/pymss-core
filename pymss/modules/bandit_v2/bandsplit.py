@@ -95,7 +95,7 @@ class BandSplitModule(nn.Module):
                     for bw in self.band_widths
                 ]
             )
-        except Exception as e:
+        except Exception:
             self.norm_fc_modules = nn.ModuleList(
                 [  # type: ignore
                     NormFC(

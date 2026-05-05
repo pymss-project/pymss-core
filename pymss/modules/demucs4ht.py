@@ -1,11 +1,4 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from functools import partial
-
-import numpy as np
-import torch
-import json
 from omegaconf import OmegaConf
 from demucs.demucs import Demucs
 from demucs.hdemucs import HDemucs
@@ -709,5 +702,3 @@ def get_model(args):
     kw = OmegaConf.to_container(getattr(args, args.model), resolve=True)
     model = klass(**extra, **kw)
     return model
-
-

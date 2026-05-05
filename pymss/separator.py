@@ -324,14 +324,14 @@ class MSSeparator:
 
         if isstereo and len(mix.shape) == 1:
             mix = np.stack([mix, mix], axis=0)
-            self.logger.warning(f"Track is mono, but model is stereo, adding a second channel.")
+            self.logger.warning("Track is mono, but model is stereo, adding a second channel.")
         elif isstereo and len(mix.shape) > 2:
             mix = np.mean(mix, axis=0) # if more than 2 channels, take mean
             mix = np.stack([mix, mix], axis=0)
-            self.logger.warning(f"Track has more than 2 channels, taking mean of all channels and adding a second channel.")
+            self.logger.warning("Track has more than 2 channels, taking mean of all channels and adding a second channel.")
         elif not isstereo and len(mix.shape) != 1:
             mix = np.mean(mix, axis=0) # if more than 2 channels, take mean
-            self.logger.warning(f"Track has more than 1 channels, but model is mono, taking mean of all channels.")
+            self.logger.warning("Track has more than 1 channels, but model is mono, taking mean of all channels.")
 
         instruments = self.config.training.instruments.copy()
         if self.config.training.target_instrument is not None:

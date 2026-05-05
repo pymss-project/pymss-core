@@ -75,7 +75,7 @@ class NormMLP(BaseNormMLP):
             self.combined = torch.compile(
                 nn.Sequential(self.norm, self.hidden, self.output), disable=True
             )
-        except Exception as e:
+        except Exception:
             self.combined = nn.Sequential(self.norm, self.hidden, self.output)
 
     def reshape_output(self, mb):

@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from .base_model import BaseModel
 
 
 class RMSNorm(nn.Module):
@@ -222,7 +221,7 @@ class BSNet(nn.Module):
         return output
 
 
-class Apollo(BaseModel):
+class Apollo(nn.Module):
     def __init__(
             self,
             sr: int,
@@ -230,7 +229,7 @@ class Apollo(BaseModel):
             feature_dim: int,
             layer: int
     ):
-        super().__init__(sample_rate=sr)
+        super().__init__()
 
         self.sr = sr
         self.win = int(sr * win // 1000)
@@ -318,7 +317,3 @@ class Apollo(BaseModel):
                              window=torch.hann_window(self.win).to(input.device), length=nsample).view(B, nch, -1)
 
         return output
-
-    def get_model_args(self):
-        model_args = {"n_sample_rate": 2}
-        return model_args
