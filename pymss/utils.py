@@ -1,8 +1,6 @@
-from copy import deepcopy
 import numpy as np
 import torch
 import torch.nn as nn
-import torchaudio.functional as AF
 import yaml
 from ml_collections import ConfigDict
 from omegaconf import OmegaConf
@@ -116,14 +114,10 @@ def _build_chunk_plan(total_length, chunk_size, step, fade_size):
 
 
 def _get_inference_step(config, chunk_size):
-    overlap_size = config.inference.get('overlap_size', None)
-    if overlap_size is not None:
-        overlap_size = int(overlap_size)
-        if overlap_size < 0 or overlap_size >= chunk_size:
-            raise ValueError("inference.overlap_size must be >= 0 and < audio.chunk_size")
-        return chunk_size - overlap_size
-
-    return int(chunk_size // config.inference.num_overlap)
+    overlap_size = int(config.inference.get('overlap_size', chunk_size // 2))
+    if overlap_size < 0 or overlap_size >= chunk_size:
+        raise ValueError("inference.overlap_size must be >= 0 and < audio.chunk_size")
+    return chunk_size - overlap_size
 
 
 def _complete_chunk_count(total_length, chunk_size, step):
@@ -172,6 +166,14 @@ def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
 def _ensure_source_dim(x, chunk_batch):
     if x.ndim == chunk_batch.ndim:
         return x.unsqueeze(1)
+    return x
+
+
+def _fit_tensor_length(x, length):
+    if x.shape[-1] > length:
+        return x[..., :length]
+    if x.shape[-1] < length:
+        return nn.functional.pad(x, (0, length - x.shape[-1]))
     return x
 
 
@@ -242,31 +244,6 @@ def _set_model_stft_hop_length(model, hop_length):
     return old_hop_length
 
 
-def _resample_audio_tensor(audio, orig_freq, new_freq):
-    if int(orig_freq) == int(new_freq):
-        return audio
-    return AF.resample(audio, orig_freq=int(orig_freq), new_freq=int(new_freq))
-
-
-def _fit_audio_length(audio, length):
-    if audio.shape[-1] > length:
-        return audio[..., :length]
-    if audio.shape[-1] < length:
-        return nn.functional.pad(audio, (0, length - audio.shape[-1]))
-    return audio
-
-
-def _copy_config_with_scaled_inference(config, ratio):
-    scaled = deepcopy(config)
-
-    scaled.audio.chunk_size = max(4096, int(round(int(config.audio.chunk_size) * ratio)))
-    overlap_size = config.inference.get('overlap_size', None)
-    if overlap_size is not None:
-        scaled.inference.overlap_size = max(0, int(round(int(overlap_size) * ratio)))
-
-    return scaled
-
-
 def demix_track(config, model, mix, device, pbar=False):
     C = config.audio.chunk_size
     step = _get_inference_step(config, C)
@@ -318,21 +295,6 @@ def demix_track(config, model, mix, device, pbar=False):
                 )
                 _set_model_inference_option(
                     model,
-                    'inference_time_stride',
-                    int(config.inference.get('time_stride', 1))
-                )
-                _set_model_inference_option(
-                    model,
-                    'inference_transformer_band_limit',
-                    config.inference.get('transformer_band_limit', None)
-                )
-                _set_model_inference_option(
-                    model,
-                    'inference_band_adaptive_depth',
-                    config.inference.get('band_adaptive_depth', None)
-                )
-                _set_model_inference_option(
-                    model,
                     'inference_time_layer_skip',
                     config.inference.get('time_layer_skip', None)
                 )
@@ -343,21 +305,6 @@ def demix_track(config, model, mix, device, pbar=False):
                 )
                 _set_model_inference_option(
                     model,
-                    'inference_time_attention_window',
-                    config.inference.get('time_attention_window', None)
-                )
-                _set_model_inference_option(
-                    model,
-                    'inference_time_attention_window_schedule',
-                    config.inference.get('time_attention_window_schedule', None)
-                )
-                _set_model_inference_option(
-                    model,
-                    'inference_active_band_limit',
-                    config.inference.get('active_band_limit', None)
-                )
-                _set_model_inference_option(
-                    model,
                     'inference_grouped_band_ops',
                     config.inference.get('grouped_band_ops', True)
                 )
@@ -365,11 +312,6 @@ def demix_track(config, model, mix, device, pbar=False):
                     model,
                     'inference_rmsnorm_fp32',
                     config.inference.get('rmsnorm_fp32', True)
-                )
-                _set_model_inference_option(
-                    model,
-                    'inference_mask_time_stride',
-                    int(config.inference.get('mask_time_stride', 1))
                 )
 
                 complete_chunks = 0
@@ -387,6 +329,7 @@ def demix_track(config, model, mix, device, pbar=False):
                             batch_end = min(batch_start + batch_size, complete_chunks)
                             arr = full_inputs[batch_start:batch_end].contiguous()
                             x = _ensure_source_dim(_run_model_chunk_batch(model, arr, batch_size), arr).float()
+                            x = _fit_tensor_length(x, C)
                             _fold_chunk_batch(
                                 result,
                                 x,
@@ -417,6 +360,7 @@ def demix_track(config, model, mix, device, pbar=False):
 
                     arr = torch.stack(batch_data, dim=0)
                     x = _ensure_source_dim(_run_model_chunk_batch(model, arr), arr)
+                    x = _fit_tensor_length(x, C)
 
                     for j, idx in enumerate(batch_indices):
                         start = chunk_starts[idx]
@@ -455,10 +399,9 @@ def demix_track(config, model, mix, device, pbar=False):
 def demix_track_demucs(config, model, mix, device, pbar=False):
     S = len(config.training.instruments)
     C = config.training.samplerate * config.training.segment
-    N = config.inference.num_overlap
     batch_size = config.inference.batch_size
-    step = C // N
-    # logger.info(S, C, N, step, mix.shape, mix.device)
+    step = _get_inference_step(config, C)
+    # logger.info(S, C, step, mix.shape, mix.device)
 
     with torch.cuda.amp.autocast(enabled=config.training.get('use_amp', True)):
         with torch.inference_mode():
@@ -508,24 +451,6 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
 
 def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None) -> Dict[str, NDArray]:
     mix = torch.tensor(mix, dtype=torch.float32)
-    source_sample_rate = int(config.audio.get('sample_rate', 44100))
-    inference_sample_rate = config.inference.get('resample_rate', None)
-    if model_type != 'htdemucs' and inference_sample_rate is not None:
-        inference_sample_rate = int(inference_sample_rate)
-        if inference_sample_rate > 0 and inference_sample_rate != source_sample_rate:
-            length_init = mix.shape[-1]
-            ratio = inference_sample_rate / source_sample_rate
-            mix = _resample_audio_tensor(mix, source_sample_rate, inference_sample_rate)
-            scaled_config = _copy_config_with_scaled_inference(config, ratio)
-            estimated = demix_track(scaled_config, model, mix, device, pbar=pbar)
-            return {
-                instrument: _fit_audio_length(
-                    _resample_audio_tensor(torch.from_numpy(source), inference_sample_rate, source_sample_rate),
-                    length_init
-                ).numpy()
-                for instrument, source in estimated.items()
-            }
-
     if model_type == 'htdemucs':
         return demix_track_demucs(config, model, mix, device, pbar=pbar)
     else:

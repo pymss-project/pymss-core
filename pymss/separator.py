@@ -75,21 +75,11 @@ class MSSeparator:
             debug = False,
             inference_params = {
                 "batch_size": None,
-                "num_overlap": None,
                 "overlap_size": None,
                 "chunk_size": None,
                 "normalize": None,
                 "mask_mode": None,
-                "resample_rate": None,
-                "float16_weights": None,
                 "rmsnorm_fp32": None,
-                "transformer_band_limit": None,
-                "band_adaptive_depth": None,
-                "time_stride": None,
-                "time_attention_window": None,
-                "time_attention_window_schedule": None,
-                "active_band_limit": None,
-                "mask_time_stride": None,
                 "stft_hop_length": None,
                 "torch_compile": None,
                 "torch_compile_mode": None,
@@ -136,7 +126,8 @@ class MSSeparator:
                 self.logger.debug("Apple Silicon MPS/CoreML is available in Torch, setting Torch device to MPS")
         else:
             self.device = device
-            self.logger.warning("No hardware acceleration could be configured, running in CPU mode")
+            if self.device == "cpu":
+                self.logger.warning("No hardware acceleration could be configured, running in CPU mode")
 
         torch.backends.cudnn.benchmark = True
         self.logger.info(f'Using device: {self.device}, device_ids: {self.device_ids}')
@@ -193,15 +184,13 @@ class MSSeparator:
         self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}, config_path: {self.config_path}, output_folder: {self.store_dirs}")
         self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
         self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, num_overlap: {config.inference.get('num_overlap', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
+        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
 
         model.load_state_dict(state_dict)
 
         if len(self.device_ids) > 1:
             model = torch.nn.DataParallel(model, device_ids=self.device_ids)
         model = model.to(self.device)
-        if config.inference.get('float16_weights', False) and torch.device(self.device).type == 'cuda':
-            model = model.half()
         model.eval()
         model = self.maybe_compile_model(model, config)
 
@@ -259,21 +248,11 @@ class MSSeparator:
     def update_inference_params(self, config, params):
         for key, value in {
             'batch_size': 'inference',
-            'num_overlap': 'inference',
             'overlap_size': 'inference',
             'chunk_size': 'audio',
             'normalize': 'inference',
             'mask_mode': 'inference',
-            'resample_rate': 'inference',
-            'float16_weights': 'inference',
             'rmsnorm_fp32': 'inference',
-            'transformer_band_limit': 'inference',
-            'band_adaptive_depth': 'inference',
-            'time_stride': 'inference',
-            'time_attention_window': 'inference',
-            'time_attention_window_schedule': 'inference',
-            'active_band_limit': 'inference',
-            'mask_time_stride': 'inference',
             'stft_hop_length': 'inference',
             'torch_compile': 'inference',
             'torch_compile_mode': 'inference',
@@ -281,11 +260,11 @@ class MSSeparator:
             'torch_compile_cache_dir': 'inference',
         }.items():
             if params.get(key) is not None:
-                if key in ('normalize', 'float16_weights', 'rmsnorm_fp32', 'torch_compile'):
+                if key in ('normalize', 'rmsnorm_fp32', 'torch_compile'):
                     config[value][key] = params[key]
                 elif key == 'mask_mode':
                     config[value][key] = str(params[key])
-                elif key in ('band_adaptive_depth', 'time_attention_window_schedule', 'torch_compile_mode', 'torch_compile_scope', 'torch_compile_cache_dir'):
+                elif key in ('torch_compile_mode', 'torch_compile_scope', 'torch_compile_cache_dir'):
                     config[value][key] = params[key]
                 else:
                     config[value][key] = int(params[key])
