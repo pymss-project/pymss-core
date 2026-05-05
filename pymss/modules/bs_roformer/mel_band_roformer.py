@@ -2,8 +2,7 @@ import torch
 from torch import nn
 from torch.nn import Module
 
-from beartype.typing import Optional, Callable
-from beartype import beartype
+from typing import Callable, Optional
 
 from einops import rearrange, reduce, repeat
 from librosa import filters
@@ -17,7 +16,6 @@ from .common import (
     init_roformer_layers,
     init_roformer_runtime,
     init_roformer_stft,
-    validate_roformer_attention_options,
 )
 
 
@@ -25,7 +23,6 @@ from .common import (
 
 class MelBandRoformer(RoformerRuntimeMixin, Module):
 
-    @beartype
     def __init__(
             self,
             dim,
@@ -35,14 +32,12 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             num_stems=1,
             time_transformer_depth=2,
             freq_transformer_depth=2,
-            linear_transformer_depth=0,
             num_bands=60,
             dim_head=64,
             heads=8,
             attn_dropout=0.1,
             ff_dropout=0.1,
             flash_attn=True,
-            dim_freqs_in=1025,
             sample_rate=44100,  # needed for mel filter bank from librosa
             stft_n_fft=2048,
             stft_hop_length=512,
@@ -53,17 +48,11 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             mask_estimator_depth=1,
             match_input_audio_length=False,  # if True, pad output tensor to match length of input tensor
             mlp_expansion_factor=4,
-            use_torch_checkpoint=False,
-            skip_connection=False,
-            sage_attention=False,
-            sage_attention_mode='none',
-            attention_layout='bhnd',
             **kwargs,
     ):
         super().__init__()
         ignore_roformer_training_kwargs(kwargs)
-        init_roformer_runtime(self, stereo, num_stems, use_torch_checkpoint, skip_connection)
-        validate_roformer_attention_options(sage_attention_mode, attention_layout)
+        init_roformer_runtime(self, stereo, num_stems)
 
         transformer_kwargs = dict(
             dim=dim,
@@ -72,19 +61,14 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             attn_dropout=attn_dropout,
             ff_dropout=ff_dropout,
             flash_attn=flash_attn,
-            sage_attention=sage_attention,
-            attention_layout=attention_layout,
         )
 
         init_roformer_layers(
             self,
-            dim=dim,
             depth=depth,
             time_transformer_depth=time_transformer_depth,
             freq_transformer_depth=freq_transformer_depth,
-            linear_transformer_depth=linear_transformer_depth,
             dim_head=dim_head,
-            sage_attention_mode=sage_attention_mode,
             transformer_kwargs=transformer_kwargs,
         )
 
@@ -152,12 +136,8 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
 
         self.match_input_audio_length = match_input_audio_length
 
-    def _forward_mask_core(self, selected_stft_repr, full_t):
-        return forward_roformer_mask_core(
-            self,
-            selected_stft_repr,
-            use_checkpoint=self.training and self.use_torch_checkpoint,
-        )
+    def _forward_mask_core(self, selected_stft_repr):
+        return forward_roformer_mask_core(self, selected_stft_repr)
 
     def forward(self, raw_audio):
         """
@@ -209,8 +189,8 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         x = stft_repr[batch_arange, self.freq_indices]
 
         num_stems = len(self.mask_estimators)
-        self._prepare_inference_core_options()
-        masks = self._forward_mask_core_maybe_compiled(x, stft_repr.shape[-2])
+        self._warm_group_cache(x)
+        masks = self._forward_mask_core(x)
 
         # modulate frequency representation
 

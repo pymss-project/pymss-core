@@ -76,12 +76,8 @@ class MSSeparator:
                 "overlap_size": None,
                 "chunk_size": None,
                 "normalize": None,
-                "mask_mode": None,
-                "rmsnorm_fp32": None,
-                "stft_hop_length": None,
                 "torch_compile": None,
                 "torch_compile_mode": None,
-                "torch_compile_scope": None,
                 "torch_compile_cache_dir": None,
             }
     ):
@@ -224,24 +220,8 @@ class MSSeparator:
         _patch_inductor_duplicate_kernel_imports()
         torch.set_float32_matmul_precision('high')
 
-        scope = str(config.inference.get('torch_compile_scope', 'core')).strip().lower().replace('-', '_')
-        if scope in ('chunks', 'fixed_chunk', 'fixed_chunks'):
-            scope = 'chunk'
-        if scope not in ('core', 'chunk', 'model'):
-            self.logger.warning(f"Unknown torch_compile_scope='{scope}', using 'core'")
-            scope = 'core'
-
-        if scope == 'model':
-            self.logger.info(f"Enabling torch.compile: scope=model, mode={mode}, cache_dir={cache_dir}")
-            return torch.compile(model, mode=mode, fullgraph=False)
-
-        compile_target = model.module if hasattr(model, 'module') else model
-        compile_target.__dict__['_pymss_torch_compile_enabled'] = True
-        compile_target.__dict__['_pymss_torch_compile_mode'] = mode
-        compile_target.__dict__['_pymss_torch_compile_scope'] = scope
-        compile_target.__dict__['_pymss_torch_compile_cache_dir'] = cache_dir
-        self.logger.info(f"Enabling torch.compile: scope={scope}, mode={mode}, cache_dir={cache_dir}")
-        return model
+        self.logger.info(f"Enabling torch.compile: mode={mode}, cache_dir={cache_dir}")
+        return torch.compile(model, mode=mode, fullgraph=False)
     
     def update_inference_params(self, config, params):
         for key, value in {
@@ -249,20 +229,14 @@ class MSSeparator:
             'overlap_size': 'inference',
             'chunk_size': 'audio',
             'normalize': 'inference',
-            'mask_mode': 'inference',
-            'rmsnorm_fp32': 'inference',
-            'stft_hop_length': 'inference',
             'torch_compile': 'inference',
             'torch_compile_mode': 'inference',
-            'torch_compile_scope': 'inference',
             'torch_compile_cache_dir': 'inference',
         }.items():
             if params.get(key) is not None:
-                if key in ('normalize', 'rmsnorm_fp32', 'torch_compile'):
+                if key in ('normalize', 'torch_compile'):
                     config[value][key] = params[key]
-                elif key == 'mask_mode':
-                    config[value][key] = str(params[key])
-                elif key in ('torch_compile_mode', 'torch_compile_scope', 'torch_compile_cache_dir'):
+                elif key in ('torch_compile_mode', 'torch_compile_cache_dir'):
                     config[value][key] = params[key]
                 else:
                     config[value][key] = int(params[key])

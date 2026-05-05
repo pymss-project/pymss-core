@@ -1,26 +1,12 @@
 import torch
 from torch import nn
-from torch.nn import Module
 import torch.nn.functional as F
 
-from beartype.typing import Tuple, Optional, List, Callable
-from beartype import beartype
-from einops import rearrange
+from typing import List, Tuple
 
+from .bs_roformer import BSRoformer
 from .common import (
-    DEFAULT_FREQS_PER_BANDS,
     MaskEstimator as RoformerMaskEstimator,
-    RMSNorm,
-    RoformerRuntimeMixin,
-    forward_bandsplit_roformer,
-    forward_roformer_mask_core,
-    ignore_roformer_training_kwargs,
-    init_roformer_band_modules,
-    init_roformer_layers,
-    init_roformer_runtime,
-    init_roformer_stft,
-    roformer_freqs_per_bands_with_complex,
-    validate_roformer_attention_options,
 )
 
 
@@ -468,7 +454,6 @@ class SegmModel(nn.Module):
         return out
 
 class MaskEstimator(RoformerMaskEstimator):
-    @beartype
     def __init__(
             self,
             dim,
@@ -484,127 +469,6 @@ class MaskEstimator(RoformerMaskEstimator):
         )
         self.segm = SegmModel(in_bands=len(dim_inputs), in_dim=dim, out_bins=sum(dim_inputs)//4)
 
-    def forward(self, x, mode='full'):
-        if mode not in ('full', 'no_segm', 'segm_only'):
-            raise ValueError("mask_mode must be one of: full, no_segm, segm_only")
 
-        y = None
-        if mode != 'no_segm':
-            y = rearrange(x, 'b t f c -> b c t f')
-            y = self.segm(y)
-            y = rearrange(y, 'b c t f -> b t (f c)')
-
-        if mode == 'segm_only':
-            return y
-
-        if not self.training and self.use_grouped_forward and self._can_group_mlp():
-            out = self._forward_grouped_mlp(x)
-            return out if y is None else out + y
-
-        x = x.unbind(dim=-2)
-
-        outs = []
-
-        for band_features, mlp in zip(x, self.to_freqs):
-            freq_out = mlp(band_features)
-            outs.append(freq_out)
-
-        out = torch.cat(outs, dim=-1)
-        return out if y is None else out + y
-
-
-class BSRoformerHyperACE(RoformerRuntimeMixin, Module):
-
-    @beartype
-    def __init__(
-            self,
-            dim,
-            *,
-            depth,
-            stereo=False,
-            num_stems=1,
-            time_transformer_depth=2,
-            freq_transformer_depth=2,
-            linear_transformer_depth=0,
-            freqs_per_bands: Tuple[int, ...] = DEFAULT_FREQS_PER_BANDS,
-            # in the paper, they divide into ~60 bands, test with 1 for starters
-            dim_head=64,
-            heads=8,
-            attn_dropout=0.,
-            ff_dropout=0.,
-            flash_attn=True,
-            dim_freqs_in=1025,
-            stft_n_fft=2048,
-            stft_hop_length=512,
-            # 10ms at 44100Hz, from sections 4.1, 4.4 in the paper - @faroit recommends // 2 or // 4 for better reconstruction
-            stft_win_length=2048,
-            stft_normalized=False,
-            stft_window_fn: Optional[Callable] = None,
-            mask_estimator_depth=2,
-            mlp_expansion_factor=4,
-            use_torch_checkpoint=False,
-            skip_connection=False,
-            sage_attention=False,
-            sage_attention_mode='none',
-            attention_layout='bhnd',
-            **kwargs,
-    ):
-        super().__init__()
-        ignore_roformer_training_kwargs(kwargs)
-        init_roformer_runtime(self, stereo, num_stems, use_torch_checkpoint, skip_connection, mask_mode='full')
-
-        if sage_attention:
-            print("Use Sage Attention")
-        validate_roformer_attention_options(sage_attention_mode, attention_layout)
-
-        transformer_kwargs = dict(
-            dim=dim,
-            heads=heads,
-            dim_head=dim_head,
-            attn_dropout=attn_dropout,
-            ff_dropout=ff_dropout,
-            flash_attn=flash_attn,
-            norm_output=False,
-            sage_attention=sage_attention,
-            attention_layout=attention_layout,
-            attend_sage_backend=True,
-        )
-
-        init_roformer_layers(
-            self,
-            dim=dim,
-            depth=depth,
-            time_transformer_depth=time_transformer_depth,
-            freq_transformer_depth=freq_transformer_depth,
-            linear_transformer_depth=linear_transformer_depth,
-            dim_head=dim_head,
-            sage_attention_mode=sage_attention_mode,
-            transformer_kwargs=transformer_kwargs,
-            include_linear=False,
-        )
-
-        self.final_norm = RMSNorm(dim)
-        init_roformer_stft(self, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn)
-
-        freqs = torch.stft(torch.randn(1, 4096), **self.stft_kwargs, window=torch.ones(stft_win_length), return_complex=True).shape[1]
-        freqs_per_bands_with_complex = roformer_freqs_per_bands_with_complex(self, freqs_per_bands, freqs)
-        init_roformer_band_modules(
-            self,
-            dim=dim,
-            freqs_per_bands_with_complex=freqs_per_bands_with_complex,
-            num_stems=num_stems,
-            mask_estimator_cls=MaskEstimator,
-            mask_estimator_depth=mask_estimator_depth,
-            mlp_expansion_factor=mlp_expansion_factor,
-        )
-
-    def _forward_mask_core(self, stft_repr):
-        return forward_roformer_mask_core(
-            self,
-            stft_repr,
-            mask_mode=self.inference_mask_mode if not self.training else 'full',
-            use_checkpoint=False,
-        )
-
-    def forward(self, raw_audio):
-        return forward_bandsplit_roformer(self, raw_audio)
+class BSRoformerHyperACE(BSRoformer):
+    mask_estimator_cls = MaskEstimator

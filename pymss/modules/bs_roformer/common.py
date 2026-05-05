@@ -4,24 +4,12 @@ import torch
 from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 
 from .attend import Attend
 from rotary_embedding_torch import RotaryEmbedding
-try:
-    from .attend_sage import Attend as AttendSage
-except ImportError:
-    AttendSage = None
-try:
-    from sageattention import sageattn
-except ImportError:
-    sageattn = None
-
-from beartype.typing import Tuple
-from beartype import beartype
+from typing import Tuple
 
 from einops import rearrange
-from einops.layers.torch import Rearrange
 
 
 DEFAULT_FREQS_PER_BANDS = (
@@ -49,10 +37,6 @@ def mask_to_complex_shape(mask, complex_dim=2):
     return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
 
 
-def l2norm(t):
-    return F.normalize(t, dim=-1, p=2)
-
-
 def rotate_half(x):
     out = torch.empty_like(x)
     out[..., ::2] = -x[..., 1::2]
@@ -64,13 +48,13 @@ def apply_rotary_emb_fast(cos, sin, t):
     return (t * cos) + (rotate_half(t) * sin)
 
 
-def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, layout):
+def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     cache = getattr(rotary_embed, '_pymss_cos_sin_cache', None)
     if cache is None:
         cache = {}
         rotary_embed._pymss_cos_sin_cache = cache
 
-    key = (seq_len, device.type, device.index, dtype, layout)
+    key = (seq_len, device.type, device.index, dtype)
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -80,32 +64,17 @@ def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, layout):
         cache_key=f'freqs:{seq_len}|offset:0'
     )
 
-    if layout == 'bnhd':
-        freqs = rearrange(freqs, 'n d -> 1 n 1 d')
-    elif layout == 'seq_before_head':
-        freqs = rearrange(freqs, 'n d -> n 1 d')
-    else:
-        freqs = rearrange(freqs, 'n d -> 1 1 n d')
-
+    freqs = rearrange(freqs, 'n d -> 1 n 1 d')
     freqs = freqs.to(device=device, dtype=dtype)
     cached = (freqs.cos(), freqs.sin())
     cache[key] = cached
     return cached
 
 
-def rotate_qk_fast(rotary_embed, q, k):
-    seq_dim = rotary_embed.default_seq_dim
-    seq_len = q.shape[seq_dim]
-    device, dtype = q.device, q.dtype
-    layout = 'seq_before_head' if seq_dim == -3 else 'bhnd'
-    cos, sin = cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, layout)
-    return apply_rotary_emb_fast(cos, sin, q), apply_rotary_emb_fast(cos, sin, k)
-
-
 def rotate_qk_fast_bnhd(rotary_embed, q, k):
     seq_len = q.shape[1]
     device, dtype = q.device, q.dtype
-    cos, sin = cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, 'bnhd')
+    cos, sin = cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype)
     return apply_rotary_emb_fast(cos, sin, q), apply_rotary_emb_fast(cos, sin, k)
 
 
@@ -113,24 +82,6 @@ def qkv_to_bnhd(qkv, heads):
     b, n, _ = qkv.shape
     qkv = qkv.view(b, n, 3, heads, -1)
     return qkv.unbind(dim=2)
-
-
-def qkv_to_bhnd(qkv, heads):
-    b, n, _ = qkv.shape
-    qkv = qkv.view(b, n, 3, heads, -1).permute(2, 0, 3, 1, 4)
-    return qkv.unbind(dim=0)
-
-
-def should_skip_index(i, total, rule):
-    if rule is None:
-        return False
-    if isinstance(rule, str):
-        if rule.startswith('tail:'):
-            return i >= total - int(rule.split(':', 1)[1])
-        if rule.startswith('stride:'):
-            stride = max(1, int(rule.split(':', 1)[1]))
-            return (i % stride) != 0
-    return False
 
 
 def dim_input_offsets(dim_inputs):
@@ -161,12 +112,6 @@ def grouped_linear(x, weight, bias):
     return out
 
 
-def set_rmsnorm_fp32(module, use_fp32):
-    for child in module.modules():
-        if isinstance(child, RMSNorm):
-            child.use_fp32 = use_fp32
-
-
 TRAINING_LOSS_KWARGS = frozenset({
     'multi_stft_resolution_loss_weight',
     'multi_stft_resolutions_window_sizes',
@@ -175,76 +120,55 @@ TRAINING_LOSS_KWARGS = frozenset({
     'multi_stft_window_fn',
 })
 
+REMOVED_ROFORMER_KWARGS = frozenset({
+    'linear_transformer_depth',
+    'use_torch_checkpoint',
+    'skip_connection',
+    'sage_attention',
+    'sage_attention_mode',
+    'attention_layout',
+    'dim_freqs_in',
+})
+
 
 def ignore_roformer_training_kwargs(kwargs):
-    unexpected = set(kwargs) - TRAINING_LOSS_KWARGS
+    unexpected = set(kwargs) - TRAINING_LOSS_KWARGS - REMOVED_ROFORMER_KWARGS
     if unexpected:
         raise TypeError(f"unexpected RoFormer config keys: {sorted(unexpected)}")
 
 
-def init_roformer_runtime(module, stereo, num_stems, use_torch_checkpoint, skip_connection, mask_mode=None):
+def init_roformer_runtime(module, stereo, num_stems):
     module.stereo = stereo
     module.audio_channels = 2 if stereo else 1
     module.num_stems = num_stems
-    module.use_torch_checkpoint = use_torch_checkpoint
-    module.skip_connection = skip_connection
-    module.inference_layer_skip = None
-    if mask_mode is not None:
-        module.inference_mask_mode = mask_mode
-    module.inference_time_layer_skip = None
-    module.inference_freq_layer_skip = None
-    module.inference_grouped_band_ops = True
-    module.inference_rmsnorm_fp32 = True
-    module._rmsnorm_fp32_state = None
-
-
-def validate_roformer_attention_options(sage_attention_mode, attention_layout):
-    valid_sage_modes = {'none', 'time', 'freq', 'all'}
-    if sage_attention_mode not in valid_sage_modes:
-        raise ValueError(f"sage_attention_mode must be one of {sorted(valid_sage_modes)}")
-    valid_attention_layouts = {'bhnd', 'bnhd'}
-    if attention_layout not in valid_attention_layouts:
-        raise ValueError(f"attention_layout must be one of {sorted(valid_attention_layouts)}")
 
 
 def init_roformer_layers(
         module,
         *,
-        dim,
         depth,
         time_transformer_depth,
         freq_transformer_depth,
-        linear_transformer_depth,
         dim_head,
-        sage_attention_mode,
         transformer_kwargs,
-        include_linear=True,
 ):
     module.layers = ModuleList([])
     time_rotary_embed = RotaryEmbedding(dim=dim_head)
     freq_rotary_embed = RotaryEmbedding(dim=dim_head)
 
     for _ in range(depth):
-        tran_modules = []
-        if include_linear and linear_transformer_depth > 0:
-            tran_modules.append(Transformer(depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs))
-        tran_modules.append(
+        module.layers.append(nn.ModuleList([
             Transformer(
                 depth=time_transformer_depth,
                 rotary_embed=time_rotary_embed,
-                sage_mode=sage_attention_mode in ('time', 'all'),
                 **transformer_kwargs
-            )
-        )
-        tran_modules.append(
+            ),
             Transformer(
                 depth=freq_transformer_depth,
                 rotary_embed=freq_rotary_embed,
-                sage_mode=sage_attention_mode in ('freq', 'all'),
                 **transformer_kwargs
-            )
-        )
-        module.layers.append(nn.ModuleList(tran_modules))
+            ),
+        ]))
 
 
 def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
@@ -299,130 +223,29 @@ class RoformerRuntimeMixin:
             self._stft_window_cache[key] = window
         return window
 
-    def _prepare_inference_core_options(self):
-        rmsnorm_fp32 = bool(self.inference_rmsnorm_fp32 if not self.training else True)
-        if self._rmsnorm_fp32_state is not rmsnorm_fp32:
-            set_rmsnorm_fp32(self, rmsnorm_fp32)
-            self._rmsnorm_fp32_state = rmsnorm_fp32
-
-        grouped_band_ops = self.inference_grouped_band_ops if not self.training else True
-        self.band_split.use_grouped_forward = bool(grouped_band_ops)
-        for mask_estimator in self.mask_estimators:
-            mask_estimator.use_grouped_forward = bool(grouped_band_ops)
-
     def _warm_group_cache(self, tensor):
-        if not self.band_split.use_grouped_forward:
-            return
         self.band_split.warm_group_cache(tensor.device, tensor.dtype)
         for mask_estimator in self.mask_estimators:
             mask_estimator.warm_group_cache(tensor.device, tensor.dtype)
 
-    @staticmethod
-    def _compile_key_arg(arg):
-        if torch.is_tensor(arg):
-            return (tuple(arg.shape), arg.device.type, arg.device.index, arg.dtype)
-        if isinstance(arg, (int, str, bool, type(None))):
-            return arg
-        return repr(arg)
 
-    def _compiled_mask_core(self, *args):
-        mode = self.__dict__.get('_pymss_torch_compile_mode', 'default')
-        cache = self.__dict__.setdefault('_pymss_compiled_mask_cores', {})
-        key = (mode, *[self._compile_key_arg(arg) for arg in args])
-        compiled = cache.get(key)
-        if compiled is None:
-            self._prepare_inference_core_options()
-            first_tensor = next((arg for arg in args if torch.is_tensor(arg)), None)
-            if first_tensor is not None:
-                self._warm_group_cache(first_tensor)
-            compiled = torch.compile(self._forward_mask_core, mode=mode, fullgraph=False)
-            cache[key] = compiled
-        return compiled(*args)
-
-    def _forward_mask_core_maybe_compiled(self, *args):
-        if (
-            not self.training
-            and self.__dict__.get('_pymss_torch_compile_enabled', False)
-            and self.__dict__.get('_pymss_torch_compile_scope') == 'core'
-            and self.__dict__.get('_pymss_compile_core_this_call', True)
-        ):
-            return self._compiled_mask_core(*args)
-        return self._forward_mask_core(*args)
-
-
-def forward_roformer_mask_core(module, stft_repr, mask_mode=None, use_checkpoint=False):
+def forward_roformer_mask_core(module, stft_repr):
     b, fs, model_t, complex_dim = stft_repr.shape
     x = stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
+    x = module.band_split(x)
 
-    if use_checkpoint:
-        x = checkpoint(module.band_split, x, use_reentrant=False)
-    else:
-        x = module.band_split(x)
-
-    layer_skip = module.inference_layer_skip if not module.training else None
-    time_layer_skip = module.inference_time_layer_skip if not module.training else None
-    freq_layer_skip = module.inference_freq_layer_skip if not module.training else None
-    active_layers = module.layers
-    if isinstance(layer_skip, str) and layer_skip.startswith('tail:'):
-        skip_count = int(layer_skip.split(':', 1)[1])
-        if skip_count > 0:
-            active_layers = module.layers[:-skip_count]
-
-    store = [None] * len(active_layers)
-    for i, transformer_block in enumerate(active_layers):
-        if len(transformer_block) == 3:
-            linear_transformer, time_transformer, freq_transformer = transformer_block
-            x_linear = x.reshape(b, -1, x.shape[-1])
-            if use_checkpoint:
-                x_linear = checkpoint(linear_transformer, x_linear, use_reentrant=False)
-            else:
-                x_linear = linear_transformer(x_linear)
-            x = x_linear.reshape_as(x)
-        else:
-            time_transformer, freq_transformer = transformer_block
-
-        if module.skip_connection:
-            for j in range(i):
-                x = x + store[j]
-
+    for time_transformer, freq_transformer in module.layers:
         b, t, f, d = x.shape
-        skip_time = should_skip_index(i, len(active_layers), time_layer_skip)
-        skip_freq = should_skip_index(i, len(active_layers), freq_layer_skip)
+        x = x.permute(0, 2, 1, 3).reshape(b * f, t, d)
+        x = time_transformer(x)
+        x = x.reshape(b, f, t, d).permute(0, 2, 1, 3)
 
-        if not skip_time:
-            x = x.permute(0, 2, 1, 3).reshape(b * f, t, d)
-            if use_checkpoint:
-                x = checkpoint(time_transformer, x, use_reentrant=False)
-            else:
-                x = time_transformer(x)
-            x = x.reshape(b, f, t, d).permute(0, 2, 1, 3)
-
-        if not skip_freq:
-            x = x.reshape(b * t, f, d)
-            if use_checkpoint:
-                x = checkpoint(freq_transformer, x, use_reentrant=False)
-            else:
-                x = freq_transformer(x)
-            x = x.reshape(b, t, f, d)
-
-        if module.skip_connection:
-            store[i] = x
+        x = x.reshape(b * t, f, d)
+        x = freq_transformer(x)
+        x = x.reshape(b, t, f, d)
 
     x = module.final_norm(x)
-
-    if use_checkpoint:
-        masks = []
-        for fn in module.mask_estimators:
-            if mask_mode is None:
-                masks.append(checkpoint(fn, x, use_reentrant=False))
-            else:
-                masks.append(checkpoint(lambda inp, fn=fn: fn(inp, mode=mask_mode), x, use_reentrant=False))
-        mask = torch.stack(masks, dim=1)
-    elif mask_mode is None:
-        mask = torch.stack([fn(x) for fn in module.mask_estimators], dim=1)
-    else:
-        mask = torch.stack([fn(x, mode=mask_mode) for fn in module.mask_estimators], dim=1)
-
+    mask = torch.stack([fn(x) for fn in module.mask_estimators], dim=1)
     return mask_to_complex_shape(mask, complex_dim=2)
 
 
@@ -459,8 +282,8 @@ def forward_bandsplit_roformer(module, raw_audio):
     b, s, f, t, c = stft_repr.shape
     stft_repr = stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c)
 
-    module._prepare_inference_core_options()
-    mask = module._forward_mask_core_maybe_compiled(stft_repr)
+    module._warm_group_cache(stft_repr)
+    mask = module._forward_mask_core(stft_repr)
 
     stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
     mask = torch.view_as_complex(mask.contiguous())
@@ -503,11 +326,10 @@ class RMSNorm(Module):
         super().__init__()
         self.scale = dim ** 0.5
         self.gamma = nn.Parameter(torch.ones(dim))
-        self.use_fp32 = True
         self._gamma_dtype_cache = {}
 
     def forward(self, x):
-        if not self.training and not self.use_fp32 and x.dtype in (torch.float16, torch.bfloat16):
+        if not self.training and x.dtype in (torch.float16, torch.bfloat16):
             key = (x.device.type, x.device.index, x.dtype, self.gamma.data_ptr(), self.gamma._version)
             gamma = self._gamma_dtype_cache.get(key)
             if gamma is None:
@@ -551,10 +373,6 @@ class Attention(Module):
             shared_out_bias=None,
             rotary_embed=None,
             flash=True,
-            sage_attention=False,
-            sage_mode=False,
-            attention_layout='bhnd',
-            attend_sage_backend=False,
     ):
         super().__init__()
         self.heads = heads
@@ -562,17 +380,9 @@ class Attention(Module):
         dim_inner = heads * dim_head
         self.flash = flash
         self.dropout = dropout
-        self.sage_mode = sage_mode
-        self.attention_layout = attention_layout
 
         self.rotary_embed = rotary_embed
-
-        if sage_attention and attend_sage_backend:
-            if AttendSage is None:
-                raise ImportError("sage_attention=True requires pymss.modules.bs_roformer.attend_sage")
-            self.attend = AttendSage(flash=flash, dropout=dropout)
-        else:
-            self.attend = Attend(flash=flash, dropout=dropout)
+        self.attend = Attend(flash=flash, dropout=dropout)
 
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=(shared_qkv_bias is not None))
@@ -591,126 +401,28 @@ class Attention(Module):
     def forward(self, x):
         x = self.norm(x)
 
-        if self.attention_layout == 'bnhd':
-            q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
-
-            if exists(self.rotary_embed):
-                q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
-
-            if self.sage_mode and sageattn is not None and q.is_cuda and q.dtype in (torch.float16, torch.bfloat16):
-                out = sageattn(
-                    q, k, v,
-                    tensor_layout='NHD',
-                    is_causal=False,
-                    sm_scale=self.scale,
-                    smooth_k=False
-                )
-            elif self.flash:
-                out = F.scaled_dot_product_attention(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2),
-                    dropout_p=self.dropout if self.training else 0.
-                ).transpose(1, 2)
-            else:
-                out = self.attend(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2)
-                ).transpose(1, 2)
-
-            gates = self.to_gates(x)
-            out = out * gates.unsqueeze(-1).sigmoid()
-            out = out.flatten(start_dim=-2)
-            return self.to_out(out)
-
-        q, k, v = qkv_to_bhnd(self.to_qkv(x), self.heads)
+        q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
 
         if exists(self.rotary_embed):
-            q, k = rotate_qk_fast(self.rotary_embed, q, k)
+            q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
 
-        if self.sage_mode and sageattn is not None and q.is_cuda and q.dtype in (torch.float16, torch.bfloat16):
-            out = sageattn(
-                q, k, v,
-                tensor_layout='HND',
-                is_causal=False,
-                sm_scale=self.scale,
-                smooth_k=False
-            )
-        elif self.flash:
+        if self.flash:
             out = F.scaled_dot_product_attention(
-                q, k, v,
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2),
                 dropout_p=self.dropout if self.training else 0.
-            )
+            ).transpose(1, 2)
         else:
-            out = self.attend(q, k, v)
+            out = self.attend(
+                q.transpose(1, 2),
+                k.transpose(1, 2),
+                v.transpose(1, 2)
+            ).transpose(1, 2)
 
         gates = self.to_gates(x)
-        out = out * gates.transpose(1, 2).unsqueeze(-1).sigmoid()
-
-        out = out.transpose(1, 2).flatten(start_dim=-2)
-        return self.to_out(out)
-
-
-class LinearAttention(Module):
-    """
-    this flavor of linear attention proposed in https://arxiv.org/abs/2106.09681 by El-Nouby et al.
-    """
-
-    @beartype
-    def __init__(
-            self,
-            *,
-            dim,
-            dim_head=32,
-            heads=8,
-            scale=8,
-            flash=False,
-            dropout=0.,
-            sage_attention=False,
-            attend_sage_backend=False,
-    ):
-        super().__init__()
-        dim_inner = dim_head * heads
-        self.norm = RMSNorm(dim)
-
-        self.to_qkv = nn.Sequential(
-            nn.Linear(dim, dim_inner * 3, bias=False),
-            Rearrange('b n (qkv h d) -> qkv b h d n', qkv=3, h=heads)
-        )
-
-        self.temperature = nn.Parameter(torch.ones(heads, 1, 1))
-
-        if sage_attention and attend_sage_backend:
-            if AttendSage is None:
-                raise ImportError("sage_attention=True requires pymss.modules.bs_roformer.attend_sage")
-            self.attend = AttendSage(
-                scale=scale,
-                dropout=dropout,
-                flash=flash
-            )
-        else:
-            self.attend = Attend(
-                scale=scale,
-                dropout=dropout,
-                flash=flash
-            )
-
-        self.to_out = nn.Sequential(
-            Rearrange('b h d n -> b n (h d)'),
-            nn.Linear(dim_inner, dim, bias=False)
-        )
-
-    def forward(self, x):
-        x = self.norm(x)
-
-        q, k, v = self.to_qkv(x)
-
-        q, k = map(l2norm, (q, k))
-        q = q * self.temperature.exp()
-
-        out = self.attend(q, k, v)
-
+        out = out * gates.unsqueeze(-1).sigmoid()
+        out = out.flatten(start_dim=-2)
         return self.to_out(out)
 
 
@@ -728,43 +440,23 @@ class Transformer(Module):
             norm_output=True,
             rotary_embed=None,
             flash_attn=True,
-            linear_attn=False,
-            sage_attention=False,
-            sage_mode=False,
-            attention_layout='bhnd',
             shared_qkv_bias=None,
             shared_out_bias=None,
-            attend_sage_backend=False,
     ):
         super().__init__()
         self.layers = ModuleList([])
 
         for _ in range(depth):
-            if linear_attn:
-                attn = LinearAttention(
-                    dim=dim,
-                    dim_head=dim_head,
-                    heads=heads,
-                    dropout=attn_dropout,
-                    flash=flash_attn,
-                    sage_attention=sage_attention,
-                    attend_sage_backend=attend_sage_backend,
-                )
-            else:
-                attn = Attention(
-                    dim=dim,
-                    dim_head=dim_head,
-                    heads=heads,
-                    dropout=attn_dropout,
-                    shared_qkv_bias=shared_qkv_bias,
-                    shared_out_bias=shared_out_bias,
-                    rotary_embed=rotary_embed,
-                    flash=flash_attn,
-                    sage_attention=sage_attention,
-                    sage_mode=sage_mode,
-                    attention_layout=attention_layout,
-                    attend_sage_backend=attend_sage_backend,
-                )
+            attn = Attention(
+                dim=dim,
+                dim_head=dim_head,
+                heads=heads,
+                dropout=attn_dropout,
+                shared_qkv_bias=shared_qkv_bias,
+                shared_out_bias=shared_out_bias,
+                rotary_embed=rotary_embed,
+                flash=flash_attn,
+            )
 
             self.layers.append(ModuleList([
                 attn,
@@ -782,7 +474,6 @@ class Transformer(Module):
 
 
 class BandSplit(Module):
-    @beartype
     def __init__(
             self,
             dim,
@@ -877,7 +568,6 @@ def MLP(
 
 
 class MaskEstimator(Module):
-    @beartype
     def __init__(
             self,
             dim,
