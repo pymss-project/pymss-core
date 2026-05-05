@@ -62,8 +62,8 @@ def get_model_from_config(model_type, config_path):
             **config.model
         )
     elif model_type == 'apollo':
-        from .modules.look2hear import BaseModel
-        model = BaseModel.apollo(**config.model)
+        from .modules.look2hear.apollo import Apollo
+        model = Apollo(**config.model)
     else:
         raise ValueError(f"Model type {model_type} not supported")
         # model = None

@@ -584,12 +584,14 @@ def MLP(
         dim_out,
         dim_hidden=None,
         depth=1,
-        activation=nn.Tanh
+        activation=nn.Tanh,
+        hidden_layers=None,
 ):
     dim_hidden = default(dim_hidden, dim_in)
+    hidden_layers = default(hidden_layers, max(depth - 1, 0))
 
     net = []
-    dims = (dim_in, *((dim_hidden,) * (depth - 1)), dim_out)
+    dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out)
 
     for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:])):
         is_last = ind == (len(dims) - 2)
@@ -611,7 +613,8 @@ class MaskEstimator(Module):
             dim,
             dim_inputs: Tuple[int, ...],
             depth,
-            mlp_expansion_factor=4
+            mlp_expansion_factor=4,
+            mlp_hidden_layers=None,
     ):
         super().__init__()
         self.dim_inputs = dim_inputs
@@ -623,22 +626,43 @@ class MaskEstimator(Module):
 
         for dim_in in dim_inputs:
             mlp = nn.Sequential(
-                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth),
+                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth, hidden_layers=mlp_hidden_layers),
                 nn.GLU(dim=-1)
             )
 
             self.to_freqs.append(mlp)
 
+    def _groupable_layers(self, mlp_with_glu):
+        if not isinstance(mlp_with_glu, nn.Sequential) or len(mlp_with_glu) != 2:
+            return None
+        mlp, glu = mlp_with_glu
+        if not isinstance(glu, nn.GLU) or not isinstance(mlp, nn.Sequential):
+            return None
+        layers = []
+        for layer in mlp:
+            if isinstance(layer, nn.Linear):
+                layers.append(('linear', layer))
+            elif isinstance(layer, nn.Tanh):
+                layers.append(('tanh', None))
+            else:
+                return None
+        if not layers or layers[-1][0] != 'linear':
+            return None
+        return tuple(layers)
+
     def _can_group_mlp(self):
+        base_signature = None
         for mlp_with_glu in self.to_freqs:
-            if not isinstance(mlp_with_glu, nn.Sequential) or len(mlp_with_glu) != 2:
+            layers = self._groupable_layers(mlp_with_glu)
+            if layers is None:
                 return False
-            mlp, glu = mlp_with_glu
-            if not isinstance(glu, nn.GLU):
-                return False
-            if not isinstance(mlp, nn.Sequential) or len(mlp) != 3:
-                return False
-            if not isinstance(mlp[0], nn.Linear) or not isinstance(mlp[2], nn.Linear):
+            signature = tuple(
+                item if kind != 'linear' else (kind, item.in_features, item.out_features, item.bias is not None)
+                for kind, item in layers
+            )
+            if base_signature is None:
+                base_signature = signature
+            elif signature != base_signature:
                 return False
         return True
 
@@ -648,16 +672,21 @@ class MaskEstimator(Module):
         if cached is not None:
             return cached
 
-        mlps = [self.to_freqs[i][0] for i in range(start, end)]
-        first_linears = [mlp[0] for mlp in mlps]
-        second_linears = [mlp[2] for mlp in mlps]
+        grouped_layers = []
+        first_layers = self._groupable_layers(self.to_freqs[start])
+        for layer_index, (kind, _) in enumerate(first_layers):
+            if kind == 'tanh':
+                grouped_layers.append(('tanh', None, None))
+                continue
 
-        w1 = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in first_linears], dim=0)
-        b1 = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in first_linears], dim=0)
-        w2 = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in second_linears], dim=0)
-        b2 = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in second_linears], dim=0)
+            linears = [self._groupable_layers(self.to_freqs[i])[layer_index][1] for i in range(start, end)]
+            weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
+            bias = None
+            if linears[0].bias is not None:
+                bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
+            grouped_layers.append(('linear', weight, bias))
 
-        cached = (w1, b1, w2, b2)
+        cached = tuple(grouped_layers)
         self._group_cache[key] = cached
         return cached
 
@@ -665,11 +694,12 @@ class MaskEstimator(Module):
         outs = []
         for start, end, _ in self._dim_groups:
             group_x = x[:, :, start:end, :]
-            w1, b1, w2, b2 = self._get_group_params(start, end, x.device, x.dtype)
-            group_out = grouped_linear(group_x, w1, b1)
-            group_out = torch.tanh(group_out)
-            group_out = grouped_linear(group_out, w2, b2)
-            group_out = F.glu(group_out, dim=-1)
+            for kind, weight, bias in self._get_group_params(start, end, x.device, x.dtype):
+                if kind == 'linear':
+                    group_x = grouped_linear(group_x, weight, bias)
+                else:
+                    group_x = torch.tanh(group_x)
+            group_out = F.glu(group_x, dim=-1)
             outs.append(group_out.flatten(start_dim=-2))
 
         return torch.cat(outs, dim=-1)

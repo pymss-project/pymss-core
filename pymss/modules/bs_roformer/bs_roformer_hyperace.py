@@ -12,13 +12,11 @@ from einops import rearrange
 
 from .common import (
     BandSplit,
-    MLP,
+    MaskEstimator as RoformerMaskEstimator,
     RMSNorm,
     Transformer,
-    contiguous_dim_groups,
     default,
     exists,
-    grouped_linear,
     forward_roformer_mask_core,
     set_rmsnorm_fp32,
 )
@@ -240,7 +238,6 @@ class GatedFusion(nn.Module):
 class Backbone(nn.Module):
     def __init__(self, in_channels=256, base_channels=64, base_depth=3):
         super().__init__()
-        c = base_channels
         c2 = base_channels
         c3 = 256
         c4 = 384
@@ -468,7 +465,7 @@ class SegmModel(nn.Module):
         
         return out
 
-class MaskEstimator(Module):
+class MaskEstimator(RoformerMaskEstimator):
     @beartype
     def __init__(
             self,
@@ -477,71 +474,14 @@ class MaskEstimator(Module):
             depth,
             mlp_expansion_factor=4
     ):
-        super().__init__()
-        self.dim_inputs = dim_inputs
-        self._dim_groups = contiguous_dim_groups(dim_inputs)
-        self._group_cache = {}
-        self.use_grouped_forward = True
-        self.to_freqs = ModuleList([])
-        dim_hidden = dim * mlp_expansion_factor
-
-        for dim_in in dim_inputs:
-            net = []
-
-            mlp = nn.Sequential(
-                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth),
-                nn.GLU(dim=-1)
-            )
-
-            self.to_freqs.append(mlp)
-        
+        super().__init__(
+            dim=dim,
+            dim_inputs=dim_inputs,
+            depth=depth,
+            mlp_expansion_factor=mlp_expansion_factor,
+        )
         self.segm = SegmModel(in_bands=len(dim_inputs), in_dim=dim, out_bins=sum(dim_inputs)//4)
 
-    def _can_group_mlp(self):
-        for mlp_with_glu in self.to_freqs:
-            if not isinstance(mlp_with_glu, nn.Sequential) or len(mlp_with_glu) != 2:
-                return False
-            mlp, glu = mlp_with_glu
-            if not isinstance(glu, nn.GLU):
-                return False
-            if not isinstance(mlp, nn.Sequential) or len(mlp) != 3:
-                return False
-            if not isinstance(mlp[0], nn.Linear) or not isinstance(mlp[2], nn.Linear):
-                return False
-        return True
-
-    def _get_group_params(self, start, end, device, dtype):
-        key = (start, end, device.type, device.index, dtype)
-        cached = self._group_cache.get(key)
-        if cached is not None:
-            return cached
-
-        mlps = [self.to_freqs[i][0] for i in range(start, end)]
-        first_linears = [mlp[0] for mlp in mlps]
-        second_linears = [mlp[2] for mlp in mlps]
-
-        w1 = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in first_linears], dim=0)
-        b1 = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in first_linears], dim=0)
-        w2 = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in second_linears], dim=0)
-        b2 = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in second_linears], dim=0)
-
-        cached = (w1, b1, w2, b2)
-        self._group_cache[key] = cached
-        return cached
-
-    def _forward_grouped_mlp(self, x):
-        outs = []
-        for start, end, _ in self._dim_groups:
-            group_x = x[:, :, start:end, :]
-            w1, b1, w2, b2 = self._get_group_params(start, end, x.device, x.dtype)
-            group_out = grouped_linear(group_x, w1, b1)
-            group_out = torch.tanh(group_out)
-            group_out = grouped_linear(group_out, w2, b2)
-            group_out = F.glu(group_out, dim=-1)
-            outs.append(group_out.flatten(start_dim=-2))
-
-        return torch.cat(outs, dim=-1)
-        
     def forward(self, x, mode='full'):
         if mode not in ('full', 'no_segm', 'segm_only'):
             raise ValueError("mask_mode must be one of: full, no_segm, segm_only")

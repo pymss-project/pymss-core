@@ -82,12 +82,3 @@ def get_separation_logger(console_level=logging.INFO, enable_file_log=False, max
     logger.console_handler = console_handler
 
     return logger
-
-
-if __name__ == "__main__":
-    logger = get_separation_logger(console_level=logging.INFO, enable_file_log=False)
-    logger.debug("This is a debug message.")
-    logger.info("This is an info message.")
-    logger.warning("This is a warning message.")
-    logger.error("This is an error message.")
-    logger.critical("This is a critical message.")

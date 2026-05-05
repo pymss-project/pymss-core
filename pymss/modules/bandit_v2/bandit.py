@@ -175,7 +175,7 @@ class BaseBandit(BaseEndToEndModule):
                 ),
                 disable=True,
             )
-        except Exception as e:
+        except Exception:
             self.tf_model = SeqBandModellingModule(
                     n_modules=n_sqm_modules,
                     emb_dim=emb_dim,
@@ -212,14 +212,13 @@ class BaseBandit(BaseEndToEndModule):
 
         batch = self.separate(batch)
 
-        if 1:
-            b = []
-            for s in self.stems:
-                # We need to obtain stereo again
-                r = batch['estimates'][s]['audio'].view(-1, init_shape[1], init_shape[2])
-                b.append(r)
-            # And we need to return back tensor and not independent stems
-            batch = torch.stack(b, dim=1)
+        b = []
+        for s in self.stems:
+            # We need to obtain stereo again
+            r = batch['estimates'][s]['audio'].view(-1, init_shape[1], init_shape[2])
+            b.append(r)
+        # And we need to return back tensor and not independent stems
+        batch = torch.stack(b, dim=1)
         return batch
 
     def encode(self, batch):
