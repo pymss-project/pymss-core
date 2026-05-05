@@ -1,8 +1,9 @@
 from typing import Dict, List, Optional
 
 import torch
-import torchaudio as ta
 from torch import nn
+
+from pymss.modules.bandit.core.model._spectral import _SpectralComponent
 
 from .bandsplit import BandSplitModule
 from .maskestim import OverlappingMaskEstimationModule
@@ -10,15 +11,7 @@ from .tfmodel import SeqBandModellingModule
 from .utils import MusicalBandsplitSpecification
 
 
-
-class BaseEndToEndModule(nn.Module):
-    def __init__(
-        self,
-    ) -> None:
-        super().__init__()
-
-
-class BaseBandit(BaseEndToEndModule):
+class BaseBandit(_SpectralComponent):
     def __init__(
         self,
         in_channels: int,
@@ -45,11 +38,7 @@ class BaseBandit(BaseEndToEndModule):
         pad_mode: str = "constant",
         onesided: bool = True,
     ):
-        super().__init__()
-
-        self.in_channels = in_channels
-
-        self.instantitate_spectral(
+        super().__init__(
             n_fft=n_fft,
             win_length=win_length,
             hop_length=hop_length,
@@ -61,6 +50,7 @@ class BaseBandit(BaseEndToEndModule):
             pad_mode=pad_mode,
             onesided=onesided,
         )
+        self.in_channels = in_channels
 
         self.instantiate_bandsplit(
             in_channels=in_channels,
@@ -81,50 +71,6 @@ class BaseBandit(BaseEndToEndModule):
             rnn_dim=rnn_dim,
             bidirectional=bidirectional,
             rnn_type=rnn_type,
-        )
-
-    def instantitate_spectral(
-        self,
-        n_fft: int = 2048,
-        win_length: Optional[int] = 2048,
-        hop_length: int = 512,
-        window_fn: str = "hann_window",
-        wkwargs: Optional[Dict] = None,
-        power: Optional[int] = None,
-        normalized: bool = True,
-        center: bool = True,
-        pad_mode: str = "constant",
-        onesided: bool = True,
-    ):
-        assert power is None
-
-        window_fn = torch.__dict__[window_fn]
-
-        self.stft = ta.transforms.Spectrogram(
-            n_fft=n_fft,
-            win_length=win_length,
-            hop_length=hop_length,
-            pad_mode=pad_mode,
-            pad=0,
-            window_fn=window_fn,
-            wkwargs=wkwargs,
-            power=power,
-            normalized=normalized,
-            center=center,
-            onesided=onesided,
-        )
-
-        self.istft = ta.transforms.InverseSpectrogram(
-            n_fft=n_fft,
-            win_length=win_length,
-            hop_length=hop_length,
-            pad_mode=pad_mode,
-            pad=0,
-            window_fn=window_fn,
-            wkwargs=wkwargs,
-            normalized=normalized,
-            center=center,
-            onesided=onesided,
         )
 
     def instantiate_bandsplit(
@@ -164,25 +110,13 @@ class BaseBandit(BaseEndToEndModule):
         bidirectional: bool = True,
         rnn_type: str = "LSTM",
     ):
-        try:
-            self.tf_model = torch.compile(
-                SeqBandModellingModule(
-                    n_modules=n_sqm_modules,
-                    emb_dim=emb_dim,
-                    rnn_dim=rnn_dim,
-                    bidirectional=bidirectional,
-                    rnn_type=rnn_type,
-                ),
-                disable=True,
-            )
-        except Exception:
-            self.tf_model = SeqBandModellingModule(
-                    n_modules=n_sqm_modules,
-                    emb_dim=emb_dim,
-                    rnn_dim=rnn_dim,
-                    bidirectional=bidirectional,
-                    rnn_type=rnn_type,
-                )
+        self.tf_model = SeqBandModellingModule(
+            n_modules=n_sqm_modules,
+            emb_dim=emb_dim,
+            rnn_dim=rnn_dim,
+            bidirectional=bidirectional,
+            rnn_type=rnn_type,
+        )
 
     def mask(self, x, m):
         return x * m

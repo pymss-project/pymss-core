@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from functools import partial
 
-from .spectrogram import SubbandSTFT, cac_to_cws, cws_to_cac, get_activation
+from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
 
 def get_norm(norm_type):
     def norm(c, norm_type):
@@ -136,16 +136,7 @@ class TFC_TDF_net(nn.Module):
 
         self.stft = SubbandSTFT(config.audio)
 
-    def forward(self, x):
-
-        x = self.stft(x)
-
-        mix = x = cac_to_cws(x, self.num_subbands)
-
-        first_conv_out = x = self.first_conv(x)
-
-        x = x.transpose(-1, -2)
-
+    def _forward_core(self, x):
         encoder_outputs = []
         for block in self.encoder_blocks:
             x = block.tfc_tdf(x)
@@ -159,18 +150,7 @@ class TFC_TDF_net(nn.Module):
             x = torch.cat([x, encoder_outputs.pop()], 1)
             x = block.tfc_tdf(x)
 
-        x = x.transpose(-1, -2)
-
-        x = x * first_conv_out  # reduce artifacts
-
-        x = self.final_conv(torch.cat([mix, x], 1))
-
-        x = cws_to_cac(x, self.num_subbands)
-
-        if self.num_target_instruments > 1:
-            b, c, f, t = x.shape
-            x = x.reshape(b, self.num_target_instruments, -1, f, t)
-
-        x = self.stft.inverse(x)
-
         return x
+
+    def forward(self, x):
+        return forward_subband_mask_model(self, x, self._forward_core)

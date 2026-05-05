@@ -71,3 +71,25 @@ def cws_to_cac(x, num_subbands):
     batch, channels, freq_bins, time_bins = x.shape
     x = x.reshape(batch, channels // num_subbands, num_subbands, freq_bins, time_bins)
     return x.reshape(batch, channels // num_subbands, freq_bins * num_subbands, time_bins)
+
+
+def forward_subband_mask_model(module, x, core_fn):
+    x = module.stft(x)
+
+    mix = x = cac_to_cws(x, module.num_subbands)
+
+    first_conv_out = x = module.first_conv(x)
+
+    x = core_fn(x.transpose(-1, -2)).transpose(-1, -2)
+
+    x = x * first_conv_out
+
+    x = module.final_conv(torch.cat([mix, x], 1))
+
+    x = cws_to_cac(x, module.num_subbands)
+
+    if module.num_target_instruments > 1:
+        batch, channels, freq_bins, time_bins = x.shape
+        x = x.reshape(batch, module.num_target_instruments, -1, freq_bins, time_bins)
+
+    return module.stft.inverse(x)

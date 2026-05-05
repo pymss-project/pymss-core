@@ -1,3 +1,5 @@
+from functools import partial
+
 import torch
 from torch import nn
 from torch.nn import Module, ModuleList
@@ -5,6 +7,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from .attend import Attend
+from rotary_embedding_torch import RotaryEmbedding
 try:
     from .attend_sage import Attend as AttendSage
 except ImportError:
@@ -19,6 +22,18 @@ from beartype import beartype
 
 from einops import rearrange
 from einops.layers.torch import Rearrange
+
+
+DEFAULT_FREQS_PER_BANDS = (
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2,
+    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+    12, 12, 12, 12, 12, 12, 12, 12,
+    24, 24, 24, 24, 24, 24, 24, 24,
+    48, 48, 48, 48, 48, 48, 48, 48,
+    128, 129,
+)
 
 
 def exists(val):
@@ -152,6 +167,189 @@ def set_rmsnorm_fp32(module, use_fp32):
             child.use_fp32 = use_fp32
 
 
+TRAINING_LOSS_KWARGS = frozenset({
+    'multi_stft_resolution_loss_weight',
+    'multi_stft_resolutions_window_sizes',
+    'multi_stft_hop_size',
+    'multi_stft_normalized',
+    'multi_stft_window_fn',
+})
+
+
+def ignore_roformer_training_kwargs(kwargs):
+    unexpected = set(kwargs) - TRAINING_LOSS_KWARGS
+    if unexpected:
+        raise TypeError(f"unexpected RoFormer config keys: {sorted(unexpected)}")
+
+
+def init_roformer_runtime(module, stereo, num_stems, use_torch_checkpoint, skip_connection, mask_mode=None):
+    module.stereo = stereo
+    module.audio_channels = 2 if stereo else 1
+    module.num_stems = num_stems
+    module.use_torch_checkpoint = use_torch_checkpoint
+    module.skip_connection = skip_connection
+    module.inference_layer_skip = None
+    if mask_mode is not None:
+        module.inference_mask_mode = mask_mode
+    module.inference_time_layer_skip = None
+    module.inference_freq_layer_skip = None
+    module.inference_grouped_band_ops = True
+    module.inference_rmsnorm_fp32 = True
+    module._rmsnorm_fp32_state = None
+
+
+def validate_roformer_attention_options(sage_attention_mode, attention_layout):
+    valid_sage_modes = {'none', 'time', 'freq', 'all'}
+    if sage_attention_mode not in valid_sage_modes:
+        raise ValueError(f"sage_attention_mode must be one of {sorted(valid_sage_modes)}")
+    valid_attention_layouts = {'bhnd', 'bnhd'}
+    if attention_layout not in valid_attention_layouts:
+        raise ValueError(f"attention_layout must be one of {sorted(valid_attention_layouts)}")
+
+
+def init_roformer_layers(
+        module,
+        *,
+        dim,
+        depth,
+        time_transformer_depth,
+        freq_transformer_depth,
+        linear_transformer_depth,
+        dim_head,
+        sage_attention_mode,
+        transformer_kwargs,
+        include_linear=True,
+):
+    module.layers = ModuleList([])
+    time_rotary_embed = RotaryEmbedding(dim=dim_head)
+    freq_rotary_embed = RotaryEmbedding(dim=dim_head)
+
+    for _ in range(depth):
+        tran_modules = []
+        if include_linear and linear_transformer_depth > 0:
+            tran_modules.append(Transformer(depth=linear_transformer_depth, linear_attn=True, **transformer_kwargs))
+        tran_modules.append(
+            Transformer(
+                depth=time_transformer_depth,
+                rotary_embed=time_rotary_embed,
+                sage_mode=sage_attention_mode in ('time', 'all'),
+                **transformer_kwargs
+            )
+        )
+        tran_modules.append(
+            Transformer(
+                depth=freq_transformer_depth,
+                rotary_embed=freq_rotary_embed,
+                sage_mode=sage_attention_mode in ('freq', 'all'),
+                **transformer_kwargs
+            )
+        )
+        module.layers.append(nn.ModuleList(tran_modules))
+
+
+def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
+    module.stft_kwargs = dict(
+        n_fft=stft_n_fft,
+        hop_length=stft_hop_length,
+        win_length=stft_win_length,
+        normalized=stft_normalized,
+    )
+    module.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
+    module._stft_window_cache = {}
+
+
+def roformer_freqs_per_bands_with_complex(module, freqs_per_bands, freqs):
+    assert len(freqs_per_bands) > 1
+    assert sum(
+        freqs_per_bands
+    ) == freqs, f'the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}'
+    return tuple(2 * f * module.audio_channels for f in freqs_per_bands)
+
+
+def init_roformer_band_modules(
+        module,
+        *,
+        dim,
+        freqs_per_bands_with_complex,
+        num_stems,
+        mask_estimator_cls,
+        mask_estimator_depth,
+        mlp_expansion_factor,
+        mask_estimator_kwargs=None,
+):
+    module.band_split = BandSplit(dim=dim, dim_inputs=freqs_per_bands_with_complex)
+    module.mask_estimators = nn.ModuleList([
+        mask_estimator_cls(
+            dim=dim,
+            dim_inputs=freqs_per_bands_with_complex,
+            depth=mask_estimator_depth,
+            mlp_expansion_factor=mlp_expansion_factor,
+            **(mask_estimator_kwargs or {}),
+        )
+        for _ in range(num_stems)
+    ])
+
+
+class RoformerRuntimeMixin:
+    def stft_window(self, device):
+        key = (device.type, device.index, torch.float32)
+        window = self._stft_window_cache.get(key)
+        if window is None or window.device != device:
+            window = self.stft_window_fn(device=device)
+            self._stft_window_cache[key] = window
+        return window
+
+    def _prepare_inference_core_options(self):
+        rmsnorm_fp32 = bool(self.inference_rmsnorm_fp32 if not self.training else True)
+        if self._rmsnorm_fp32_state is not rmsnorm_fp32:
+            set_rmsnorm_fp32(self, rmsnorm_fp32)
+            self._rmsnorm_fp32_state = rmsnorm_fp32
+
+        grouped_band_ops = self.inference_grouped_band_ops if not self.training else True
+        self.band_split.use_grouped_forward = bool(grouped_band_ops)
+        for mask_estimator in self.mask_estimators:
+            mask_estimator.use_grouped_forward = bool(grouped_band_ops)
+
+    def _warm_group_cache(self, tensor):
+        if not self.band_split.use_grouped_forward:
+            return
+        self.band_split.warm_group_cache(tensor.device, tensor.dtype)
+        for mask_estimator in self.mask_estimators:
+            mask_estimator.warm_group_cache(tensor.device, tensor.dtype)
+
+    @staticmethod
+    def _compile_key_arg(arg):
+        if torch.is_tensor(arg):
+            return (tuple(arg.shape), arg.device.type, arg.device.index, arg.dtype)
+        if isinstance(arg, (int, str, bool, type(None))):
+            return arg
+        return repr(arg)
+
+    def _compiled_mask_core(self, *args):
+        mode = self.__dict__.get('_pymss_torch_compile_mode', 'default')
+        cache = self.__dict__.setdefault('_pymss_compiled_mask_cores', {})
+        key = (mode, *[self._compile_key_arg(arg) for arg in args])
+        compiled = cache.get(key)
+        if compiled is None:
+            self._prepare_inference_core_options()
+            first_tensor = next((arg for arg in args if torch.is_tensor(arg)), None)
+            if first_tensor is not None:
+                self._warm_group_cache(first_tensor)
+            compiled = torch.compile(self._forward_mask_core, mode=mode, fullgraph=False)
+            cache[key] = compiled
+        return compiled(*args)
+
+    def _forward_mask_core_maybe_compiled(self, *args):
+        if (
+            not self.training
+            and self.__dict__.get('_pymss_torch_compile_enabled', False)
+            and self.__dict__.get('_pymss_torch_compile_scope') == 'core'
+            and self.__dict__.get('_pymss_compile_core_this_call', True)
+        ):
+            return self._compiled_mask_core(*args)
+        return self._forward_mask_core(*args)
+
+
 def forward_roformer_mask_core(module, stft_repr, mask_mode=None, use_checkpoint=False):
     b, fs, model_t, complex_dim = stft_repr.shape
     x = stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
@@ -226,6 +424,78 @@ def forward_roformer_mask_core(module, stft_repr, mask_mode=None, use_checkpoint
         mask = torch.stack([fn(x, mode=mask_mode) for fn in module.mask_estimators], dim=1)
 
     return mask_to_complex_shape(mask, complex_dim=2)
+
+
+def forward_bandsplit_roformer(module, raw_audio):
+    device = raw_audio.device
+    x_is_mps = device.type == "mps"
+
+    if raw_audio.ndim == 2:
+        raw_audio = raw_audio.unsqueeze(1)
+
+    batch, audio_channels, audio_length = raw_audio.shape
+    assert (
+        not module.stereo and audio_channels == 1
+    ) or (
+        module.stereo and audio_channels == 2
+    ), 'stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)'
+
+    stft_audio = raw_audio.reshape(batch * audio_channels, audio_length)
+    stft_window = module.stft_window(device)
+
+    try:
+        stft_repr = torch.stft(stft_audio, **module.stft_kwargs, window=stft_window, return_complex=True)
+    except RuntimeError:
+        stft_repr = torch.stft(
+            stft_audio.cpu() if x_is_mps else stft_audio,
+            **module.stft_kwargs,
+            window=stft_window.cpu() if x_is_mps else stft_window,
+            return_complex=True
+        ).to(device)
+
+    stft_repr = torch.view_as_real(stft_repr)
+    stft_repr = stft_repr.reshape(batch, audio_channels, *stft_repr.shape[-3:])
+
+    b, s, f, t, c = stft_repr.shape
+    stft_repr = stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c)
+
+    module._prepare_inference_core_options()
+    mask = module._forward_mask_core_maybe_compiled(stft_repr)
+
+    stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
+    mask = torch.view_as_complex(mask.contiguous())
+    stft_repr = stft_repr * mask
+
+    b, n, fs, t = stft_repr.shape
+    stft_repr = stft_repr.reshape(b, n, f, s, t).permute(0, 1, 3, 2, 4).reshape(
+        b * n * s,
+        f,
+        t
+    )
+
+    try:
+        recon_audio = torch.istft(
+            stft_repr,
+            **module.stft_kwargs,
+            window=stft_window,
+            return_complex=False,
+            length=audio_length
+        )
+    except RuntimeError:
+        recon_audio = torch.istft(
+            stft_repr.cpu() if x_is_mps else stft_repr,
+            **module.stft_kwargs,
+            window=stft_window.cpu() if x_is_mps else stft_window,
+            return_complex=False,
+            length=audio_length
+        ).to(device)
+
+    recon_audio = recon_audio.reshape(batch, len(module.mask_estimators), audio_channels, audio_length)
+
+    if len(module.mask_estimators) == 1:
+        return recon_audio[:, 0]
+
+    return recon_audio
 
 
 class RMSNorm(Module):
