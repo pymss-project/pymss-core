@@ -5,644 +5,26 @@ from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
-from .attend import Attend
-try:
-    from .attend_sage import Attend as AttendSage
-except ImportError:
-    AttendSage = None
-try:
-    from sageattention import sageattn
-except ImportError:
-    sageattn = None
-
 from beartype.typing import Tuple, Optional, List, Callable
 from beartype import beartype
-
 from rotary_embedding_torch import RotaryEmbedding
-
-from einops import rearrange, pack, unpack
-from einops.layers.torch import Rearrange
-
-# helper functions
-
-def exists(val):
-    return val is not None
-
-
-def default(v, d):
-    return v if exists(v) else d
-
-
-def pack_one(t, pattern):
-    return pack([t], pattern)
-
-
-def unpack_one(t, ps, pattern):
-    return unpack(t, ps, pattern)[0]
-
-
-def mask_to_complex_shape(mask, complex_dim=2):
-    b, n, t, fc = mask.shape
-    return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
-
-
-# norm
-
-def l2norm(t):
-    return F.normalize(t, dim = -1, p = 2)
-
-
-def rotate_half(x):
-    out = torch.empty_like(x)
-    out[..., ::2] = -x[..., 1::2]
-    out[..., 1::2] = x[..., ::2]
-    return out
-
-
-def apply_rotary_emb_fast(cos, sin, t):
-    return (t * cos) + (rotate_half(t) * sin)
-
-
-def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, layout):
-    cache = getattr(rotary_embed, '_pymss_cos_sin_cache', None)
-    if cache is None:
-        cache = {}
-        rotary_embed._pymss_cos_sin_cache = cache
-
-    key = (seq_len, device.type, device.index, dtype, layout)
-    cached = cache.get(key)
-    if cached is not None:
-        return cached
-
-    freqs = rotary_embed.forward(
-        lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=dtype, offset=0),
-        cache_key=f'freqs:{seq_len}|offset:0'
-    )
-
-    if layout == 'bnhd':
-        freqs = rearrange(freqs, 'n d -> 1 n 1 d')
-    elif layout == 'seq_before_head':
-        freqs = rearrange(freqs, 'n d -> n 1 d')
-    else:
-        freqs = rearrange(freqs, 'n d -> 1 1 n d')
-
-    freqs = freqs.to(device=device, dtype=dtype)
-    cached = (freqs.cos(), freqs.sin())
-    cache[key] = cached
-    return cached
-
-
-def rotate_qk_fast(rotary_embed, q, k):
-    seq_dim = rotary_embed.default_seq_dim
-    seq_len = q.shape[seq_dim]
-    device, dtype = q.device, q.dtype
-    layout = 'seq_before_head' if seq_dim == -3 else 'bhnd'
-    cos, sin = cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, layout)
-    return apply_rotary_emb_fast(cos, sin, q), apply_rotary_emb_fast(cos, sin, k)
-
-
-def rotate_qk_fast_bnhd(rotary_embed, q, k):
-    seq_len = q.shape[1]
-    device, dtype = q.device, q.dtype
-    cos, sin = cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype, 'bnhd')
-    return apply_rotary_emb_fast(cos, sin, q), apply_rotary_emb_fast(cos, sin, k)
-
-
-def qkv_to_bnhd(qkv, heads):
-    b, n, _ = qkv.shape
-    qkv = qkv.view(b, n, 3, heads, -1)
-    return qkv.unbind(dim=2)
-
-
-def qkv_to_bhnd(qkv, heads):
-    b, n, _ = qkv.shape
-    qkv = qkv.view(b, n, 3, heads, -1).permute(2, 0, 3, 1, 4)
-    return qkv.unbind(dim=0)
-
-
-def should_skip_index(i, total, rule):
-    if rule is None:
-        return False
-    if isinstance(rule, str):
-        if rule.startswith('tail:'):
-            return i >= total - int(rule.split(':', 1)[1])
-        if rule.startswith('stride:'):
-            stride = max(1, int(rule.split(':', 1)[1]))
-            return (i % stride) != 0
-    return False
-
-
-def forward_in_sequence_windows(module, x, window_size):
-    window_size = int(window_size)
-    if window_size <= 0 or x.shape[1] <= window_size:
-        return module(x)
-
-    b, n, d = x.shape
-    pad = (-n) % window_size
-    if pad:
-        x = torch.cat((x, x[:, -1:, :].expand(b, pad, d)), dim=1)
-
-    n_padded = x.shape[1]
-    x = x.reshape(b, n_padded // window_size, window_size, d).flatten(0, 1)
-    x = module(x)
-    x = x.reshape(b, n_padded // window_size, window_size, d).reshape(b, n_padded, d)
-    return x[:, :n, :]
-
-
-def normalize_time_attention_window(window_size):
-    if window_size is None:
-        return None
-    if isinstance(window_size, str):
-        window_size = window_size.strip()
-        if not window_size or window_size.lower() in ('none', 'false', 'off', 'full'):
-            return None
-    window_size = int(window_size)
-    return window_size if window_size > 0 else None
-
-
-def parse_time_attention_window_schedule(rule, total_layers):
-    if rule is None:
-        return ()
-
-    if isinstance(rule, str):
-        rule = rule.strip()
-        if not rule or rule.lower() in ('none', 'false', 'off'):
-            return ()
-        entries = []
-        for item in rule.split(','):
-            item = item.strip()
-            if not item:
-                continue
-            if ':' in item:
-                start, window_size = item.split(':', 1)
-            elif '=' in item:
-                start, window_size = item.split('=', 1)
-            else:
-                raise ValueError("time_attention_window_schedule entries must use 'layer:window_size'")
-            entries.append((start.strip(), window_size.strip()))
-    elif isinstance(rule, dict):
-        entries = rule.items()
-    else:
-        entries = rule
-        if len(entries) == 2 and not isinstance(entries[0], (list, tuple)):
-            entries = (entries,)
-
-    schedule = []
-    for start, window_size in entries:
-        start = max(0, min(int(start), total_layers - 1))
-        schedule.append((start, normalize_time_attention_window(window_size)))
-
-    return tuple(sorted(schedule, key=lambda item: item[0]))
-
-
-def scheduled_time_attention_window(layer_index, base_window, schedule):
-    window_size = normalize_time_attention_window(base_window)
-    for start, scheduled_window in schedule:
-        if layer_index >= start:
-            window_size = scheduled_window
-    return window_size
-
-
-def normalize_band_limit(limit, total_bands):
-    if limit is None:
-        return None
-    limit = int(limit)
-    if limit <= 0 or limit >= total_bands:
-        return None
-    return max(1, limit)
-
-
-def parse_band_adaptive_depth(rule, total_layers, total_bands):
-    if rule is None:
-        return ()
-
-    if isinstance(rule, str):
-        rule = rule.strip()
-        if not rule or rule.lower() in ('none', 'false', 'off'):
-            return ()
-        entries = []
-        for item in rule.split(','):
-            item = item.strip()
-            if not item:
-                continue
-            if ':' in item:
-                start, limit = item.split(':', 1)
-            elif '=' in item:
-                start, limit = item.split('=', 1)
-            else:
-                raise ValueError("band_adaptive_depth entries must use 'layer:band_limit'")
-            entries.append((start.strip(), limit.strip()))
-    elif isinstance(rule, dict):
-        entries = rule.items()
-    else:
-        entries = rule
-        if len(entries) == 2 and not isinstance(entries[0], (list, tuple)):
-            entries = (entries,)
-
-    schedule = []
-    for start, limit in entries:
-        start = int(start)
-        limit = normalize_band_limit(limit, total_bands)
-        if limit is None:
-            continue
-        start = max(0, min(start, total_layers - 1))
-        schedule.append((start, limit))
-
-    return tuple(sorted(schedule, key=lambda item: item[0]))
-
-
-def scheduled_band_limit(layer_index, total_bands, base_limit, schedule):
-    limit = base_limit or total_bands
-    for start, scheduled_limit in schedule:
-        if layer_index >= start:
-            limit = min(limit, scheduled_limit)
-    return None if limit >= total_bands else limit
-
-
-def dim_input_offsets(dim_inputs):
-    offsets = [0]
-    for dim_input in dim_inputs:
-        offsets.append(offsets[-1] + dim_input)
-    return tuple(offsets)
-
-
-def contiguous_dim_groups(dim_inputs):
-    groups = []
-    start = 0
-    for i in range(1, len(dim_inputs) + 1):
-        if i == len(dim_inputs) or dim_inputs[i] != dim_inputs[start]:
-            groups.append((start, i, dim_inputs[start]))
-            start = i
-    return tuple(groups)
-
-
-def grouped_linear(x, weight, bias):
-    group_count, out_features, in_features = weight.shape
-    leading_shape = x.shape[:-2]
-    x = x.reshape(-1, group_count, in_features).transpose(0, 1)
-    out = torch.bmm(x, weight.transpose(1, 2))
-    out = out.transpose(0, 1).reshape(*leading_shape, group_count, out_features)
-    if bias is not None:
-        out = out + bias.to(dtype=out.dtype)
-    return out
-
-
-def set_rmsnorm_fp32(module, use_fp32):
-    for child in module.modules():
-        if isinstance(child, RMSNorm):
-            child.use_fp32 = use_fp32
-
-
-class RMSNorm(Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.scale = dim ** 0.5
-        self.gamma = nn.Parameter(torch.ones(dim))
-        self.use_fp32 = True
-        self._gamma_dtype_cache = {}
-
-    def forward(self, x):
-        if not self.training and not self.use_fp32 and x.dtype in (torch.float16, torch.bfloat16):
-            key = (x.device.type, x.device.index, x.dtype, self.gamma.data_ptr(), self.gamma._version)
-            gamma = self._gamma_dtype_cache.get(key)
-            if gamma is None:
-                gamma = self.gamma.detach().to(device=x.device, dtype=x.dtype)
-                self._gamma_dtype_cache.clear()
-                self._gamma_dtype_cache[key] = gamma
-            return F.rms_norm(x, (x.shape[-1],), gamma, eps=1e-12)
-        return F.normalize(x, dim=-1) * self.scale * self.gamma
-
-
-# attention
-
-class FeedForward(Module):
-    def __init__(
-            self,
-            dim,
-            mult=4,
-            dropout=0.
-    ):
-        super().__init__()
-        dim_inner = int(dim * mult)
-        self.net = nn.Sequential(
-            RMSNorm(dim),
-            nn.Linear(dim, dim_inner),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_inner, dim),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        return self.net(x)
-
-class Attention(Module):
-    def __init__(
-            self,
-            dim,
-            heads=8,
-            dim_head=64,
-            dropout=0.,
-            rotary_embed=None,
-            flash=True,
-            sage_attention=False,
-            sage_mode=False,
-            attention_layout='bhnd',
-    ):
-        super().__init__()
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-        dim_inner = heads * dim_head
-        self.flash = flash
-        self.dropout = dropout
-        self.sage_mode = sage_mode
-        self.attention_layout = attention_layout
-
-        self.rotary_embed = rotary_embed
-
-        if sage_attention:
-            if AttendSage is None:
-                raise ImportError("sage_attention=True requires pymss.modules.bs_roformer.attend_sage")
-            self.attend = AttendSage(flash=flash, dropout=dropout)
-        else:
-            self.attend = Attend(flash=flash, dropout=dropout)
-
-        self.norm = RMSNorm(dim)
-        self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=False)
-
-        self.to_gates = nn.Linear(dim, heads)
-
-        self.to_out = nn.Sequential(
-            nn.Linear(dim_inner, dim, bias=False),
-            nn.Dropout(dropout)
-        )
-
-    def forward(self, x):
-        x = self.norm(x)
-
-        if self.attention_layout == 'bnhd':
-            q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
-
-            if exists(self.rotary_embed):
-                q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
-
-            if self.sage_mode and sageattn is not None and q.is_cuda and q.dtype in (torch.float16, torch.bfloat16):
-                out = sageattn(
-                    q, k, v,
-                    tensor_layout='NHD',
-                    is_causal=False,
-                    sm_scale=self.scale,
-                    smooth_k=False
-                )
-            elif self.flash:
-                out = F.scaled_dot_product_attention(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2),
-                    dropout_p=self.dropout if self.training else 0.
-                ).transpose(1, 2)
-            else:
-                out = self.attend(
-                    q.transpose(1, 2),
-                    k.transpose(1, 2),
-                    v.transpose(1, 2)
-                ).transpose(1, 2)
-
-            gates = self.to_gates(x)
-            out = out * gates.unsqueeze(-1).sigmoid()
-            out = out.flatten(start_dim=-2)
-            return self.to_out(out)
-
-        q, k, v = qkv_to_bhnd(self.to_qkv(x), self.heads)
-
-        if exists(self.rotary_embed):
-            q, k = rotate_qk_fast(self.rotary_embed, q, k)
-
-        if self.sage_mode and sageattn is not None and q.is_cuda and q.dtype in (torch.float16, torch.bfloat16):
-            out = sageattn(
-                q, k, v,
-                tensor_layout='HND',
-                is_causal=False,
-                sm_scale=self.scale,
-                smooth_k=False
-            )
-        elif self.flash:
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.
-            )
-        else:
-            out = self.attend(q, k, v)
-
-        gates = self.to_gates(x)
-        out = out * gates.transpose(1, 2).unsqueeze(-1).sigmoid()
-
-        out = out.transpose(1, 2).flatten(start_dim=-2)
-        return self.to_out(out)
-
-
-class LinearAttention(Module):
-    """
-    this flavor of linear attention proposed in https://arxiv.org/abs/2106.09681 by El-Nouby et al.
-    """
-
-    @beartype
-    def __init__(
-            self,
-            *,
-            dim,
-            dim_head=32,
-            heads=8,
-            scale=8,
-            flash=False,
-            dropout=0.,
-            sage_attention=False,
-    ):
-        super().__init__()
-        dim_inner = dim_head * heads
-        self.norm = RMSNorm(dim)
-
-        self.to_qkv = nn.Sequential(
-            nn.Linear(dim, dim_inner * 3, bias=False),
-            Rearrange('b n (qkv h d) -> qkv b h d n', qkv=3, h=heads)
-        )
-
-        self.temperature = nn.Parameter(torch.ones(heads, 1, 1))
-
-        if sage_attention:
-            if AttendSage is None:
-                raise ImportError("sage_attention=True requires pymss.modules.bs_roformer.attend_sage")
-            self.attend = AttendSage(
-                scale=scale,
-                dropout=dropout,
-                flash=flash
-            )
-        else:
-            self.attend = Attend(
-                scale=scale,
-                dropout=dropout,
-                flash=flash
-            )
-
-        self.to_out = nn.Sequential(
-            Rearrange('b h d n -> b n (h d)'),
-            nn.Linear(dim_inner, dim, bias=False)
-        )
-
-    def forward(
-            self,
-            x
-    ):
-        x = self.norm(x)
-
-        q, k, v = self.to_qkv(x)
-
-        q, k = map(l2norm, (q, k))
-        q = q * self.temperature.exp()
-
-        out = self.attend(q, k, v)
-
-        return self.to_out(out)
-
-class Transformer(Module):
-    def __init__(
-            self,
-            *,
-            dim,
-            depth,
-            dim_head=64,
-            heads=8,
-            attn_dropout=0.,
-            ff_dropout=0.,
-            ff_mult=4,
-            norm_output=True,
-            rotary_embed=None,
-            flash_attn=True,
-            linear_attn=False,
-            sage_attention=False,
-            sage_mode=False,
-            attention_layout='bhnd',
-    ):
-        super().__init__()
-        self.layers = ModuleList([])
-
-        for _ in range(depth):
-            if linear_attn:
-                attn = LinearAttention(
-                    dim=dim,
-                    dim_head=dim_head,
-                    heads=heads,
-                    dropout=attn_dropout,
-                    flash=flash_attn,
-                    sage_attention=sage_attention
-                )
-            else:
-                attn = Attention(
-                    dim=dim,
-                    dim_head=dim_head,
-                    heads=heads,
-                    dropout=attn_dropout,
-                    rotary_embed=rotary_embed,
-                    flash=flash_attn,
-                    sage_attention=sage_attention,
-                    sage_mode=sage_mode,
-                    attention_layout=attention_layout
-                )
-
-            self.layers.append(ModuleList([
-                attn,
-                FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)
-            ]))
-
-        self.norm = RMSNorm(dim) if norm_output else nn.Identity()
-
-    def forward(self, x):
-
-        for attn, ff in self.layers:
-            x = attn(x) + x
-            x = ff(x) + x
-
-        return self.norm(x)
-
-
-# bandsplit module
-
-
-
-class BandSplit(Module):
-    @beartype
-    def __init__(
-            self,
-            dim,
-            dim_inputs: Tuple[int, ...]
-    ):
-        super().__init__()
-        self.dim_inputs = dim_inputs
-        self._dim_offsets = dim_input_offsets(dim_inputs)
-        self._dim_groups = contiguous_dim_groups(dim_inputs)
-        self._group_cache = {}
-        self.use_grouped_forward = True
-        self.to_features = ModuleList([])
-
-        for dim_in in dim_inputs:
-            net = nn.Sequential(
-                RMSNorm(dim_in),
-                nn.Linear(dim_in, dim)
-            )
-
-            self.to_features.append(net)
-
-    def _get_group_params(self, start, end, device, dtype):
-        key = (start, end, device.type, device.index, dtype)
-        cached = self._group_cache.get(key)
-        if cached is not None:
-            return cached
-
-        norms = [self.to_features[i][0] for i in range(start, end)]
-        linears = [self.to_features[i][1] for i in range(start, end)]
-        gamma = torch.stack([norm.gamma.to(device=device, dtype=dtype) for norm in norms], dim=0)
-        weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-        bias = None
-        if linears[0].bias is not None:
-            bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
-
-        cached = (gamma, weight, bias)
-        self._group_cache[key] = cached
-        return cached
-
-    def _forward_grouped(self, x, band_limit):
-        outs = []
-        for start, end, dim_in in self._dim_groups:
-            if start >= band_limit:
-                break
-            end = min(end, band_limit)
-            offset_start = self._dim_offsets[start]
-            offset_end = self._dim_offsets[end]
-            group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in)
-            gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype)
-            group_x = F.normalize(group_x, dim=-1) * (dim_in ** 0.5) * gamma
-            outs.append(grouped_linear(group_x, weight, bias))
-
-        return torch.cat(outs, dim=-2)
-
-    def forward(self, x, band_limit=None):
-        band_limit = len(self.dim_inputs) if band_limit is None else max(1, min(int(band_limit), len(self.dim_inputs)))
-        if not self.training and self.use_grouped_forward:
-            return self._forward_grouped(x, band_limit)
-
-        x = x.split(self.dim_inputs, dim=-1)
-        to_features = self.to_features
-        x = x[:band_limit]
-        to_features = to_features[:band_limit]
-
-        outs = []
-        for split_input, to_feature in zip(x, to_features):
-            split_output = to_feature(split_input)
-            outs.append(split_output)
-
-        x = torch.stack(outs, dim=-2)
-
-        return x
+from einops import rearrange
+
+from .common import (
+    BandSplit,
+    MLP,
+    RMSNorm,
+    Transformer,
+    contiguous_dim_groups,
+    default,
+    exists,
+    grouped_linear,
+    forward_roformer_mask_core,
+    set_rmsnorm_fp32,
+)
+
+
+# HyperACE modules
 
 class Conv(nn.Module):
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):
@@ -1086,30 +468,6 @@ class SegmModel(nn.Module):
         
         return out
 
-def MLP(
-        dim_in,
-        dim_out,
-        dim_hidden=None,
-        depth=1,
-        activation=nn.Tanh
-):
-    dim_hidden = default(dim_hidden, dim_in)
-
-    net = []
-    dims = (dim_in, *((dim_hidden,) * (depth - 1)), dim_out)
-
-    for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:])):
-        is_last = ind == (len(dims) - 2)
-
-        net.append(nn.Linear(layer_dim_in, layer_dim_out))
-
-        if is_last:
-            continue
-
-        net.append(activation())
-
-    return nn.Sequential(*net)
-
 class MaskEstimator(Module):
     @beartype
     def __init__(
@@ -1171,12 +529,9 @@ class MaskEstimator(Module):
         self._group_cache[key] = cached
         return cached
 
-    def _forward_grouped_mlp(self, x, active_band_limit):
+    def _forward_grouped_mlp(self, x):
         outs = []
         for start, end, _ in self._dim_groups:
-            if start >= active_band_limit:
-                break
-            end = min(end, active_band_limit)
             group_x = x[:, :, start:end, :]
             w1, b1, w2, b2 = self._get_group_params(start, end, x.device, x.dtype)
             group_out = grouped_linear(group_x, w1, b1)
@@ -1187,11 +542,9 @@ class MaskEstimator(Module):
 
         return torch.cat(outs, dim=-1)
         
-    def forward(self, x, mode='full', active_band_limit=None):
+    def forward(self, x, mode='full'):
         if mode not in ('full', 'no_segm', 'segm_only'):
             raise ValueError("mask_mode must be one of: full, no_segm, segm_only")
-        if active_band_limit is not None and mode != 'no_segm':
-            raise ValueError("active_band_limit requires mask_mode='no_segm'")
 
         y = None
         if mode != 'no_segm':
@@ -1202,23 +555,11 @@ class MaskEstimator(Module):
         if mode == 'segm_only':
             return y
 
-        active_band_limit = None if active_band_limit is None else int(active_band_limit)
-        if active_band_limit is not None:
-            active_band_limit = max(1, min(active_band_limit, len(self.to_freqs)))
-
         if not self.training and self.use_grouped_forward and self._can_group_mlp():
-            out = self._forward_grouped_mlp(
-                x,
-                len(self.to_freqs) if active_band_limit is None else active_band_limit
-            )
-            if active_band_limit is not None and active_band_limit < len(self.dim_inputs):
-                pad_dim = sum(self.dim_inputs[active_band_limit:])
-                out = torch.cat((out, out.new_zeros(*out.shape[:-1], pad_dim)), dim=-1)
+            out = self._forward_grouped_mlp(x)
             return out if y is None else out + y
 
         x = x.unbind(dim=-2)
-        if active_band_limit is not None:
-            x = x[:active_band_limit]
 
         outs = []
 
@@ -1227,9 +568,6 @@ class MaskEstimator(Module):
             outs.append(freq_out)
 
         out = torch.cat(outs, dim=-1)
-        if active_band_limit is not None and active_band_limit < len(self.dim_inputs):
-            pad_dim = sum(self.dim_inputs[active_band_limit:])
-            out = torch.cat((out, out.new_zeros(*out.shape[:-1], pad_dim)), dim=-1)
         return out if y is None else out + y
 
 
@@ -1295,17 +633,10 @@ class BSRoformerHyperACE(Module):
         self.skip_connection = skip_connection
         self.inference_layer_skip = None
         self.inference_mask_mode = 'full'
-        self.inference_time_stride = 1
-        self.inference_transformer_band_limit = None
-        self.inference_band_adaptive_depth = None
         self.inference_time_layer_skip = None
         self.inference_freq_layer_skip = None
-        self.inference_time_attention_window = None
-        self.inference_time_attention_window_schedule = None
-        self.inference_active_band_limit = None
         self.inference_grouped_band_ops = True
         self.inference_rmsnorm_fp32 = True
-        self.inference_mask_time_stride = 1
         self._rmsnorm_fp32_state = None
 
         self.layers = ModuleList([])
@@ -1329,6 +660,7 @@ class BSRoformerHyperACE(Module):
             norm_output=False,
             sage_attention=sage_attention,
             attention_layout=attention_layout,
+            attend_sage_backend=True,
         )
 
         time_rotary_embed = RotaryEmbedding(dim=dim_head)
@@ -1423,117 +755,12 @@ class BSRoformerHyperACE(Module):
             mask_estimator.use_grouped_forward = bool(grouped_band_ops)
 
     def _forward_mask_core(self, stft_repr):
-        b, fs, full_t, complex_dim = stft_repr.shape
-
-        time_stride = self.inference_time_stride if not self.training else 1
-        time_stride = max(1, int(time_stride))
-        model_stft_repr = stft_repr
-        if time_stride > 1 and full_t > 1:
-            frame_indices = torch.arange(0, full_t, time_stride, device=stft_repr.device)
-            if frame_indices[-1] != full_t - 1:
-                frame_indices = F.pad(frame_indices, (0, 1), value=full_t - 1)
-            model_stft_repr = stft_repr.index_select(2, frame_indices)
-
-        _, _, model_t, _ = model_stft_repr.shape
-        x = model_stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
-
-        mask_mode = self.inference_mask_mode if not self.training else 'full'
-        active_band_limit = self.inference_active_band_limit if not self.training else None
-        if active_band_limit is not None and mask_mode != 'no_segm':
-            active_band_limit = None
-        if active_band_limit is not None:
-            active_band_limit = int(active_band_limit)
-            if active_band_limit <= 0 or active_band_limit >= len(self.band_split.dim_inputs):
-                active_band_limit = None
-
-        x = self.band_split(x, band_limit=active_band_limit)
-
-        layer_skip = self.inference_layer_skip if not self.training else None
-        time_layer_skip = self.inference_time_layer_skip if not self.training else None
-        freq_layer_skip = self.inference_freq_layer_skip if not self.training else None
-        time_attention_window = self.inference_time_attention_window if not self.training else None
-        active_layers = self.layers
-        if isinstance(layer_skip, str) and layer_skip.startswith('tail:'):
-            skip_count = int(layer_skip.split(':', 1)[1])
-            if skip_count > 0:
-                active_layers = self.layers[:-skip_count]
-        time_window_schedule = parse_time_attention_window_schedule(
-            self.inference_time_attention_window_schedule if not self.training else None,
-            len(active_layers)
+        return forward_roformer_mask_core(
+            self,
+            stft_repr,
+            mask_mode=self.inference_mask_mode if not self.training else 'full',
+            use_checkpoint=False,
         )
-
-        total_bands = x.shape[-2]
-        base_band_limit = normalize_band_limit(
-            self.inference_transformer_band_limit if not self.training else None,
-            total_bands
-        )
-        band_schedule = parse_band_adaptive_depth(
-            self.inference_band_adaptive_depth if not self.training else None,
-            len(active_layers),
-            total_bands
-        )
-        if base_band_limit is not None and band_schedule:
-            raise ValueError("inference.transformer_band_limit and inference.band_adaptive_depth are mutually exclusive")
-        bypass_high = None
-
-        for i, transformer_block in enumerate(active_layers):
-            time_transformer, freq_transformer = transformer_block
-
-            band_limit = scheduled_band_limit(i, total_bands, base_band_limit, band_schedule)
-            if band_limit is not None and band_limit < x.shape[-2]:
-                x_high = x[:, :, band_limit:, :]
-                bypass_high = x_high if bypass_high is None else torch.cat((x_high, bypass_high), dim=-2)
-                x = x[:, :, :band_limit, :]
-
-            b, t, f, d = x.shape
-            skip_time = should_skip_index(i, len(active_layers), time_layer_skip)
-            skip_freq = should_skip_index(i, len(active_layers), freq_layer_skip)
-
-            if not skip_time:
-                x = x.permute(0, 2, 1, 3).reshape(b * f, t, d)
-
-                layer_time_attention_window = scheduled_time_attention_window(
-                    i,
-                    time_attention_window,
-                    time_window_schedule
-                )
-                if layer_time_attention_window is not None:
-                    x = forward_in_sequence_windows(time_transformer, x, layer_time_attention_window)
-                else:
-                    x = time_transformer(x)
-
-                x = x.reshape(b, f, t, d).permute(0, 2, 1, 3)
-
-            if not skip_freq:
-                x = x.reshape(b * t, f, d)
-                x = freq_transformer(x)
-                x = x.reshape(b, t, f, d)
-
-        if bypass_high is not None:
-            x = torch.cat((x, bypass_high), dim=-2)
-
-        x = self.final_norm(x)
-
-        mask_time_stride = max(1, int(self.inference_mask_time_stride if not self.training else 1))
-        mask_x = x
-        if mask_time_stride > 1 and x.shape[1] > 1:
-            mask_frame_indices = torch.arange(0, x.shape[1], mask_time_stride, device=x.device)
-            if mask_frame_indices[-1] != x.shape[1] - 1:
-                mask_frame_indices = F.pad(mask_frame_indices, (0, 1), value=x.shape[1] - 1)
-            mask_x = x.index_select(1, mask_frame_indices)
-
-        mask = torch.stack([
-            fn(mask_x, mode=mask_mode, active_band_limit=active_band_limit)
-            for fn in self.mask_estimators
-        ], dim=1)
-        mask = mask_to_complex_shape(mask, complex_dim=2)
-        if mask.shape[-2] != full_t:
-            mb, mn, mf, mt, mc = mask.shape
-            mask = mask.permute(0, 1, 2, 4, 3).reshape(mb * mn * mf * mc, 1, mt)
-            mask = F.interpolate(mask, size=full_t, mode='linear', align_corners=True)
-            mask = mask.reshape(mb, mn, mf, mc, full_t).permute(0, 1, 2, 4, 3)
-
-        return mask
 
     def _compiled_mask_core(self, stft_repr):
         mode = self.__dict__.get('_pymss_torch_compile_mode', 'default')
