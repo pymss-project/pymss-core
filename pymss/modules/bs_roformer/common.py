@@ -68,8 +68,6 @@ REMOVED_ROFORMER_KWARGS = frozenset({
     'linear_transformer_depth',
     'use_torch_checkpoint',
     'skip_connection',
-    'sage_attention',
-    'sage_attention_mode',
     'attention_layout',
     'dim_freqs_in',
 })
