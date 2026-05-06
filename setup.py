@@ -31,10 +31,8 @@ setup(
     python_requires='>=3.7',
     install_requires=[
         "av",
-        "demucs",
         "librosa",
         "numpy",
-        "openunmix",
         "pyyaml",
         "torch",
         "tqdm",

@@ -31,13 +31,55 @@ def _select_device(device, device_ids, logger):
 
 
 def _load_state_dict(model_type, model_path, device):
-    if model_type in ['htdemucs', 'apollo']:
+    if model_type == 'htdemucs':
+        stubbed_modules = _install_demucs_pickle_stubs()
+        try:
+            state_dict = torch.load(model_path, map_location=device, weights_only=False)
+        finally:
+            _restore_modules(stubbed_modules)
+        for key in ('state', 'state_dict'):
+            if key in state_dict:
+                state_dict = state_dict[key]
+        return state_dict
+    if model_type == 'apollo':
         state_dict = torch.load(model_path, map_location=device, weights_only=False)
         for key in ('state', 'state_dict'):
             if key in state_dict:
                 state_dict = state_dict[key]
         return state_dict
     return torch.load(model_path, map_location=device, weights_only=True)
+
+
+def _install_demucs_pickle_stubs():
+    import sys
+    import types
+
+    module_names = ('demucs', 'demucs.demucs', 'demucs.hdemucs', 'demucs.htdemucs')
+    previous = {name: sys.modules.get(name) for name in module_names}
+    package = sys.modules.setdefault('demucs', types.ModuleType('demucs'))
+    package.__path__ = []
+    for module_name, class_names in {
+        'demucs': ('Demucs',),
+        'hdemucs': ('HDemucs', 'HTDemucs'),
+        'htdemucs': ('HTDemucs',),
+    }.items():
+        full_name = f'demucs.{module_name}'
+        module = sys.modules.setdefault(full_name, types.ModuleType(full_name))
+        setattr(package, module_name, module)
+        for class_name in class_names:
+            if not hasattr(module, class_name):
+                setattr(module, class_name, type(class_name, (), {'__module__': full_name}))
+    return previous
+
+
+def _restore_modules(previous):
+    import sys
+
+    for name, module in previous.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
 
 
 def _runtime_model_type(model_type, state_dict):

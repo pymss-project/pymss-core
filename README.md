@@ -68,5 +68,23 @@ separator.process_folder('path/to/input_folder')
 - debug: Whether to enable debug mode, default is False.
 - inference_params: Inference parameters including batch_size, overlap_size, chunk_size, and normalize. Default is all None (means all params are depended on the config file).
 
+### Model Compatibility
+
+Demucs support is limited to HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true`. Classic `model: demucs`, `model: hdemucs`, and non-CaC Wiener Demucs configs are not supported by this dependency-free inference path.
+
+### Hugging Face Configs
+
+Some model configs downloaded from Hugging Face or MSST-WebUI use `inference.num_overlap`. This optimized pymss path uses `inference.overlap_size` instead. If the config only has `num_overlap`, add an explicit `overlap_size` or pass it through `inference_params`; otherwise pymss falls back to 50% overlap and inference will be much slower.
+
+Recommended fast setting:
+
+```yaml
+audio:
+  chunk_size: 480000
+inference:
+  batch_size: 2
+  overlap_size: 24000  # 5% of chunk_size
+```
+
 ## Contributing
 Contributions are welcome! 
