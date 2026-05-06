@@ -3,7 +3,6 @@ from typing import NamedTuple
 
 import torch
 from torch import nn
-from rotary_embedding_torch import RotaryEmbedding
 
 from .bands import BandSplit, MaskEstimator
 from .transformer import RMSNorm, Transformer
@@ -45,6 +44,26 @@ class SpectralContext(NamedTuple):
     audio_length: int
     stft_window: torch.Tensor
     x_is_mps: bool
+
+
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim, theta=10000):
+        super().__init__()
+        freqs = 1. / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        self.freqs = nn.Parameter(freqs, requires_grad=False)
+        self.cache = {}
+
+    def get_seq_pos(self, seq_len, device, dtype, offset=0):
+        return torch.arange(seq_len, device=device, dtype=dtype) + offset
+
+    def forward(self, t, cache_key=None):
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        t = t() if callable(t) else t
+        freqs = (t.to(self.freqs.dtype)[:, None] * self.freqs[None]).repeat_interleave(2, -1)
+        if cache_key is not None:
+            self.cache[cache_key] = freqs
+        return freqs
 
 
 def default(v, d):

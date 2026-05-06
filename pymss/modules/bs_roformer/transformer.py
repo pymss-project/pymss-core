@@ -3,8 +3,6 @@ from torch import nn
 from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
-from einops import rearrange
-
 from .attend import Attend
 
 
@@ -39,7 +37,7 @@ def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
         lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=dtype, offset=0),
         cache_key=f'freqs:{seq_len}|offset:0'
     )
-    freqs = rearrange(freqs, 'n d -> 1 n 1 d').to(device=device, dtype=dtype)
+    freqs = freqs[None, :, None, :].to(device=device, dtype=dtype)
     cached = (freqs.cos(), freqs.sin())
     cache[key] = cached
     return cached

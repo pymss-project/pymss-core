@@ -7,7 +7,6 @@ from openunmix.filtering import wiener
 from torch import nn
 from torch.nn import functional as F
 from fractions import Fraction
-from einops import rearrange
 
 from demucs.transformer import CrossTransformerEncoder
 
@@ -612,18 +611,19 @@ class HTDemucs(nn.Module):
         if self.crosstransformer:
             if self.bottom_channels:
                 b, c, f, t = x.shape
-                x = rearrange(x, "b c f t-> b c (f t)")
+                x = x.reshape(b, c, f * t)
                 x = self.channel_upsampler(x)
-                x = rearrange(x, "b c (f t)-> b c f t", f=f)
+                x = x.reshape(b, x.shape[1], f, -1)
                 xt = self.channel_upsampler_t(xt)
 
             x, xt = self.crosstransformer(x, xt)
             # print("Cross Tran X {}, XT: {}".format(x.shape, xt.shape))
 
             if self.bottom_channels:
-                x = rearrange(x, "b c f t-> b c (f t)")
+                b, c, f, t = x.shape
+                x = x.reshape(b, c, f * t)
                 x = self.channel_downsampler(x)
-                x = rearrange(x, "b c (f t)-> b c f t", f=f)
+                x = x.reshape(b, x.shape[1], f, -1)
                 xt = self.channel_downsampler_t(xt)
 
         for idx, decode in enumerate(self.decoder):

@@ -4,7 +4,6 @@ from torch.nn import Module
 
 from typing import Callable, Optional
 
-from einops import rearrange, reduce, repeat
 from librosa import filters
 
 from .common import (
@@ -99,19 +98,17 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         freqs_per_band = mel_filter_bank > 0
         assert freqs_per_band.any(dim=0).all(), 'all frequencies need to be covered by all bands for now'
 
-        repeated_freq_indices = repeat(torch.arange(freqs), 'f -> b f', b=num_bands)
+        repeated_freq_indices = torch.arange(freqs).expand(num_bands, -1)
         freq_indices = repeated_freq_indices[freqs_per_band]
 
         if stereo:
-            freq_indices = repeat(freq_indices, 'f -> f s', s=2)
-            freq_indices = freq_indices * 2 + torch.arange(2)
-            freq_indices = rearrange(freq_indices, 'f s -> (f s)')
+            freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).reshape(-1)
 
         self.register_buffer('freq_indices', freq_indices, persistent=False)
         self.register_buffer('freqs_per_band', freqs_per_band, persistent=False)
 
-        num_freqs_per_band = reduce(freqs_per_band, 'b f -> b', 'sum')
-        num_bands_per_freq = reduce(freqs_per_band, 'b f -> f', 'sum')
+        num_freqs_per_band = freqs_per_band.sum(dim=1)
+        num_bands_per_freq = freqs_per_band.sum(dim=0)
 
         self.register_buffer('num_freqs_per_band', num_freqs_per_band, persistent=False)
         self.register_buffer('num_bands_per_freq', num_bands_per_freq, persistent=False)

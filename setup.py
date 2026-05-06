@@ -32,12 +32,10 @@ setup(
     install_requires=[
         "av",
         "demucs",
-        "einops",
         "librosa",
         "numpy",
         "openunmix",
         "pyyaml",
-        "rotary_embedding_torch",
         "torch",
         "tqdm",
     ],
