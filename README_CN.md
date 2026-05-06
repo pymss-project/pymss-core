@@ -57,5 +57,23 @@ separator.process_folder('path/to/input_folder')
 - logger: Logger 实例。 默认为 pymss.get_separation_logger()
 - debug: 是否启用调试模式，默认为 False。
 - inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size 和 normalize。 默认值均为 None（意味着所有参数都取决于配置文件）。
+
+### 模型兼容性
+
+Demucs 仅支持配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint。当前无外部依赖推理路径不支持 classic `model: demucs`、`model: hdemucs` 和 non-CaC Wiener Demucs 配置。
+
+### Hugging Face 配置提醒
+一些从 Hugging Face 或 MSST-WebUI 下载的模型配置使用 `inference.num_overlap`。当前优化后的 pymss 路径使用 `inference.overlap_size`。如果配置里只有 `num_overlap`，请手动添加 `overlap_size`，或通过 `inference_params` 传入；否则 pymss 会回退到 50% overlap，推理会慢很多。
+
+推荐快速设置：
+
+```yaml
+audio:
+  chunk_size: 480000
+inference:
+  batch_size: 2
+  overlap_size: 24000  # chunk_size 的 5%
+```
+
 ## 贡献
 欢迎贡献！

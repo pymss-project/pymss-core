@@ -1,19 +1,20 @@
 import torch
-from demucs.demucs import Demucs
-from demucs.hdemucs import HDemucs
-
 import math
-from openunmix.filtering import wiener
 from torch import nn
 from torch.nn import functional as F
 from fractions import Fraction
 
-from demucs.transformer import CrossTransformerEncoder
-
-from demucs.demucs import rescale_module
-from demucs.states import capture_init
-from demucs.spec import spectro, ispectro
-from demucs.hdemucs import pad1d, ScaledEmbedding, HEncLayer, MultiWrap, HDecLayer
+from .demucs_local import (
+    CrossTransformerEncoder,
+    HDecLayer,
+    HEncLayer,
+    MultiWrap,
+    ScaledEmbedding,
+    ispectro,
+    pad1d,
+    rescale_module,
+    spectro,
+)
 from ..config import to_plain
 
 
@@ -45,7 +46,6 @@ class HTDemucs(nn.Module):
     Unlike classic Demucs, there is no resampling here, and normalization is always applied.
     """
 
-    @capture_init
     def __init__(
         self,
         sources,
@@ -477,35 +477,7 @@ class HTDemucs(nn.Module):
             return self._wiener(m, z, niters)
 
     def _wiener(self, mag_out, mix_stft, niters):
-        # apply wiener filtering from OpenUnmix.
-        init = mix_stft.dtype
-        wiener_win_len = 300
-        residual = self.wiener_residual
-
-        B, S, C, Fq, T = mag_out.shape
-        mag_out = mag_out.permute(0, 4, 3, 2, 1)
-        mix_stft = torch.view_as_real(mix_stft.permute(0, 3, 2, 1))
-
-        outs = []
-        for sample in range(B):
-            pos = 0
-            out = []
-            for pos in range(0, T, wiener_win_len):
-                frame = slice(pos, pos + wiener_win_len)
-                z_out = wiener(
-                    mag_out[sample, frame],
-                    mix_stft[sample, frame],
-                    niters,
-                    residual=residual,
-                )
-                out.append(z_out.transpose(-1, -2))
-            outs.append(torch.cat(out, dim=0))
-        out = torch.view_as_complex(torch.stack(outs, 0))
-        out = out.permute(0, 4, 3, 2, 1).contiguous()
-        if residual:
-            out = out[:, :-1]
-        assert list(out.shape) == [B, S, C, Fq, T]
-        return out.to(init)
+        raise NotImplementedError('non-CaC Wiener Demucs is not supported by the dependency-free path')
 
     def valid_length(self, length: int):
         """
@@ -694,11 +666,9 @@ def get_model(args):
         # 'segment': args.model_segment or 4 * args.dset.segment,
         'segment': args.training.segment,
     }
-    klass = {
-        'demucs': Demucs,
-        'hdemucs': HDemucs,
-        'htdemucs': HTDemucs,
-    }[args.model]
+    if args.model != 'htdemucs':
+        raise ValueError(f"Only htdemucs configs are supported, got {args.model!r}")
+    klass = HTDemucs
     kw = to_plain(getattr(args, args.model))
     model = klass(**extra, **kw)
     return model
