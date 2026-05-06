@@ -13,50 +13,6 @@ from .utils import demix, get_model_from_config
 from .logger import get_separation_logger, set_log_level
 
 
-def _as_bool(value):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in ('1', 'true', 'yes', 'on')
-    return bool(value)
-
-
-def _configure_torch_compile_cache(cache_dir):
-    cache_dir = cache_dir or '.torchinductor_cache'
-    os.environ.setdefault('TORCHINDUCTOR_CACHE_DIR', cache_dir)
-    return cache_dir
-
-
-def _patch_inductor_duplicate_kernel_imports():
-    try:
-        import torch._dynamo.utils as dynamo_utils
-    except Exception:
-        return False
-
-    if getattr(dynamo_utils.import_submodule, '_pymss_inductor_patch', False):
-        return True
-
-    skip_kernel_modules = {'flex_attention', 'flex_decoding', 'mm_scaled_grouped'}
-
-    def patched_import_submodule(mod):
-        import importlib
-
-        base = os.path.dirname(mod.__file__)
-        for filename in sorted(os.listdir(base)):
-            if not filename.endswith('.py') or filename[0] == '_':
-                continue
-            name = filename[:-3]
-            if mod.__name__ == 'torch._inductor.kernel' and name in skip_kernel_modules:
-                continue
-            importlib.import_module(f'{mod.__name__}.{name}')
-
-    patched_import_submodule._pymss_inductor_patch = True
-    dynamo_utils.import_submodule = patched_import_submodule
-    return True
-
-
 def _select_device(device, device_ids, logger):
     if device not in ['cpu', 'cuda', 'mps']:
         if torch.cuda.is_available():
@@ -179,9 +135,6 @@ class MSSeparator:
                 "chunk_size": None,
                 "normalize": None,
                 "mask_mode": None,
-                "torch_compile": None,
-                "torch_compile_mode": None,
-                "torch_compile_cache_dir": None,
             }
     ):
 
@@ -267,7 +220,6 @@ class MSSeparator:
             model = torch.nn.DataParallel(model, device_ids=self.device_ids)
         model = model.to(self.device)
         model.eval()
-        model = self.maybe_compile_model(model, config)
 
         self.logger.debug(f"Loading model completed, duration: {time() - start_time:.2f} seconds")
         return model, config
@@ -275,38 +227,6 @@ class MSSeparator:
     def apply_model_inference_config(self, model, config):
         if hasattr(model, 'set_mask_mode'):
             model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
-
-    def maybe_compile_model(self, model, config):
-        compile_value = config.inference.get('torch_compile', False)
-        if not _as_bool(compile_value):
-            return model
-
-        device_type = torch.device(self.device).type
-        if device_type != 'cuda':
-            self.logger.warning("torch_compile is only enabled for CUDA inference; skipping compile")
-            return model
-
-        mode = config.inference.get('torch_compile_mode', None)
-        if isinstance(compile_value, str) and compile_value.strip().lower() not in ('1', 'true', 'yes', 'on'):
-            mode = compile_value
-        mode = mode or 'default'
-        if mode == 'reduce-overhead':
-            self.logger.warning("torch_compile_mode='reduce-overhead' uses CUDA graphs and is unstable for this model; using 'default'")
-            mode = 'default'
-
-        cache_dir = _configure_torch_compile_cache(config.inference.get('torch_compile_cache_dir', '.torchinductor_cache'))
-        try:
-            import torch._inductor.config as inductor_config
-            inductor_config.triton.cudagraphs = False
-            inductor_config.triton.cudagraph_trees = False
-        except Exception:
-            pass
-
-        _patch_inductor_duplicate_kernel_imports()
-        torch.set_float32_matmul_precision('high')
-
-        self.logger.info(f"Enabling torch.compile: mode={mode}, cache_dir={cache_dir}")
-        return torch.compile(model, mode=mode, fullgraph=False)
     
     def update_inference_params(self, config, params):
         for key, value in {
@@ -315,14 +235,9 @@ class MSSeparator:
             'chunk_size': 'audio',
             'normalize': 'inference',
             'mask_mode': 'inference',
-            'torch_compile': 'inference',
-            'torch_compile_mode': 'inference',
-            'torch_compile_cache_dir': 'inference',
         }.items():
             if params.get(key) is not None:
-                if key in ('normalize', 'torch_compile'):
-                    config[value][key] = params[key]
-                elif key in ('mask_mode', 'torch_compile_mode', 'torch_compile_cache_dir'):
+                if key in ('normalize', 'mask_mode'):
                     config[value][key] = params[key]
                 else:
                     config[value][key] = int(params[key])
