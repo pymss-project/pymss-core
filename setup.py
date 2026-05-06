@@ -31,7 +31,6 @@ setup(
     python_requires='>=3.7',
     install_requires=[
         "av",
-        "beartype",
         "demucs",
         "einops",
         "librosa",
