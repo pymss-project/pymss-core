@@ -8,15 +8,20 @@ from einops import rearrange
 from .attend import Attend
 
 
-def rotate_half(x):
-    out = torch.empty_like(x)
-    out[..., ::2] = -x[..., 1::2]
-    out[..., 1::2] = x[..., ::2]
-    return out
-
-
 def apply_rotary_emb_fast(cos, sin, t):
-    return (t * cos) + (rotate_half(t) * sin)
+    if t.is_cuda and t.dtype == torch.float16:
+        rot = torch.complex(cos[..., ::2], sin[..., ::2])
+        rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot
+        return torch.view_as_real(rotated).reshape_as(t)
+
+    cos = cos[..., ::2]
+    sin = sin[..., ::2]
+    t_even = t[..., ::2]
+    t_odd = t[..., 1::2]
+    out = torch.empty_like(t)
+    out[..., ::2] = t_even * cos - t_odd * sin
+    out[..., 1::2] = t_odd * cos + t_even * sin
+    return out
 
 
 def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
