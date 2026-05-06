@@ -1,6 +1,8 @@
 import gc
 import os
 import logging
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import torch
 import numpy as np
 import platform
@@ -243,54 +245,110 @@ class MSSeparator:
                     config[value][key] = int(params[key])
         return config
 
+    def _save_output(self, instr, audio, sr, file_name, save_dir):
+        output_format = self.output_format.lower()
+        os.makedirs(save_dir, exist_ok=True)
+        self.save_audio(audio, sr, f"{file_name}_{instr}", save_dir)
+        self.logger.debug(f"Saved {instr} for {file_name}_{instr}.{output_format} in {save_dir}")
+
+    def _wait_save_futures(self, path, futures):
+        save_ok = True
+        for future in futures:
+            try:
+                future.result()
+            except Exception as e:
+                save_ok = False
+                self.logger.warning(f'Cannot save track: {path}, error: {str(e)}')
+        return save_ok
+
     def process_folder(self, input_folder):
         if not os.path.isdir(input_folder):
             raise ValueError(f"Input folder '{input_folder}' does not exist.")
 
         all_mixtures_path = [os.path.join(input_folder, f) for f in os.listdir(input_folder)]
+        if not all_mixtures_path:
+            return []
 
         sample_rate = 44100
         if 'sample_rate' in self.config.audio:
             sample_rate = self.config.audio['sample_rate']
         self.logger.info(f"Input_folder: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
 
-        if not self.debug:
-            all_mixtures_path = tqdm(all_mixtures_path, desc="Total progress")
-
         success_files = []
-        for path in all_mixtures_path:
-            if not self.debug:
-                all_mixtures_path.set_postfix({'track': os.path.basename(path)})
-            try:
-                mix, sr = load_audio(path, sr=sample_rate, mono=False)
-            except Exception as e:
-                self.logger.warning(f'Cannot process track: {path}, error: {str(e)}')
-                continue
+        pending_saves = deque()
+        max_pending_saves = 12
 
-            self.logger.debug(f"Starting separation process for audio_file: {path}")
-            results = self.separate(mix)
-            self.logger.debug(f"Separation audio_file: {path} completed. Starting to save results.")
+        progress = tqdm(all_mixtures_path, desc="Total progress") if not self.debug else None
+        try:
+            with (
+                ThreadPoolExecutor(max_workers=1, thread_name_prefix="pymss-load") as load_executor,
+                ThreadPoolExecutor(max_workers=2, thread_name_prefix="pymss-save") as save_executor,
+            ):
+                load_future = load_executor.submit(load_audio, all_mixtures_path[0], sr=sample_rate, mono=False)
 
-            file_name, _ = os.path.splitext(os.path.basename(path))
+                for index, path in enumerate(all_mixtures_path):
+                    if progress is not None:
+                        progress.set_postfix({'track': os.path.basename(path)})
 
-            for instr in results.keys():
-                save_dir = self.store_dirs.get(instr, "")
-                if save_dir and type(save_dir) == str:
-                    os.makedirs(save_dir, exist_ok=True)
-                    self.save_audio(results[instr], sr, f"{file_name}_{instr}", save_dir)
-                    self.logger.debug(f"Saved {instr} for {file_name}_{instr}.{self.output_format} in {save_dir}")
-                elif save_dir and type(save_dir) == list:
-                    for dir in save_dir:
-                        os.makedirs(dir, exist_ok=True)
-                        self.save_audio(results[instr], sr, f"{file_name}_{instr}", dir)
-                        self.logger.debug(f"Saved {instr} for {file_name}_{instr}.{self.output_format} in {dir}")
+                    try:
+                        mix, sr = load_future.result()
+                    except Exception as e:
+                        self.logger.warning(f'Cannot process track: {path}, error: {str(e)}')
+                        if index + 1 < len(all_mixtures_path):
+                            load_future = load_executor.submit(load_audio, all_mixtures_path[index + 1], sr=sample_rate, mono=False)
+                        continue
 
-            success_files.append(os.path.basename(path))
-            del mix, results
-            gc.collect()
+                    if index + 1 < len(all_mixtures_path):
+                        load_future = load_executor.submit(load_audio, all_mixtures_path[index + 1], sr=sample_rate, mono=False)
+                    else:
+                        load_future = None
+
+                    self.logger.debug(f"Starting separation process for audio_file: {path}")
+                    try:
+                        results = self.separate(mix, pbar=False)
+                    except Exception as e:
+                        self.logger.warning(f'Cannot separate track: {path}, error: {str(e)}')
+                        del mix
+                        continue
+
+                    self.logger.debug(f"Separation audio_file: {path} completed. Starting to save results.")
+                    file_name, _ = os.path.splitext(os.path.basename(path))
+                    save_futures = []
+                    for instr, audio in results.items():
+                        save_dir = self.store_dirs.get(instr, "")
+                        if not save_dir:
+                            continue
+                        dirs = save_dir if isinstance(save_dir, list) else [save_dir]
+                        for dir in dirs:
+                            save_futures.append(
+                                save_executor.submit(self._save_output, instr, audio, sr, file_name, dir)
+                            )
+                    pending_saves.append((path, save_futures))
+
+                    while len(pending_saves) > max_pending_saves:
+                        saved_path, saved_futures = pending_saves.popleft()
+                        if self._wait_save_futures(saved_path, saved_futures):
+                            success_files.append(os.path.basename(saved_path))
+                            if progress is not None:
+                                progress.update(1)
+
+                    del mix, results
+
+                while pending_saves:
+                    saved_path, saved_futures = pending_saves.popleft()
+                    if self._wait_save_futures(saved_path, saved_futures):
+                        success_files.append(os.path.basename(saved_path))
+                        if progress is not None:
+                            progress.update(1)
+        finally:
+            if progress is not None:
+                progress.close()
         return success_files
 
-    def separate(self, mix):
+    def separate(self, mix, pbar=True):
+        return self._separate(mix, pbar=pbar)
+
+    def _separate(self, mix, pbar):
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
         target = self.config.training.target_instrument
         instruments = [target] if target is not None else self.config.training.instruments.copy()
@@ -300,7 +358,7 @@ class MSSeparator:
         mix_orig = mix.copy()
         mix, norm_stats = _normalize_mix(mix, self.config.inference.get('normalize', False), self.logger)
         full_result = [
-            demix(self.config, self.model, track, self.device, pbar=True, model_type=self.model_type)
+            demix(self.config, self.model, track, self.device, pbar=pbar, model_type=self.model_type)
             for track in _tta_variants(mix, self.use_tta, self.logger)
         ]
 
