@@ -1,10 +1,48 @@
 import numpy as np
 import av
-import librosa
+
+
+def _frame_to_audio(frame, mono):
+    audio = frame.to_ndarray()
+    if audio.ndim == 1:
+        audio = audio[None, :]
+    if mono and audio.shape[0] > 1:
+        audio = audio.mean(axis=0, keepdims=True)
+    return audio.astype(np.float32, copy=False)
 
 
 def load_audio(path, sr=None, mono=False, offset=0.0, duration=None):
-    return librosa.load(path, sr=sr, mono=mono, offset=offset, duration=duration)
+    chunks = []
+    with av.open(path) as container:
+        stream = container.streams.audio[0]
+        out_rate = int(sr or stream.rate)
+        resampler = None
+        stop_samples = None if duration is None else int(round((offset + duration) * out_rate))
+        decoded = 0
+
+        for frame in container.decode(stream):
+            if resampler is None:
+                resampler = av.AudioResampler(format="fltp", layout=frame.layout.name, rate=out_rate)
+
+            for out in resampler.resample(frame):
+                audio = _frame_to_audio(out, mono)
+                chunks.append(audio)
+                decoded += audio.shape[-1]
+            if stop_samples is not None and decoded >= stop_samples:
+                break
+
+        if resampler is not None:
+            for out in resampler.resample(None):
+                chunks.append(_frame_to_audio(out, mono))
+
+    start = int(round(offset * out_rate))
+    stop = None if duration is None else start + int(round(duration * out_rate))
+    channels = 1 if mono else 0
+    audio = np.concatenate(chunks, axis=-1) if chunks else np.empty((channels, 0), dtype=np.float32)
+    audio = np.ascontiguousarray(audio[..., start:stop])
+    if mono or audio.shape[0] == 1:
+        audio = audio[0]
+    return audio, out_rate
 
 
 def _bitrate_to_int(value):
