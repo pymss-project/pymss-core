@@ -190,6 +190,13 @@ class RoformerRuntimeMixin:
             mask_estimator.warm_group_cache(tensor.device, tensor.dtype)
 
     def _estimate_masks(self, x):
+        use_packed = getattr(self, "_packed_mask_estimators_available", None)
+        if use_packed is not False:
+            packed = MaskEstimator.forward_packed_estimators(self.mask_estimators, x)
+            if packed is not None:
+                self._packed_mask_estimators_available = True
+                return packed
+            self._packed_mask_estimators_available = False
         return torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
 
     def _mask_stft_repr(self, stft_repr, context):
