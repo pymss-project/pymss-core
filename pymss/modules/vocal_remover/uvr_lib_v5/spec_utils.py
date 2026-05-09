@@ -4,6 +4,7 @@ import traceback
 
 import librosa
 import numpy as np
+import torch
 
 
 ARM = "arm"
@@ -168,7 +169,7 @@ def combine_spectrograms(specs, mp, is_v51_model=False):
     return np.asfortranarray(spec_c)
 
 
-def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False):
+def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False, torch_device=None):
     if wave.ndim == 1:
         wave = np.asfortranarray([wave, wave])
 
@@ -189,16 +190,50 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False):
         left = np.asfortranarray(wave[0])
         right = np.asfortranarray(wave[1])
 
-    spec = np.asfortranarray([
-        librosa.stft(left, n_fft=n_fft, hop_length=hop_length),
-        librosa.stft(right, n_fft=n_fft, hop_length=hop_length),
-    ])
+    spec = _torch_stft(np.asfortranarray([left, right]), n_fft, hop_length, torch_device)
+    if spec is None:
+        spec = np.asfortranarray([
+            librosa.stft(left, n_fft=n_fft, hop_length=hop_length),
+            librosa.stft(right, n_fft=n_fft, hop_length=hop_length),
+        ])
     return convert_channels(spec, mp, band) if is_v51_model else spec
 
 
-def spectrogram_to_wave(spec, hop_length=1024, mp=None, band=0, is_v51_model=True):
-    left = librosa.istft(np.asfortranarray(spec[0]), hop_length=hop_length, dtype=np.float64)
-    right = librosa.istft(np.asfortranarray(spec[1]), hop_length=hop_length, dtype=np.float64)
+def _torch_stft(wave, n_fft, hop_length, device):
+    if device is None or torch.device(device).type != "cuda":
+        return None
+    wave_np = np.ascontiguousarray(wave)
+    wave_t = torch.from_numpy(wave_np).to(device)
+    window = torch.hann_window(n_fft, dtype=wave_t.dtype, device=device)
+    spec = torch.stft(
+        wave_t,
+        n_fft=n_fft,
+        hop_length=hop_length,
+        window=window,
+        center=True,
+        pad_mode="constant",
+        return_complex=True,
+    )
+    return np.asfortranarray(spec.cpu().numpy())
+
+
+def _torch_istft(spec, hop_length, device):
+    if device is None or torch.device(device).type != "cuda":
+        return None
+    n_fft = (spec.shape[1] - 1) * 2
+    spec_t = torch.from_numpy(np.ascontiguousarray(spec)).to(device)
+    window = torch.hann_window(n_fft, dtype=torch.float64, device=device)
+    wave = torch.istft(spec_t, n_fft=n_fft, hop_length=hop_length, window=window, center=True, return_complex=False)
+    return np.asfortranarray(wave.cpu().numpy())
+
+
+def spectrogram_to_wave(spec, hop_length=1024, mp=None, band=0, is_v51_model=True, torch_device=None):
+    wave = _torch_istft(spec, hop_length, torch_device)
+    if wave is None:
+        left = librosa.istft(np.asfortranarray(spec[0]), hop_length=hop_length, dtype=np.float64)
+        right = librosa.istft(np.asfortranarray(spec[1]), hop_length=hop_length, dtype=np.float64)
+    else:
+        left, right = wave[0], wave[1]
 
     if is_v51_model:
         mode = mp.param["band"][band].get("convert_channels")
@@ -219,7 +254,7 @@ def spectrogram_to_wave(spec, hop_length=1024, mp=None, band=0, is_v51_model=Tru
     return np.asfortranarray([left, right])
 
 
-def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v51_model=False):
+def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v51_model=False, torch_device=None):
     spec_m = np.where(np.isnan(spec_m), 0, spec_m)
     if extra_bins_h is not None:
         extra_bins_h = int(extra_bins_h)
@@ -243,14 +278,14 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
                 spec_s[:, max_bin - extra_bins_h:max_bin, :] = extra_bins[:, :extra_bins_h, :]
             if bp["hpf_start"] > 0:
                 spec_s = spec_s * get_hp_filter_mask(spec_s.shape[1], bp["hpf_start"], bp["hpf_stop"] - 1) if is_v51_model else fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
-            band_wave = spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model)
+            band_wave = spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)
             wave = band_wave if wave is None else np.add(wave, band_wave)
         else:
             sr = mp.param["band"][d + 1]["sr"]
             if d == 1:
                 spec_s = spec_s * get_lp_filter_mask(spec_s.shape[1], bp["lpf_start"], bp["lpf_stop"]) if is_v51_model else fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
                 wave = resample_audio(
-                    spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model),
+                    spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device),
                     orig_sr=bp["sr"],
                     target_sr=sr,
                     res_type=wav_resolution,
@@ -262,7 +297,7 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
                 else:
                     spec_s = fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
                     spec_s = fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
-                wave2 = np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model))
+                wave2 = np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device))
                 wave = resample_audio(wave2, orig_sr=bp["sr"], target_sr=sr, res_type=wav_resolution)
 
     return wave

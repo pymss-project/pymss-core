@@ -271,7 +271,7 @@ class MSSeparator:
                 "training": {
                     "instruments": instruments,
                     "target_instrument": None,
-                    "use_amp": False,
+                    "use_amp": True,
                 },
                 "audio": {
                     "sample_rate": 44100,
@@ -284,6 +284,7 @@ class MSSeparator:
                     "enable_post_process": False,
                     "post_process_threshold": 0.2,
                     "high_end_process": False,
+                    "use_amp": True,
                     "normalize": False,
                 },
             })
@@ -348,9 +349,10 @@ class MSSeparator:
             'enable_post_process': 'inference',
             'post_process_threshold': 'inference',
             'high_end_process': 'inference',
+            'use_amp': 'inference',
         }.items():
             if params.get(key) is not None:
-                if key in ('normalize', 'mask_mode', 'enable_tta', 'enable_post_process', 'high_end_process'):
+                if key in ('normalize', 'mask_mode', 'enable_tta', 'enable_post_process', 'high_end_process', 'use_amp'):
                     config[value][key] = params[key]
                 elif key == 'post_process_threshold':
                     config[value][key] = float(params[key])

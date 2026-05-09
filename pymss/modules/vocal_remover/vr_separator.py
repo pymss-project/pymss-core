@@ -35,6 +35,7 @@ class VRSeparator(CommonSeparator):
         self.batch_size = int(arch_config.get("batch_size", 2))
         self.window_size = int(arch_config.get("window_size", 512))
         self.high_end_process = bool(arch_config.get("high_end_process", False))
+        self.use_amp = bool(arch_config.get("use_amp", True))
         self.input_high_end_h = None
         self.input_high_end = None
         self.aggression = float(int(arch_config.get("aggression", 5)) / 100)
@@ -123,10 +124,26 @@ class VRSeparator(CommonSeparator):
             wav_resolution = "polyphase" if self.torch_device_mps is not None else bp["res_type"]
             if d == bands_n:
                 x_wave[d] = self._resample_wave(base_wave, sample_rate, bp["sr"], wav_resolution)
-                x_spec_s[d] = spec_utils.wave_to_spectrogram(x_wave[d], bp["hl"], bp["n_fft"], self.model_params, band=d, is_v51_model=self.is_vr_51_model)
+                x_spec_s[d] = spec_utils.wave_to_spectrogram(
+                    x_wave[d],
+                    bp["hl"],
+                    bp["n_fft"],
+                    self.model_params,
+                    band=d,
+                    is_v51_model=self.is_vr_51_model,
+                    torch_device=self.torch_device,
+                )
             else:
                 x_wave[d] = spec_utils.resample_audio(x_wave[d + 1], orig_sr=self.model_params.param["band"][d + 1]["sr"], target_sr=bp["sr"], res_type=wav_resolution)
-                x_spec_s[d] = spec_utils.wave_to_spectrogram(x_wave[d], bp["hl"], bp["n_fft"], self.model_params, band=d, is_v51_model=self.is_vr_51_model)
+                x_spec_s[d] = spec_utils.wave_to_spectrogram(
+                    x_wave[d],
+                    bp["hl"],
+                    bp["n_fft"],
+                    self.model_params,
+                    band=d,
+                    is_v51_model=self.is_vr_51_model,
+                    torch_device=self.torch_device,
+                )
 
             if d == bands_n and self.high_end_process:
                 self.input_high_end_h = (bp["n_fft"] // 2 - bp["crop_stop"]) + (self.model_params.param["pre_filter_stop"] - self.model_params.param["pre_filter_start"])
@@ -162,30 +179,71 @@ class VRSeparator(CommonSeparator):
                 raise ValueError("Window size error: no VR patches generated")
 
             x_dataset = np.asarray(x_dataset)
-            mask = []
-            process_batches = tqdm(range(0, patches, self.batch_size), leave=False, desc="Processing VR batches")
+            mask = None
+            write_pos = 0
+            batch_starts = range(0, patches, self.batch_size)
+            process_batches = tqdm(batch_starts, leave=False, desc="Processing VR batches") if self.debug else batch_starts
             with torch.inference_mode():
                 for i in process_batches:
                     x_batch = torch.from_numpy(x_dataset[i:i + self.batch_size]).to(device)
-                    pred = self.model_run.predict_mask(x_batch)
+                    use_amp = self.use_amp and torch.device(device).type == "cuda"
+                    with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                        pred = self.model_run.predict_mask(x_batch)
                     if not pred.size()[3] > 0:
                         raise ValueError("Window size error: h1_shape[3] must be greater than h2_shape[3]")
-                    pred = pred.detach().cpu().numpy()
-                    mask.append(np.concatenate(pred, axis=2))
+                    pred = pred.detach().float()
+                    pred = pred.permute(1, 2, 0, 3).reshape(pred.size(1), pred.size(2), -1)
+                    if mask is None:
+                        mask = torch.empty(
+                            (pred.size(0), pred.size(1), patches * pred.size(2)),
+                            dtype=pred.dtype,
+                            device=pred.device,
+                        )
+                    mask[:, :, write_pos:write_pos + pred.size(2)] = pred
+                    write_pos += pred.size(2)
                     if self.callback:
                         self.callback["progress"] = min(0.99 * (i / patches), 0.99)
-            return np.concatenate(mask, axis=2)
+            return mask[:, :, :write_pos]
 
-        def postprocess(mask, x_mag, x_phase):
+        def adjust_aggr_torch(mask, is_non_accom_stem):
+            aggr = aggressiveness["value"] * 2
+            if aggr == 0:
+                return mask
+            mask = mask.clone()
+            if is_non_accom_stem:
+                aggr = 1 - aggr
+            if aggr > 10 or aggr < -10:
+                print(f"Warning: Extreme aggressiveness values detected: {aggr}")
+
+            aggr = [aggr, aggr]
+            correction = aggressiveness["aggr_correction"]
+            if correction is not None:
+                aggr[0] += correction["left"]
+                aggr[1] += correction["right"]
+
+            split_bin = aggressiveness["split_bin"]
+            for ch in range(2):
+                mask[ch, :split_bin] = torch.pow(mask[ch, :split_bin], 1 + aggr[ch] / 3)
+                mask[ch, split_bin:] = torch.pow(mask[ch, split_bin:], 1 + aggr[ch])
+            return mask
+
+        def postprocess(mask, x_spec):
             is_non_accom_stem = self.primary_stem_name in CommonSeparator.NON_ACCOM_STEMS
-            mask = spec_utils.adjust_aggr(mask, is_non_accom_stem, aggressiveness)
             if self.enable_post_process:
+                mask = mask.cpu().numpy()
+                mask = spec_utils.adjust_aggr(mask, is_non_accom_stem, aggressiveness)
                 mask = spec_utils.merge_artifacts(mask, thres=self.post_process_threshold)
-            y_spec = mask * x_mag * np.exp(1.0j * x_phase)
-            v_spec = (1 - mask) * x_mag * np.exp(1.0j * x_phase)
+                y_spec = mask * x_spec
+                v_spec = (1 - mask) * x_spec
+                return y_spec, v_spec
+
+            mask = adjust_aggr_torch(mask, is_non_accom_stem)
+            x_spec_t = torch.from_numpy(x_spec).to(device)
+            y_spec = (mask * x_spec_t).cpu().numpy()
+            v_spec = ((1 - mask) * x_spec_t).cpu().numpy()
             return y_spec, v_spec
 
-        x_mag, x_phase = spec_utils.preprocess(x_spec)
+        x_mag = np.abs(x_spec)
         n_frame = x_mag.shape[2]
         pad_l, pad_r, roi_size = spec_utils.make_padding(n_frame, self.window_size, self.model_run.offset)
         x_mag_pad = np.pad(x_mag, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
@@ -206,10 +264,17 @@ class VRSeparator(CommonSeparator):
         else:
             mask = mask[:, :, :n_frame]
 
-        return postprocess(mask, x_mag, x_phase)
+        return postprocess(mask, x_spec)
 
     def spec_to_wav(self, spec):
         if self.high_end_process and isinstance(self.input_high_end, np.ndarray) and self.input_high_end_h:
             input_high_end = spec_utils.mirroring("mirroring", spec, self.input_high_end, self.model_params)
-            return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, self.input_high_end_h, input_high_end, is_v51_model=self.is_vr_51_model)
-        return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, is_v51_model=self.is_vr_51_model)
+            return spec_utils.cmb_spectrogram_to_wave(
+                spec,
+                self.model_params,
+                self.input_high_end_h,
+                input_high_end,
+                is_v51_model=self.is_vr_51_model,
+                torch_device=self.torch_device,
+            )
+        return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, is_v51_model=self.is_vr_51_model, torch_device=self.torch_device)
