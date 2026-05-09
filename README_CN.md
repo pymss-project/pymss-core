@@ -45,7 +45,8 @@ separator.process_folder('path/to/input_folder')
     'bandit',
     'bandit_v2',
     'scnet',
-    'apollo']
+    'apollo',
+    'vr']
 - model_path: 模型文件路径。
 - config_path: 配置文件路径。
 - device: 设备类型，默认为 'auto'。 必须是以下之一 ['auto', 'cuda', 'mps', 'cpu']
@@ -56,11 +57,32 @@ separator.process_folder('path/to/input_folder')
 - audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth 和 mp3_bit_rate。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}。
 - logger: Logger 实例。 默认为 pymss.get_separation_logger()
 - debug: 是否启用调试模式，默认为 False。
-- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size 和 normalize。 默认值均为 None（意味着所有参数都取决于配置文件）。
+- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size 和 normalize。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。
 
 ### 模型兼容性
 
 Demucs 仅支持配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint。当前无外部依赖推理路径不支持 classic `model: demucs`、`model: hdemucs` 和 non-CaC Wiener Demucs 配置。
+
+UVR VR 可通过 `model_type='vr'` 使用，支持已适配的 UVR/VR 系列 `.pth` 权重。输出 stem 名称来自内置 VR 模型列表，例如 `Vocals`、`Instrumental`、`No Echo` 或 `Echo`。
+
+```python
+separator = MSSeparator(
+    model_type='vr',
+    model_path='pretrain/VR_Models/1_HP-UVR.pth',
+    device='cuda',
+    output_format='wav',
+    store_dirs={
+        "Vocals": "./output/vocals",
+        "Instrumental": "./output/instrumental",
+    },
+    inference_params={
+        "batch_size": 2,
+        "window_size": 512,
+        "aggression": 5,
+    },
+)
+separator.process_folder('path/to/input_folder')
+```
 
 ### Hugging Face 配置提醒
 一些从 Hugging Face 或 MSST-WebUI 下载的模型配置使用 `inference.num_overlap`。当前优化后的 pymss 路径使用 `inference.overlap_size`。如果配置里只有 `num_overlap`，请手动添加 `overlap_size`，或通过 `inference_params` 传入；否则 pymss 会回退到 50% overlap，推理会慢很多。

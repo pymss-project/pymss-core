@@ -40,6 +40,8 @@ def get_model_from_config(model_type, config_path):
     elif model_type == 'apollo':
         from .modules.look2hear.apollo import Apollo
         return Apollo(**config.model), config
+    elif model_type == 'vr':
+        raise ValueError("VR models are loaded directly by MSSeparator and do not use YAML config loading")
     raise ValueError(f"Model type {model_type} not supported")
 
 def _getWindowingArray(window_size, fade_size):
