@@ -211,12 +211,18 @@ def _run_complete_chunks(model, mix, windows, result, counter, chunk_size, step,
     if n_chunks == 0:
         return 0
 
-    inputs = mix.unfold(-1, chunk_size, step).permute(1, 0, 2)[:n_chunks]
-    fold_windows = torch.stack(windows[:n_chunks], dim=0).to(device=result.device, dtype=torch.float32)
+    n_complete = n_chunks
+    if len(windows) > n_chunks:
+        n_complete -= n_complete % batch_size
+    if n_complete == 0:
+        return 0
+
+    inputs = mix.unfold(-1, chunk_size, step).permute(1, 0, 2)[:n_complete]
+    fold_windows = torch.stack(windows[:n_complete], dim=0).to(device=result.device, dtype=torch.float32)
     _fold_windows(counter, fold_windows, step)
 
-    for batch_start in range(0, n_chunks, batch_size):
-        batch_end = min(batch_start + batch_size, n_chunks)
+    for batch_start in range(0, n_complete, batch_size):
+        batch_end = min(batch_start + batch_size, n_complete)
         chunks = _run_model_chunk(model, inputs[batch_start:batch_end].contiguous(), chunk_size)
         _fold_chunk_batch(
             result,
@@ -228,7 +234,7 @@ def _run_complete_chunks(model, mix, windows, result, counter, chunk_size, step,
         if progress_bar:
             progress_bar.update(step * (batch_end - batch_start))
 
-    return n_chunks
+    return n_complete
 
 
 def _run_tail_chunks(model, mix, starts, windows, result, counter, chunk_size, step, batch_size, first_chunk, progress_bar):
