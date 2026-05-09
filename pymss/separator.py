@@ -13,6 +13,7 @@ from tqdm import tqdm
 from .audio_io import load_audio, save_audio
 from .utils import demix, get_model_from_config
 from .logger import get_separation_logger, set_log_level
+from .config import AttrDict
 
 
 def _select_device(device, device_ids, logger):
@@ -31,6 +32,8 @@ def _select_device(device, device_ids, logger):
 
 
 def _load_state_dict(model_type, model_path, device):
+    if model_type == 'vr':
+        return None
     if model_type == 'htdemucs':
         stubbed_modules = _install_demucs_pickle_stubs()
         try:
@@ -89,6 +92,8 @@ def _runtime_model_type(model_type, state_dict):
 
 
 def _model_is_stereo(model_type, config):
+    if model_type == 'vr':
+        return True
     return config.model.get("stereo", True) if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'] else True
 
 
@@ -159,6 +164,16 @@ def _build_results(waveforms, instruments, mix_orig, config, norm_stats, logger)
     return results
 
 
+def _get_store_dir(store_dirs, instr):
+    if instr in store_dirs:
+        return store_dirs[instr]
+    instr_lower = instr.lower()
+    for key, value in store_dirs.items():
+        if key.lower() == instr_lower:
+            return value
+    return ""
+
+
 class MSSeparator:
     def __init__(
             self,
@@ -218,8 +233,9 @@ class MSSeparator:
         if type(self.store_dirs) == str:
             self.store_dirs = {k: self.store_dirs for k in self.config.training.instruments}
 
+        valid_instruments = {instr.lower() for instr in self.config.training.instruments}
         for key in list(self.store_dirs.keys()):
-            if key not in self.config.training.instruments and key.lower() not in self.config.training.instruments:
+            if key not in self.config.training.instruments and key.lower() not in valid_instruments:
                 self.store_dirs.pop(key)
                 self.logger.warning(f"Invalid instrument key: {key}, removing from store_dirs")
                 self.logger.warning(f"Valid instrument keys: {self.config.training.instruments}")
@@ -245,6 +261,53 @@ class MSSeparator:
 
     def load_model(self):
         start_time = time()
+        if self.model_type == 'vr':
+            from .modules.vocal_remover.vr_models import get_vr_model_metadata
+            from .modules.vocal_remover import VRSeparator
+
+            model_data = get_vr_model_metadata(self.model_path)
+            instruments = [model_data["primary_stem"], model_data["secondary_stem"]]
+            config = AttrDict({
+                "training": {
+                    "instruments": instruments,
+                    "target_instrument": None,
+                    "use_amp": False,
+                },
+                "audio": {
+                    "sample_rate": 44100,
+                },
+                "inference": {
+                    "batch_size": 2,
+                    "window_size": 512,
+                    "aggression": 5,
+                    "enable_tta": self.use_tta,
+                    "enable_post_process": False,
+                    "post_process_threshold": 0.2,
+                    "high_end_process": False,
+                    "normalize": False,
+                },
+            })
+            self.update_inference_params(config, self.inference_params)
+            common_config = {
+                "logger": self.logger,
+                "debug": self.debug,
+                "torch_device": self.device,
+                "torch_device_cpu": torch.device("cpu"),
+                "torch_device_mps": torch.device("mps") if torch.device(self.device).type == "mps" else None,
+                "model_name": os.path.basename(self.model_path),
+                "model_path": self.model_path,
+                "model_data": model_data,
+                "sample_rate": 44100,
+                "callback": None,
+            }
+            model = VRSeparator(common_config, config.inference)
+            model.load_model()
+            self.logger.info(f"Separator params: model_type: vr, model_path: {self.model_path}, output_folder: {self.store_dirs}")
+            self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
+            self.logger.info(f"Model params: instruments: {config.training.instruments}, target_instrument: None")
+            self.logger.debug(f"Loading VR model completed, duration: {time() - start_time:.2f} seconds")
+            return model, config
+
         state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
         model_type = _runtime_model_type(self.model_type, state_dict)
 
@@ -279,10 +342,22 @@ class MSSeparator:
             'chunk_size': 'audio',
             'normalize': 'inference',
             'mask_mode': 'inference',
+            'window_size': 'inference',
+            'aggression': 'inference',
+            'enable_tta': 'inference',
+            'enable_post_process': 'inference',
+            'post_process_threshold': 'inference',
+            'high_end_process': 'inference',
         }.items():
             if params.get(key) is not None:
-                if key in ('normalize', 'mask_mode'):
+                if key in ('normalize', 'mask_mode', 'enable_tta', 'enable_post_process', 'high_end_process'):
                     config[value][key] = params[key]
+                elif key == 'post_process_threshold':
+                    config[value][key] = float(params[key])
+                elif key == 'aggression':
+                    config[value][key] = int(params[key])
+                elif key == 'window_size':
+                    config[value][key] = int(params[key])
                 else:
                     config[value][key] = int(params[key])
         return config
@@ -357,7 +432,7 @@ class MSSeparator:
                     file_name, _ = os.path.splitext(os.path.basename(path))
                     save_futures = []
                     for instr, audio in results.items():
-                        save_dir = self.store_dirs.get(instr, "")
+                        save_dir = _get_store_dir(self.store_dirs, instr)
                         if not save_dir:
                             continue
                         dirs = save_dir if isinstance(save_dir, list) else [save_dir]
@@ -392,6 +467,9 @@ class MSSeparator:
 
     def _separate(self, mix, pbar):
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
+        if self.model_type == 'vr':
+            return self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
+
         target = self.config.training.target_instrument
         instruments = [target] if target is not None else self.config.training.instruments.copy()
         if target is not None:

@@ -29,6 +29,9 @@ setup(
     ],
     keywords='music source separation, audio separation, music processing, machine learning, audio',
     python_requires='>=3.7',
+    package_data={
+        "pymss": ["resources/vr_modelparams/*.json"],
+    },
     install_requires=[
         "av",
         "librosa",

@@ -1,0 +1,215 @@
+import math
+import os
+from pathlib import Path
+
+import numpy as np
+import torch
+from tqdm import tqdm
+
+from .common_separator import CommonSeparator
+from .uvr_lib_v5 import spec_utils
+from .uvr_lib_v5.vr_network import nets, nets_new
+from .uvr_lib_v5.vr_network.model_param_init import ModelParameters
+
+
+VR_PARAMS_DIR = Path(__file__).resolve().parents[2] / "resources" / "vr_modelparams"
+
+
+class VRSeparator(CommonSeparator):
+    def __init__(self, common_config, arch_config):
+        super().__init__(common_config)
+        self.model_capacity = (32, 128)
+        self.is_vr_51_model = False
+        if "nout" in self.model_data and "nout_lstm" in self.model_data:
+            self.model_capacity = (self.model_data["nout"], self.model_data["nout_lstm"])
+            self.is_vr_51_model = True
+
+        params_path = VR_PARAMS_DIR / f"{self.model_data['vr_model_param']}.json"
+        if not params_path.exists():
+            raise FileNotFoundError(f"VR model parameter file not found: {params_path}")
+        self.model_params = ModelParameters(str(params_path))
+
+        self.enable_tta = bool(arch_config.get("enable_tta", False))
+        self.enable_post_process = bool(arch_config.get("enable_post_process", False))
+        self.post_process_threshold = float(arch_config.get("post_process_threshold", 0.2))
+        self.batch_size = int(arch_config.get("batch_size", 2))
+        self.window_size = int(arch_config.get("window_size", 512))
+        self.high_end_process = bool(arch_config.get("high_end_process", False))
+        self.input_high_end_h = None
+        self.input_high_end = None
+        self.aggression = float(int(arch_config.get("aggression", 5)) / 100)
+        self.aggressiveness = {
+            "value": self.aggression,
+            "split_bin": self.model_params.param["band"][1]["crop_stop"],
+            "aggr_correction": self.model_params.param.get("aggr_correction"),
+        }
+        self.model_samplerate = self.model_params.param["sr"]
+        self.model_run = None
+
+    def load_model(self):
+        nn_arch_sizes = [31191, 33966, 56817, 123821, 123812, 129605, 218409, 537238, 537227]
+        vr_5_1_models = [56817, 218409]
+        model_size = math.ceil(os.stat(self.model_path).st_size / 1024)
+        nn_arch_size = min(nn_arch_sizes, key=lambda size: abs(size - model_size))
+        self.logger.debug(f"VR model size: {model_size}, architecture size: {nn_arch_size}")
+
+        if nn_arch_size in vr_5_1_models or self.is_vr_51_model:
+            self.model_run = nets_new.CascadedNet(
+                self.model_params.param["bins"] * 2,
+                nn_arch_size,
+                nout=self.model_capacity[0],
+                nout_lstm=self.model_capacity[1],
+            )
+            self.is_vr_51_model = True
+        else:
+            self.model_run = nets.determine_model_capacity(self.model_params.param["bins"] * 2, nn_arch_size)
+
+        try:
+            state_dict = torch.load(self.model_path, map_location="cpu", weights_only=True)
+        except TypeError:
+            state_dict = torch.load(self.model_path, map_location="cpu")
+        except Exception:
+            state_dict = torch.load(self.model_path, map_location="cpu", weights_only=False)
+        self.model_run.load_state_dict(state_dict)
+        self.model_run.to(self.torch_device)
+        self.model_run.eval()
+
+    def to(self, device):
+        self.torch_device = device
+        if self.model_run is not None:
+            self.model_run.to(device)
+        return self
+
+    def eval(self):
+        if self.model_run is not None:
+            self.model_run.eval()
+        return self
+
+    def separate_array(self, mix, sample_rate):
+        if self.model_run is None:
+            self.load_model()
+        self.primary_source = None
+        self.secondary_source = None
+        x_spec = self.loading_mix(mix, sample_rate)
+        y_spec, v_spec = self.inference_vr(x_spec, self.torch_device, self.aggressiveness)
+        y_spec = np.nan_to_num(y_spec, nan=0.0, posinf=0.0, neginf=0.0)
+        v_spec = np.nan_to_num(v_spec, nan=0.0, posinf=0.0, neginf=0.0)
+
+        results = {
+            self.primary_stem_name: self.process_stem(self.primary_source, y_spec),
+            self.secondary_stem_name: self.process_stem(self.secondary_source, v_spec),
+        }
+        if "Aspiration" in results:
+            aspiration = results["Aspiration"]
+            results["No Aspiration"] = aspiration[:, 1] - aspiration[:, 0]
+            results["Aspiration"] = aspiration[:, 0]
+        return results
+
+    def process_stem(self, stem_source, spec):
+        if not isinstance(stem_source, np.ndarray):
+            stem_source = self.spec_to_wav(spec).T
+            if self.model_samplerate != 44100:
+                stem_source = spec_utils.resample_audio(stem_source.T, orig_sr=self.model_samplerate, target_sr=44100).T
+        return stem_source.astype(np.float32, copy=False)
+
+    def loading_mix(self, mix, sample_rate):
+        x_wave, x_spec_s = {}, {}
+        bands_n = len(self.model_params.param["band"])
+        base_wave = self._ensure_stereo(mix)
+
+        iterator = tqdm(range(bands_n, 0, -1), leave=False, desc="Processing VR bands") if self.debug else range(bands_n, 0, -1)
+        for d in iterator:
+            bp = self.model_params.param["band"][d]
+            wav_resolution = "polyphase" if self.torch_device_mps is not None else bp["res_type"]
+            if d == bands_n:
+                x_wave[d] = self._resample_wave(base_wave, sample_rate, bp["sr"], wav_resolution)
+                x_spec_s[d] = spec_utils.wave_to_spectrogram(x_wave[d], bp["hl"], bp["n_fft"], self.model_params, band=d, is_v51_model=self.is_vr_51_model)
+            else:
+                x_wave[d] = spec_utils.resample_audio(x_wave[d + 1], orig_sr=self.model_params.param["band"][d + 1]["sr"], target_sr=bp["sr"], res_type=wav_resolution)
+                x_spec_s[d] = spec_utils.wave_to_spectrogram(x_wave[d], bp["hl"], bp["n_fft"], self.model_params, band=d, is_v51_model=self.is_vr_51_model)
+
+            if d == bands_n and self.high_end_process:
+                self.input_high_end_h = (bp["n_fft"] // 2 - bp["crop_stop"]) + (self.model_params.param["pre_filter_stop"] - self.model_params.param["pre_filter_start"])
+                self.input_high_end = x_spec_s[d][:, bp["n_fft"] // 2 - self.input_high_end_h:bp["n_fft"] // 2, :]
+
+        return spec_utils.combine_spectrograms(x_spec_s, self.model_params, is_v51_model=self.is_vr_51_model)
+
+    def _ensure_stereo(self, mix):
+        mix = np.asarray(mix, dtype=np.float32)
+        if mix.ndim == 1:
+            return np.asfortranarray([mix, mix])
+        if mix.shape[0] == 2:
+            return np.asfortranarray(mix)
+        if mix.shape[-1] == 2:
+            return np.asfortranarray(mix.T)
+        mono = np.mean(mix, axis=0)
+        return np.asfortranarray([mono, mono])
+
+    @staticmethod
+    def _resample_wave(wave, orig_sr, target_sr, res_type):
+        if int(orig_sr) == int(target_sr):
+            return np.asfortranarray(wave)
+        return spec_utils.resample_audio(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=res_type)
+
+    def inference_vr(self, x_spec, device, aggressiveness):
+        def execute(x_mag_pad, roi_size):
+            patches = (x_mag_pad.shape[2] - 2 * self.model_run.offset) // roi_size
+            x_dataset = []
+            for i in range(patches):
+                start = i * roi_size
+                x_dataset.append(x_mag_pad[:, :, start:start + self.window_size])
+            if not x_dataset:
+                raise ValueError("Window size error: no VR patches generated")
+
+            x_dataset = np.asarray(x_dataset)
+            mask = []
+            process_batches = tqdm(range(0, patches, self.batch_size), leave=False, desc="Processing VR batches")
+            with torch.inference_mode():
+                for i in process_batches:
+                    x_batch = torch.from_numpy(x_dataset[i:i + self.batch_size]).to(device)
+                    pred = self.model_run.predict_mask(x_batch)
+                    if not pred.size()[3] > 0:
+                        raise ValueError("Window size error: h1_shape[3] must be greater than h2_shape[3]")
+                    pred = pred.detach().cpu().numpy()
+                    mask.append(np.concatenate(pred, axis=2))
+                    if self.callback:
+                        self.callback["progress"] = min(0.99 * (i / patches), 0.99)
+            return np.concatenate(mask, axis=2)
+
+        def postprocess(mask, x_mag, x_phase):
+            is_non_accom_stem = self.primary_stem_name in CommonSeparator.NON_ACCOM_STEMS
+            mask = spec_utils.adjust_aggr(mask, is_non_accom_stem, aggressiveness)
+            if self.enable_post_process:
+                mask = spec_utils.merge_artifacts(mask, thres=self.post_process_threshold)
+            y_spec = mask * x_mag * np.exp(1.0j * x_phase)
+            v_spec = (1 - mask) * x_mag * np.exp(1.0j * x_phase)
+            return y_spec, v_spec
+
+        x_mag, x_phase = spec_utils.preprocess(x_spec)
+        n_frame = x_mag.shape[2]
+        pad_l, pad_r, roi_size = spec_utils.make_padding(n_frame, self.window_size, self.model_run.offset)
+        x_mag_pad = np.pad(x_mag, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
+        max_value = x_mag_pad.max()
+        if max_value > 0:
+            x_mag_pad /= max_value
+        mask = execute(x_mag_pad, roi_size)
+
+        if self.enable_tta:
+            pad_l += roi_size // 2
+            pad_r += roi_size // 2
+            x_mag_pad = np.pad(x_mag, ((0, 0), (0, 0), (pad_l, pad_r)), mode="constant")
+            max_value = x_mag_pad.max()
+            if max_value > 0:
+                x_mag_pad /= max_value
+            mask_tta = execute(x_mag_pad, roi_size)[:, :, roi_size // 2:]
+            mask = (mask[:, :, :n_frame] + mask_tta[:, :, :n_frame]) * 0.5
+        else:
+            mask = mask[:, :, :n_frame]
+
+        return postprocess(mask, x_mag, x_phase)
+
+    def spec_to_wav(self, spec):
+        if self.high_end_process and isinstance(self.input_high_end, np.ndarray) and self.input_high_end_h:
+            input_high_end = spec_utils.mirroring("mirroring", spec, self.input_high_end, self.model_params)
+            return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, self.input_high_end_h, input_high_end, is_v51_model=self.is_vr_51_model)
+        return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, is_v51_model=self.is_vr_51_model)

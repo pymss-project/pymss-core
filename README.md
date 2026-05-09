@@ -55,7 +55,8 @@ separator.process_folder('path/to/input_folder')
     'bandit', 
     'bandit_v2', 
     'scnet', 
-    'apollo']
+    'apollo',
+    'vr']
 - model_path: The path to the model file.
 - config_path: The path to the configuration file.
 - device: The type of device, default is 'auto'. Must be one of ['auto', 'cuda', 'mps', 'cpu']
@@ -66,11 +67,32 @@ separator.process_folder('path/to/input_folder')
 - audio_params: Audio parameters including wav_bit_depth, flac_bit_depth, and mp3_bit_rate. Default is {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}.
 - logger: Logger instance. Default is pymss.get_separation_logger()
 - debug: Whether to enable debug mode, default is False.
-- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, and normalize. Default is all None (means all params are depended on the config file).
+- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, and normalize. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.
 
 ### Model Compatibility
 
 Demucs support is limited to HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true`. Classic `model: demucs`, `model: hdemucs`, and non-CaC Wiener Demucs configs are not supported by this dependency-free inference path.
+
+UVR VR support is available through `model_type='vr'` for the supported UVR/VR series `.pth` weights. The model output stems are read from the built-in VR model list, for example `Vocals`, `Instrumental`, `No Echo`, or `Echo`.
+
+```python
+separator = MSSeparator(
+    model_type='vr',
+    model_path='pretrain/VR_Models/1_HP-UVR.pth',
+    device='cuda',
+    output_format='wav',
+    store_dirs={
+        "Vocals": "./output/vocals",
+        "Instrumental": "./output/instrumental",
+    },
+    inference_params={
+        "batch_size": 2,
+        "window_size": 512,
+        "aggression": 5,
+    },
+)
+separator.process_folder('path/to/input_folder')
+```
 
 ### Hugging Face Configs
 
