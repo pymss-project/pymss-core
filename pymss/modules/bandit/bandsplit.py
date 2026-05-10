@@ -41,17 +41,9 @@ class NormFC(nn.Module):
     def forward(self, xb):
         batch, n_time, in_channels, ribw = xb.shape
         xb = self.norm(xb.reshape(batch, n_time, in_channels * ribw))
-
-        if not self.treat_channel_as_feature:
-            xb = xb.reshape(batch, n_time, in_channels, ribw)
-
-        zb = self.fc(xb)
-
-        if not self.treat_channel_as_feature:
-            batch, n_time, in_channels, emb_dim_per_channel = zb.shape
-            zb = zb.reshape(batch, n_time, in_channels * emb_dim_per_channel)
-
-        return zb
+        if self.treat_channel_as_feature:
+            return self.fc(xb)
+        return self.fc(xb.reshape(batch, n_time, in_channels, ribw)).reshape(batch, n_time, -1)
 
 
 class SequentialNormFC(nn.Module):
@@ -119,9 +111,9 @@ class BandSplitModuleBase(nn.Module):
     def _band_view(self, x):
         xr = torch.view_as_real(x)
         if self.complex_order == 'reim_freq':
-            return torch.permute(xr, (0, 3, 1, 4, 2))
+            return xr.permute(0, 3, 1, 4, 2)
         if self.complex_order == 'freq_reim':
-            return torch.permute(xr, (0, 3, 1, 2, 4)).contiguous()
+            return xr.permute(0, 3, 1, 2, 4).contiguous()
         raise ValueError(f"unsupported complex_order: {self.complex_order}")
 
     def forward(self, x: torch.Tensor):
@@ -138,9 +130,7 @@ class BandSplitModuleBase(nn.Module):
                 xb = xr[..., fstart:fend].reshape(batch, n_time, in_channels, -1)
             else:
                 xb = xr[:, :, :, fstart:fend].reshape(batch, n_time, -1)
-            if self.flatten_input:
-                xb = xb.reshape(batch, n_time, -1)
-            z[:, i, :, :] = nfm(xb.contiguous())
+            z[:, i, :, :] = nfm((xb.reshape(batch, n_time, -1) if self.flatten_input else xb).contiguous())
 
         return z
 

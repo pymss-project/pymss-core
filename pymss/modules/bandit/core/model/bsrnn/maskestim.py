@@ -9,7 +9,7 @@ from ....maskestim import (
 )
 
 
-__all__ = [
+__all__ = (
     "BaseNormMLP",
     "MaskEstimationModule",
     "MaskEstimationModuleBase",
@@ -17,4 +17,4 @@ __all__ = [
     "MultAddNormMLP",
     "NormMLP",
     "OverlappingMaskEstimationModule",
-]
+)

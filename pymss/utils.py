@@ -58,22 +58,20 @@ def _getWindowingArray(window_size, fade_size):
 
 def _build_chunk_plan(total_length, chunk_size, step, fade_size):
     starts = list(range(0, total_length, step))
-    windows = []
     normal_window = _getWindowingArray(chunk_size, fade_size)
 
-    for start in starts:
+    def window_for(start):
         length = min(chunk_size, total_length - start)
-        window = normal_window
-        if start == 0 or start + length >= total_length:
-            window = normal_window.clone()
-            if start == 0:
-                window[:fade_size] = 1
-            if start + length >= total_length:
-                fade_start = max(0, length - fade_size)
-                window[fade_start:length] = 1
-        windows.append(window)
+        if start != 0 and start + length < total_length:
+            return normal_window
+        window = normal_window.clone()
+        if start == 0:
+            window[:fade_size] = 1
+        if start + length >= total_length:
+            window[max(0, length - fade_size):length] = 1
+        return window
 
-    return starts, windows
+    return starts, [window_for(start) for start in starts]
 
 
 def _get_inference_step(config, chunk_size):
@@ -84,9 +82,7 @@ def _get_inference_step(config, chunk_size):
 
 
 def _complete_chunk_count(total_length, chunk_size, step):
-    if total_length < chunk_size:
-        return 0
-    return (total_length - chunk_size) // step + 1
+    return 0 if total_length < chunk_size else (total_length - chunk_size) // step + 1
 
 
 def _fold_windows(counter, windows, step, start_offset=0):
@@ -96,9 +92,8 @@ def _fold_windows(counter, windows, step, start_offset=0):
 
     chunk_size = windows.shape[-1]
     output_length = (n_chunks - 1) * step + chunk_size
-    counter_columns = windows.transpose(0, 1).unsqueeze(0)
     folded_counter = nn.functional.fold(
-        counter_columns,
+        windows.transpose(0, 1).unsqueeze(0),
         output_size=(1, output_length),
         kernel_size=(1, chunk_size),
         stride=(1, step),
@@ -115,10 +110,10 @@ def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
     output_length = (n_chunks - 1) * step + chunk_size
     n_sources, n_channels = chunks.shape[1:3]
 
-    weighted = chunks * windows[:, None, None, :]
-    columns = weighted.permute(1, 2, 3, 0).reshape(1, n_sources * n_channels * chunk_size, n_chunks)
     folded = nn.functional.fold(
-        columns,
+        (chunks * windows[:, None, None, :]).permute(1, 2, 3, 0).reshape(
+            1, n_sources * n_channels * chunk_size, n_chunks
+        ),
         output_size=(1, output_length),
         kernel_size=(1, chunk_size),
         stride=(1, step),
@@ -127,9 +122,7 @@ def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
 
 
 def _ensure_source_dim(x, chunk_batch):
-    if x.ndim == chunk_batch.ndim:
-        return x.unsqueeze(1)
-    return x
+    return x.unsqueeze(1) if x.ndim == chunk_batch.ndim else x
 
 
 def _fit_tensor_length(x, length):
@@ -147,9 +140,7 @@ def _autocast(device, enabled):
 
 
 def _source_names(config):
-    if config.training.target_instrument is None:
-        return config.training.instruments
-    return [config.training.target_instrument]
+    return config.training.instruments if config.training.target_instrument is None else [config.training.target_instrument]
 
 
 def _source_count(config):
@@ -162,8 +153,7 @@ def _sources_to_dict(config, estimated_sources):
 
 def _prepare_mix_for_chunks(mix, border):
     length_init = mix.shape[-1]
-    if mix.ndim == 1:
-        mix = mix.unsqueeze(0)
+    mix = mix.unsqueeze(0) if mix.ndim == 1 else mix
     if length_init > 2 * border and border > 0:
         mix = nn.functional.pad(mix, (border, border), mode='reflect')
     return mix, length_init
@@ -183,8 +173,7 @@ def _model_mix(mix, device):
 
 
 def _run_model_chunk(model, arr, chunk_size):
-    x = _ensure_source_dim(model(arr), arr).float()
-    return _fit_tensor_length(x, chunk_size)
+    return _fit_tensor_length(_ensure_source_dim(model(arr), arr).float(), chunk_size)
 
 
 def _extract_chunk(mix, start, chunk_size):
@@ -240,16 +229,11 @@ def _run_complete_chunks(model, mix, windows, result, counter, chunk_size, step,
 def _run_tail_chunks(model, mix, starts, windows, result, counter, chunk_size, step, batch_size, first_chunk, progress_bar):
     for batch_start in range(first_chunk, len(starts), batch_size):
         batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
-        batch_data = []
-        batch_locations = []
-
-        for idx in batch_indices:
-            chunk, length = _extract_chunk(mix, starts[idx], chunk_size)
-            batch_data.append(chunk)
-            batch_locations.append((idx, starts[idx], length))
-
+        batch = [(_extract_chunk(mix, starts[idx], chunk_size), idx) for idx in batch_indices]
+        batch_data = [chunk for (chunk, _), _ in batch]
         chunks = _run_model_chunk(model, torch.stack(batch_data, dim=0), chunk_size)
-        for j, (idx, start, length) in enumerate(batch_locations):
+        for j, ((_, length), idx) in enumerate(batch):
+            start = starts[idx]
             _add_weighted_chunk(result, counter, chunks[j], windows[idx], start, length)
 
         if progress_bar:
@@ -306,7 +290,6 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
     C = config.training.samplerate * config.training.segment
     batch_size = config.inference.batch_size
     step = _get_inference_step(config, C)
-    # logger.info(S, C, step, mix.shape, mix.device)
 
     with _autocast(device, config.training.get('use_amp', True)):
         with torch.inference_mode():
@@ -319,7 +302,6 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
             progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
 
             while i < mix.shape[1]:
-                # logger.info(i, i + C, mix.shape[1])
                 part = mix[:, i:i + C].to(device)
                 length = part.shape[-1]
                 if length < C:
@@ -332,12 +314,10 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
                 if len(batch_data) >= batch_size or (i >= mix.shape[1]):
                     arr = torch.stack(batch_data, dim=0)
                     x = model(arr)
-                    for j in range(len(batch_locations)):
-                        start, l = batch_locations[j]
+                    for j, (start, l) in enumerate(batch_locations):
                         result[..., start:start+l] += x[j][..., :l].cpu()
                         counter[..., start:start+l] += 1.
-                    batch_data = []
-                    batch_locations = []
+                    batch_data, batch_locations = [], []
 
                 if progress_bar:
                     progress_bar.update(step)
@@ -345,11 +325,10 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
             if progress_bar:
                 progress_bar.close()
 
-            estimated_sources = result / counter
-            estimated_sources = estimated_sources.cpu().numpy()
+            estimated_sources = (result / counter).cpu().numpy()
             np.nan_to_num(estimated_sources, copy=False, nan=0.0)
 
-    return {k: v for k, v in zip(config.training.instruments, estimated_sources)} if S > 1 else estimated_sources
+    return dict(zip(config.training.instruments, estimated_sources)) if S > 1 else estimated_sources
 
 def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None) -> Dict[str, NDArray]:
     mix = torch.tensor(mix, dtype=torch.float32)

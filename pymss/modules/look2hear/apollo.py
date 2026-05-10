@@ -24,14 +24,25 @@ def _cached_inference_tensor(module, name, tensor, input, version):
     return casted
 
 
+def _complex_from_ri(ri, dim):
+    real, imag = ri.float().unbind(dim=dim)
+    return torch.complex(real, imag)
+
+
+def _complex_div_by_real(spec, denom):
+    return torch.complex(spec.real / denom, spec.imag / denom)
+
+
 def pointwise_conv1d(input, conv):
-    if conv.kernel_size != (1,) or conv.stride != (1,) or conv.padding != (0,) or conv.dilation != (1,) or conv.groups != 1:
+    conv_params = conv.kernel_size, conv.stride, conv.padding, conv.dilation, conv.groups
+    if conv_params != ((1,), (1,), (0,), (1,), 1):
         return conv(input)
     weight = conv.weight[:, :, 0]
     bias = conv.bias
     if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16) and not torch.is_grad_enabled():
         weight = _cached_inference_tensor(conv, "pointwise_weight", weight, input, conv.weight._version)
-        bias = _cached_inference_tensor(conv, "pointwise_bias", bias, input, bias._version) if bias is not None else None
+        if bias is not None:
+            bias = _cached_inference_tensor(conv, "pointwise_bias", bias, input, bias._version)
     output = F.linear(input.transpose(1, 2), weight, bias)
     return output.transpose(1, 2)
 
@@ -45,7 +56,6 @@ class RMSNorm(nn.Module):
         self.eps = 1e-5
 
     def forward(self, input):
-        # input size: (B, N, T)
         B, N, T = input.shape
         assert N % self.groups == 0
         if self.groups == 1 and not torch.is_grad_enabled():
@@ -62,10 +72,6 @@ class RMSNorm(nn.Module):
 
 
 class RMVN(nn.Module):
-    """
-    Rescaled MVN.
-    """
-
     def __init__(self, dimension, groups=1):
         super(RMVN, self).__init__()
 
@@ -75,7 +81,6 @@ class RMVN(nn.Module):
         self.eps = 1e-5
 
     def forward(self, input):
-        # input size: (B, N, *)
         B, N = input.shape[:2]
         assert N % self.groups == 0
         input_reshape = input.reshape(B, self.groups, N // self.groups, -1)
@@ -89,10 +94,6 @@ class RMVN(nn.Module):
 
 
 class Roformer(nn.Module):
-    """
-    Transformer with rotary positional embedding.
-    """
-
     def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000,
                  input_drop=0., attention_drop=0., causal=True):
         super().__init__()
@@ -100,12 +101,11 @@ class Roformer(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size // num_head
         self.num_head = num_head
-        self.theta = theta  # base frequency for RoPE
+        self.theta = theta
         self.window = window
-        # pre-calculate rotary embeddings
         cos_freq, sin_freq = self._calc_rotary_emb()
-        self.register_buffer("cos_freq", cos_freq)  # win, N
-        self.register_buffer("sin_freq", sin_freq)  # win, N
+        self.register_buffer("cos_freq", cos_freq)
+        self.register_buffer("sin_freq", sin_freq)
         self.register_buffer("reverse_sign", torch.tensor([-1, 1]), persistent=False)
         self._rotary_freq_cache = {}
 
@@ -125,19 +125,15 @@ class Roformer(nn.Module):
         self.MLP_output = nn.Conv1d(self.input_size * 4, self.input_size, 1, bias=False)
 
     def _calc_rotary_emb(self):
-        freq = 1. / (self.theta ** (
-                    torch.arange(0, self.hidden_size, 2)[:(self.hidden_size // 2)] / self.hidden_size))  # theta_i
-        freq = freq.reshape(1, -1)  # 1, N//2
-        pos = torch.arange(0, self.window).reshape(-1, 1)  # win, 1
-        cos_freq = torch.cos(pos * freq)  # win, N//2
-        sin_freq = torch.sin(pos * freq)  # win, N//2
-        cos_freq = torch.stack([cos_freq] * 2, -1).reshape(self.window, self.hidden_size)  # win, N
-        sin_freq = torch.stack([sin_freq] * 2, -1).reshape(self.window, self.hidden_size)  # win, N
+        theta_i = torch.arange(0, self.hidden_size, 2)[: self.hidden_size // 2] / self.hidden_size
+        freq = (1.0 / (self.theta ** theta_i)).reshape(1, -1)
+        pos = torch.arange(self.window).reshape(-1, 1)
+        cos_freq = torch.cos(pos * freq).repeat_interleave(2, dim=-1)
+        sin_freq = torch.sin(pos * freq).repeat_interleave(2, dim=-1)
 
         return cos_freq, sin_freq
 
     def _add_rotary_emb(self, feature, pos):
-        # feature shape: ..., N
         N = feature.shape[-1]
 
         feature_reshape = feature.reshape(-1, N)
@@ -145,15 +141,12 @@ class Roformer(nn.Module):
         cos_freq = self.cos_freq[pos]
         sin_freq = self.sin_freq[pos]
         reverse_sign = self.reverse_sign.to(device=feature.device, dtype=feature.dtype)
-        feature_reshape_neg = (
-                    torch.flip(feature_reshape.reshape(-1, N // 2, 2), [-1]) * reverse_sign.reshape(1, 1, 2)).reshape(
-            -1, N)
+        feature_reshape_neg = (feature_reshape.reshape(-1, N // 2, 2).flip(-1) * reverse_sign).reshape(-1, N)
         feature_rope = feature_reshape * cos_freq.unsqueeze(0) + feature_reshape_neg * sin_freq.unsqueeze(0)
 
         return feature_rope.reshape(feature.shape)
 
     def _add_rotary_sequence(self, feature):
-        # feature shape: ..., T, N
         T, N = feature.shape[-2:]
         feature_reshape = feature.reshape(-1, T, N)
 
@@ -179,31 +172,29 @@ class Roformer(nn.Module):
         cos_freq = self.cos_freq[:T]
         sin_freq = self.sin_freq[:T]
         reverse_sign = self.reverse_sign.to(device=feature.device, dtype=feature.dtype)
-        feature_reshape_neg = (
-                    torch.flip(feature_reshape.reshape(-1, N // 2, 2), [-1]) * reverse_sign.reshape(1, 1, 2)).reshape(
-            -1, T, N)
+        feature_reshape_neg = (feature_reshape.reshape(-1, N // 2, 2).flip(-1) * reverse_sign).reshape(-1, T, N)
         feature_rope = feature_reshape * cos_freq.unsqueeze(0) + feature_reshape_neg * sin_freq.unsqueeze(0)
 
         return feature_rope.reshape(feature.shape)
 
     def forward(self, input):
-        # input shape: B, N, T
-
         B, _, T = input.shape
 
-        weight = pointwise_conv1d(self.input_drop(self.input_norm(input)), self.weight).reshape(
-            B, self.num_head, self.hidden_size * 3, T
-        ).mT
-        Q, K, V = torch.split(weight, self.hidden_size, dim=-1)  # B, num_head, T, N
+        qkv = pointwise_conv1d(self.input_drop(self.input_norm(input)), self.weight)
+        weight = qkv.reshape(B, self.num_head, self.hidden_size * 3, T).mT
+        Q, K, V = torch.split(weight, self.hidden_size, dim=-1)
 
-        # rotary positional embedding
         Q_rot = self._add_rotary_sequence(Q)
         K_rot = self._add_rotary_sequence(K)
 
         V_attention = V if not torch.is_grad_enabled() else V.contiguous()
-        attention_output = F.scaled_dot_product_attention(Q_rot.contiguous(), K_rot.contiguous(), V_attention,
-                                                          dropout_p=self.attention_drop,
-                                                          is_causal=self.causal)  # B, num_head, T, N
+        attention_output = F.scaled_dot_product_attention(
+            Q_rot.contiguous(),
+            K_rot.contiguous(),
+            V_attention,
+            dropout_p=self.attention_drop,
+            is_causal=self.causal,
+        )
         attention_output = attention_output.mT.reshape(B, -1, T)
         output = pointwise_conv1d(attention_output, self.output) + input
 
@@ -274,19 +265,12 @@ class BSNet(nn.Module):
         self.seq_net = ICB(self.feature_dim, kernel=kernel)
 
     def forward(self, input):
-        # input shape: B, nband, N, T
-
         B, nband, N, T = input.shape
 
-        # band comm
-        band_input = input.permute(0, 3, 2, 1).reshape(B * T, -1, nband)
-        band_output, _ = self.band_net(band_input)
+        band_output, _ = self.band_net(input.permute(0, 3, 2, 1).reshape(B * T, -1, nband))
         band_output = band_output.reshape(B, T, -1, nband).permute(0, 3, 2, 1)
 
-        # sequence modeling
-        output = self.seq_net(band_output.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)  # B, nband, N, T
-
-        return output
+        return self.seq_net(band_output.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)
 
 
 class Apollo(nn.Module):
@@ -308,120 +292,80 @@ class Apollo(nn.Module):
         self.register_buffer("window", torch.hann_window(self.win), persistent=False)
         self._packed_cache = {}
 
-        # 80 bands
         bandwidth = int(self.win / 160)
-        self.band_width = [bandwidth] * 79
-        self.band_width.append(self.enc_dim - np.sum(self.band_width))
+        self.band_width = [bandwidth] * 79 + [self.enc_dim - bandwidth * 79]
         self.nband = len(self.band_width)
-        # print(self.band_width, self.nband)
 
-        self.BN = nn.ModuleList([])
-        for i in range(self.nband):
-            self.BN.append(nn.Sequential(RMSNorm(self.band_width[i] * 2 + 1),
-                                         nn.Conv1d(self.band_width[i] * 2 + 1, self.feature_dim, 1))
-                           )
-
-        self.net = []
-        for _ in range(layer):
-            self.net.append(BSNet(self.feature_dim))
-        self.net = nn.Sequential(*self.net)
-
-        self.output = nn.ModuleList([])
-        for i in range(self.nband):
-            self.output.append(nn.Sequential(RMSNorm(self.feature_dim),
-                                             nn.Conv1d(self.feature_dim, self.band_width[i] * 4, 1),
-                                             nn.GLU(dim=1)
-                                             )
-                               )
+        self.BN = nn.ModuleList([nn.Sequential(RMSNorm(width * 2 + 1), nn.Conv1d(width * 2 + 1, self.feature_dim, 1)) for width in self.band_width])
+        self.net = nn.Sequential(*[BSNet(self.feature_dim) for _ in range(layer)])
+        self.output = nn.ModuleList([nn.Sequential(RMSNorm(self.feature_dim), nn.Conv1d(self.feature_dim, width * 4, 1), nn.GLU(dim=1)) for width in self.band_width])
 
     def _window(self, input):
         return self.window.to(device=input.device)
 
     def _uniform_band_prefix(self):
         width = self.band_width[0]
-        count = 0
-        for band_width in self.band_width:
-            if band_width != width:
-                break
-            count += 1
-        return count, width
+        return next((i for i, band_width in enumerate(self.band_width) if band_width != width), self.nband), width
 
     def _use_packed_band_ops(self):
-        if self.training or torch.is_grad_enabled():
-            return False
-        count, _ = self._uniform_band_prefix()
-        return count > 1
+        return not self.training and not torch.is_grad_enabled() and self._uniform_band_prefix()[0] > 1
+
+    def _cached_packed_modules(self, name, modules, count):
+        conv = modules[0][1]
+        key = (name, count, conv.weight.device, conv.weight.dtype)
+        cached = self._packed_cache.get(name)
+        if cached is not None and cached["key"] == key:
+            return cached["norm_weight"], cached["conv_weight"], cached["conv_bias"], cached["groups"], cached["eps"]
+
+        modules = list(modules[:count])
+        norm_weight, conv_weight = torch.stack([module[0].weight.detach() for module in modules], dim=0), torch.cat(
+            [module[1].weight.detach() for module in modules], dim=0
+        )
+        cached = {
+            "key": key,
+            "norm_weight": norm_weight,
+            "conv_weight": conv_weight,
+            "conv_bias": torch.cat([module[1].bias.detach() for module in modules], dim=0) if modules[0][1].bias is not None else None,
+            "groups": modules[0][0].groups,
+            "eps": modules[0][0].eps,
+        }
+        self._packed_cache[name] = cached
+        return norm_weight, conv_weight, cached["conv_bias"], cached["groups"], cached["eps"]
 
     def _cached_packed_bn(self, count):
-        conv = self.BN[0][1]
-        key = ("bn", count, conv.weight.device, conv.weight.dtype)
-        cached = self._packed_cache.get("bn")
-        if cached is not None and cached["key"] == key:
-            return cached["norm_weight"], cached["conv_weight"], cached["conv_bias"], cached["groups"], cached["eps"]
-
-        modules = list(self.BN[:count])
-        norm_weight = torch.stack([module[0].weight.detach() for module in modules], dim=0)
-        conv_weight = torch.cat([module[1].weight.detach() for module in modules], dim=0)
-        conv_bias = torch.cat([module[1].bias.detach() for module in modules], dim=0) if modules[0][1].bias is not None else None
-        cached = {
-            "key": key,
-            "norm_weight": norm_weight,
-            "conv_weight": conv_weight,
-            "conv_bias": conv_bias,
-            "groups": modules[0][0].groups,
-            "eps": modules[0][0].eps,
-        }
-        self._packed_cache["bn"] = cached
-        return norm_weight, conv_weight, conv_bias, cached["groups"], cached["eps"]
+        return self._cached_packed_modules("bn", self.BN, count)
 
     def _cached_packed_output(self, count):
-        conv = self.output[0][1]
-        key = ("output", count, conv.weight.device, conv.weight.dtype)
-        cached = self._packed_cache.get("output")
-        if cached is not None and cached["key"] == key:
-            return cached["norm_weight"], cached["conv_weight"], cached["conv_bias"], cached["groups"], cached["eps"]
-
-        modules = list(self.output[:count])
-        norm_weight = torch.stack([module[0].weight.detach() for module in modules], dim=0)
-        conv_weight = torch.cat([module[1].weight.detach() for module in modules], dim=0)
-        conv_bias = torch.cat([module[1].bias.detach() for module in modules], dim=0) if modules[0][1].bias is not None else None
-        cached = {
-            "key": key,
-            "norm_weight": norm_weight,
-            "conv_weight": conv_weight,
-            "conv_bias": conv_bias,
-            "groups": modules[0][0].groups,
-            "eps": modules[0][0].eps,
-        }
-        self._packed_cache["output"] = cached
-        return norm_weight, conv_weight, conv_bias, cached["groups"], cached["eps"]
+        return self._cached_packed_modules("output", self.output, count)
 
     @staticmethod
     def _packed_rms_norm(input, weight, groups, eps):
         batch, bands, channels, frames = input.shape
         input_float = input.reshape(batch, bands, groups, channels // groups, frames).float()
         input_norm = input_float * torch.rsqrt(input_float.pow(2).mean(3, keepdim=True) + eps)
-        input_norm = input_norm.to(dtype=input.dtype).reshape(batch, bands, channels, frames)
-        return input_norm * weight.reshape(1, bands, channels, 1)
+        return input_norm.to(dtype=input.dtype).reshape(batch, bands, channels, frames) * weight.reshape(1, bands, channels, 1)
 
     def _packed_bn_prefix(self, input, count):
         batch, bands, channels, frames = input.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_bn(count)
-        input = self._packed_rms_norm(input, norm_weight, groups, eps)
-        input = input.reshape(batch, bands * channels, frames)
-        output = F.conv1d(input, conv_weight, conv_bias, groups=bands)
-        return output.reshape(batch, bands, self.feature_dim, frames)
+        return F.conv1d(
+            self._packed_rms_norm(input, norm_weight, groups, eps).reshape(batch, bands * channels, frames),
+            conv_weight,
+            conv_bias,
+            groups=bands,
+        ).reshape(batch, bands, self.feature_dim, frames)
 
     def _packed_output_prefix(self, feature, count, width):
         batch, bands, channels, frames = feature.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_output(count)
-        feature = self._packed_rms_norm(feature, norm_weight, groups, eps)
-        feature = feature.reshape(batch, bands * channels, frames)
-        output = F.conv1d(feature, conv_weight, conv_bias, groups=bands)
-        output = output.reshape(batch, bands, width * 4, frames)
+        output = F.conv1d(
+            self._packed_rms_norm(feature, norm_weight, groups, eps).reshape(batch, bands * channels, frames),
+            conv_weight,
+            conv_bias,
+            groups=bands,
+        ).reshape(batch, bands, width * 4, frames)
         left, right = output.chunk(2, dim=2)
-        output = left * torch.sigmoid(right)
-        return output.reshape(batch, bands, 2, width, frames)
+        return (left * torch.sigmoid(right)).reshape(batch, bands, 2, width, frames)
 
     def spec_band_split(self, input):
 
@@ -430,20 +374,14 @@ class Apollo(nn.Module):
         spec = torch.stft(input.view(B * nch, nsample), n_fft=self.win, hop_length=self.stride,
                           window=self._window(input), return_complex=True)
 
-        subband_spec = []
-        subband_spec_norm = []
-        subband_power = []
-        band_idx = 0
-        for i in range(self.nband):
-            this_spec = spec[:, band_idx:band_idx + self.band_width[i]]
-            subband_spec.append(this_spec)  # B, BW, T
+        subband_spec_norm, subband_power, band_idx = [], [], 0
+        for width in self.band_width:
+            this_spec = spec[:, band_idx:band_idx + width]
             subband_power.append((this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1))  # B, 1, T
-            subband_spec_norm.append(
-                torch.complex(this_spec.real / subband_power[-1], this_spec.imag / subband_power[-1]))  # B, BW, T
-            band_idx += self.band_width[i]
-        subband_power = torch.cat(subband_power, 1)  # B, nband, T
+            subband_spec_norm.append(_complex_div_by_real(this_spec, subband_power[-1]))  # B, BW, T
+            band_idx += width
 
-        return subband_spec_norm, subband_power
+        return subband_spec_norm, torch.cat(subband_power, 1)
 
     def _spec_band_split_packed(self, input):
         B, nch, nsample = input.shape
@@ -454,20 +392,15 @@ class Apollo(nn.Module):
         prefix_bins = count * width
         prefix_spec = spec[:, :prefix_bins].reshape(B * nch, count, width, -1)
         prefix_power = (prefix_spec.abs().pow(2).sum(2) + self.eps).sqrt()
-        prefix_norm = torch.complex(
-            prefix_spec.real / prefix_power.unsqueeze(2),
-            prefix_spec.imag / prefix_power.unsqueeze(2),
-        )
+        prefix_norm = _complex_div_by_real(prefix_spec, prefix_power.unsqueeze(2))
 
-        tail_norm = []
-        tail_power = []
-        band_idx = prefix_bins
-        for i in range(count, self.nband):
-            this_spec = spec[:, band_idx:band_idx + self.band_width[i]]
+        tail_norm, tail_power, band_idx = [], [], prefix_bins
+        for width in self.band_width[count:]:
+            this_spec = spec[:, band_idx:band_idx + width]
             power = (this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1)
             tail_power.append(power)
-            tail_norm.append(torch.complex(this_spec.real / power, this_spec.imag / power))
-            band_idx += self.band_width[i]
+            tail_norm.append(_complex_div_by_real(this_spec, power))
+            band_idx += width
 
         return prefix_norm, prefix_power, tail_norm, tail_power
 
@@ -480,76 +413,63 @@ class Apollo(nn.Module):
     def _feature_extractor_by_band(self, input):
 
         subband_spec_norm, subband_power = self.spec_band_split(input)
-
-        # normalization and bottleneck
-        subband_feature = []
-        for i in range(self.nband):
-            concat_spec = torch.cat(
-                [subband_spec_norm[i].real, subband_spec_norm[i].imag, torch.log(subband_power[:, i].unsqueeze(1))], 1)
-            subband_feature.append(self.BN[i](concat_spec))
-        subband_feature = torch.stack(subband_feature, 1)  # B, nband, N, T
-
-        return subband_feature
+        return torch.stack([
+            self.BN[i](torch.cat([subband_spec_norm[i].real, subband_spec_norm[i].imag, torch.log(subband_power[:, i].unsqueeze(1))], 1))
+            for i in range(self.nband)
+        ], 1)
 
     def _feature_extractor_packed(self, input):
         prefix_norm, prefix_power, tail_norm, tail_power = self._spec_band_split_packed(input)
         count, _ = self._uniform_band_prefix()
 
-        prefix_input = torch.cat(
-            [prefix_norm.real, prefix_norm.imag, torch.log(prefix_power).unsqueeze(2)],
-            dim=2,
-        )
-        prefix_feature = self._packed_bn_prefix(prefix_input, count)
+        prefix_feature = self._packed_bn_prefix(torch.cat([prefix_norm.real, prefix_norm.imag, torch.log(prefix_power).unsqueeze(2)], dim=2), count)
 
         if count == self.nband:
             return prefix_feature
 
-        tail_feature = []
-        for offset, subband_norm in enumerate(tail_norm):
-            i = count + offset
-            concat_spec = torch.cat(
-                [subband_norm.real, subband_norm.imag, torch.log(tail_power[offset])],
-                1,
-            )
-            tail_feature.append(self.BN[i](concat_spec))
-        return torch.cat([prefix_feature, torch.stack(tail_feature, 1)], dim=1)
+        return torch.cat([
+            prefix_feature,
+            torch.stack([
+                self.BN[count + offset](torch.cat([subband_norm.real, subband_norm.imag, torch.log(tail_power[offset])], 1))
+                for offset, subband_norm in enumerate(tail_norm)
+            ], 1)
+        ], dim=1)
 
     def _estimate_spec_by_band(self, feature, batch_channels):
-        est_spec = []
-        for i in range(self.nband):
-            this_RI = self.output[i](feature[:, i]).view(batch_channels, 2, self.band_width[i], -1)
-            est_spec.append(torch.complex(this_RI[:, 0].float(), this_RI[:, 1].float()))
-        return torch.cat(est_spec, 1)
+        return torch.cat([
+            _complex_from_ri(output(feature[:, i]).view(batch_channels, 2, width, -1), dim=1)
+            for i, (output, width) in enumerate(zip(self.output, self.band_width))
+        ], 1)
 
     def _estimate_spec_packed(self, feature, batch_channels):
         count, width = self._uniform_band_prefix()
         prefix_RI = self._packed_output_prefix(feature[:, :count], count, width)
-        prefix_spec = torch.complex(prefix_RI[:, :, 0].float(), prefix_RI[:, :, 1].float()).reshape(
-            batch_channels, count * width, -1
-        )
+        prefix_spec = _complex_from_ri(prefix_RI, dim=2).reshape(batch_channels, count * width, -1)
 
         if count == self.nband:
             return prefix_spec
 
-        est_spec = [prefix_spec]
-        for i in range(count, self.nband):
-            this_RI = self.output[i](feature[:, i]).view(batch_channels, 2, self.band_width[i], -1)
-            est_spec.append(torch.complex(this_RI[:, 0].float(), this_RI[:, 1].float()))
-        return torch.cat(est_spec, 1)
+        return torch.cat([
+            prefix_spec,
+            *[
+                _complex_from_ri(self.output[i](feature[:, i]).view(batch_channels, 2, self.band_width[i], -1), dim=1)
+                for i in range(count, self.nband)
+            ],
+        ], 1)
 
     def forward(self, input):
 
         B, nch, nsample = input.shape
 
-        subband_feature = self.feature_extractor(input)
-        feature = self.net(subband_feature)
-
+        feature = self.net(self.feature_extractor(input))
         if self._use_packed_band_ops():
             est_spec = self._estimate_spec_packed(feature, B * nch)
         else:
             est_spec = self._estimate_spec_by_band(feature, B * nch)
-        est_spec = est_spec.to(dtype=torch.complex64)
-        output = torch.istft(est_spec, n_fft=self.win, hop_length=self.stride,
-                             window=self._window(input), length=nsample).view(B, nch, -1)
-
-        return output
+        return torch.istft(
+            est_spec.to(dtype=torch.complex64),
+            n_fft=self.win,
+            hop_length=self.stride,
+            window=self._window(input),
+            length=nsample,
+        ).view(B, nch, -1)

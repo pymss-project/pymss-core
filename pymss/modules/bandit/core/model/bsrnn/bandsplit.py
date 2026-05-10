@@ -29,4 +29,4 @@ class BandSplitModule(_ConfiguredBandSplitModule):
         )
 
 
-__all__ = ["BandSplitModule", "NormFC"]
+__all__ = ("BandSplitModule", "NormFC")

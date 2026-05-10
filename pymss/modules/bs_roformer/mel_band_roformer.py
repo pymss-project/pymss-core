@@ -20,9 +20,6 @@ from .common import (
     roformer_transformer_kwargs,
 )
 
-
-# main class
-
 class MelBandRoformer(RoformerRuntimeMixin, Module):
 
     def __init__(
@@ -40,15 +37,14 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             attn_dropout=0.1,
             ff_dropout=0.1,
             flash_attn=True,
-            sample_rate=44100,  # needed for mel filter bank from librosa
+            sample_rate=44100,
             stft_n_fft=2048,
             stft_hop_length=512,
-            # 10ms at 44100Hz, from sections 4.1, 4.4 in the paper - @faroit recommends // 2 or // 4 for better reconstruction
             stft_win_length=2048,
             stft_normalized=False,
             stft_window_fn: Optional[Callable] = None,
             mask_estimator_depth=1,
-            match_input_audio_length=False,  # if True, pad output tensor to match length of input tensor
+            match_input_audio_length=False,
             mlp_expansion_factor=4,
             **kwargs,
     ):
@@ -79,23 +75,11 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
 
         freqs = roformer_stft_freq_bins(self, stft_n_fft)
 
-        # create mel filter bank
-        # with librosa.filters.mel as in section 2 of paper
-
         mel_filter_bank_numpy = filters.mel(sr=sample_rate, n_fft=stft_n_fft, n_mels=num_bands)
 
         mel_filter_bank = torch.from_numpy(mel_filter_bank_numpy)
-
-        # for some reason, it doesn't include the first freq? just force a value for now
-
         mel_filter_bank[0][0] = 1.
-
-        # In some systems/envs we get 0.0 instead of ~1.9e-18 in the last position,
-        # so let's force a positive value
-
         mel_filter_bank[-1, -1] = 1.
-
-        # binary as in paper (then estimated masks are averaged for overlapping regions)
 
         freqs_per_band = mel_filter_bank > 0
         assert freqs_per_band.any(dim=0).all(), 'all frequencies need to be covered by all bands for now'
@@ -104,7 +88,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         freq_indices = repeated_freq_indices[freqs_per_band]
 
         if stereo:
-            freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).reshape(-1)
+            freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).flatten()
 
         self.register_buffer('freq_indices', freq_indices, persistent=False)
         self.register_buffer('freqs_per_band', freqs_per_band, persistent=False)
@@ -119,8 +103,6 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             num_bands_per_freq.repeat_interleave(self.audio_channels).view(1, 1, -1, 1),
             persistent=False
         )
-
-        # band split and mask estimator
 
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in num_freqs_per_band.tolist())
         init_roformer_band_modules(
@@ -147,12 +129,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
         masks = torch.view_as_complex(masks.contiguous()).to(dtype=stft_repr.dtype)
         num_stems = len(self.mask_estimators)
-        scatter_indices = self.freq_indices.view(1, 1, -1, 1).expand(
-            context.batch,
-            num_stems,
-            -1,
-            stft_repr.shape[-1],
-        )
+        scatter_indices = self.freq_indices[None, None, :, None].expand(context.batch, num_stems, -1, stft_repr.shape[-1])
         masks_summed = stft_repr.new_zeros(context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1])
         masks_summed.scatter_add_(2, scatter_indices, masks)
         return stft_repr * (masks_summed / self.num_bands_per_channel_freq.clamp(min=1e-8))

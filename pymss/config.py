@@ -42,10 +42,8 @@ class AttrDict(dict):
 
 
 def to_attrdict(value):
-    if isinstance(value, AttrDict):
-        return value
     if isinstance(value, dict):
-        return AttrDict(value)
+        return value if isinstance(value, AttrDict) else AttrDict(value)
     if isinstance(value, list):
         return [to_attrdict(item) for item in value]
     if isinstance(value, tuple):

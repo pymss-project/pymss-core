@@ -13,7 +13,7 @@ from .utils import (
     VocalBandsplitSpecification,
 )
 
-__all__ = ["MultiMaskMultiSourceBandSplitRNNSimple"]
+__all__ = ("MultiMaskMultiSourceBandSplitRNNSimple",)
 
 
 def get_band_specs(band_specs, n_fft, fs, n_bands=None):

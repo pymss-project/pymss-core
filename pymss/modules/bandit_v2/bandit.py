@@ -122,7 +122,6 @@ class BaseBandit(_SpectralComponent):
         return x * m
 
     def forward(self, batch, mode="train"):
-        # Model takes mono as input we give stereo, so we do process of each channel independently
         init_shape = batch.shape
         if not isinstance(batch, dict):
             mono = batch.view(-1, 1, batch.shape[-1])
@@ -146,14 +145,7 @@ class BaseBandit(_SpectralComponent):
 
         batch = self.separate(batch)
 
-        b = []
-        for s in self.stems:
-            # We need to obtain stereo again
-            r = batch['estimates'][s]['audio'].view(-1, init_shape[1], init_shape[2])
-            b.append(r)
-        # And we need to return back tensor and not independent stems
-        batch = torch.stack(b, dim=1)
-        return batch
+        return torch.stack([batch['estimates'][s]['audio'].view(-1, init_shape[1], init_shape[2]) for s in self.stems], dim=1)
 
     def encode(self, batch):
         x = batch["mixture"]["spectrogram"]
@@ -289,7 +281,7 @@ class Bandit(BaseBandit):
             m = mem(q)
 
             s = self.mask(x, m.to(x.dtype))
-            s = torch.reshape(s, x.shape)
+            s = s.reshape(x.shape)
             batch["estimates"][stem] = {
                 "audio": self.istft(s, length),
                 "spectrogram": s,

@@ -13,19 +13,16 @@ class SubbandSTFT:
         window = self.window.to(x.device)
         batch_dims = x.shape[:-2]
         channels, length = x.shape[-2:]
-        x = x.reshape([-1, length])
         x = torch.stft(
-            x,
+            x.reshape(-1, length),
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             window=window,
             center=True,
             return_complex=True,
         )
-        x = torch.view_as_real(x)
-        x = x.permute([0, 3, 1, 2])
-        x = x.reshape([*batch_dims, channels, 2, -1, x.shape[-1]])
-        x = x.reshape([*batch_dims, channels * 2, -1, x.shape[-1]])
+        x = torch.view_as_real(x).permute(0, 3, 1, 2)
+        x = x.reshape(*batch_dims, channels * 2, -1, x.shape[-1])
         return x[..., :self.dim_f, :]
 
     def inverse(self, x):
@@ -35,10 +32,7 @@ class SubbandSTFT:
         full_freq_bins = self.n_fft // 2 + 1
         f_pad = torch.zeros([*batch_dims, channels, full_freq_bins - freq_bins, time_bins]).to(x.device)
         x = torch.cat([x, f_pad], -2)
-        x = x.reshape([*batch_dims, channels // 2, 2, full_freq_bins, time_bins]).reshape(
-            [-1, 2, full_freq_bins, time_bins]
-        )
-        x = x.permute([0, 2, 3, 1])
+        x = x.reshape(-1, 2, full_freq_bins, time_bins).permute(0, 2, 3, 1)
         x = x[..., 0] + x[..., 1] * 1.j
         x = torch.istft(
             x,
@@ -63,13 +57,11 @@ def get_activation(act_type):
 
 def cac_to_cws(x, num_subbands):
     batch, channels, freq_bins, time_bins = x.shape
-    x = x.reshape(batch, channels, num_subbands, freq_bins // num_subbands, time_bins)
     return x.reshape(batch, channels * num_subbands, freq_bins // num_subbands, time_bins)
 
 
 def cws_to_cac(x, num_subbands):
     batch, channels, freq_bins, time_bins = x.shape
-    x = x.reshape(batch, channels // num_subbands, num_subbands, freq_bins, time_bins)
     return x.reshape(batch, channels // num_subbands, freq_bins * num_subbands, time_bins)
 
 

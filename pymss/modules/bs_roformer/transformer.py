@@ -12,10 +12,7 @@ def apply_rotary_emb_fast(cos, sin, t):
         rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot
         return torch.view_as_real(rotated).reshape_as(t)
 
-    cos = cos[..., ::2]
-    sin = sin[..., ::2]
-    t_even = t[..., ::2]
-    t_odd = t[..., 1::2]
+    cos, sin, t_even, t_odd = cos[..., ::2], sin[..., ::2], t[..., ::2], t[..., 1::2]
     out = torch.empty_like(t)
     out[..., ::2] = t_even * cos - t_odd * sin
     out[..., 1::2] = t_odd * cos + t_even * sin
@@ -25,8 +22,7 @@ def apply_rotary_emb_fast(cos, sin, t):
 def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     cache = getattr(rotary_embed, '_pymss_cos_sin_cache', None)
     if cache is None:
-        cache = {}
-        rotary_embed._pymss_cos_sin_cache = cache
+        rotary_embed._pymss_cos_sin_cache = cache = {}
 
     key = (seq_len, device.type, device.index, dtype)
     cached = cache.get(key)
@@ -36,8 +32,7 @@ def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     freqs = rotary_embed.forward(
         lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=dtype, offset=0),
         cache_key=f'freqs:{seq_len}|offset:0'
-    )
-    freqs = freqs[None, :, None, :].to(device=device, dtype=dtype)
+    )[None, :, None, :].to(device=device, dtype=dtype)
     cached = (freqs.cos(), freqs.sin())
     cache[key] = cached
     return cached
@@ -128,24 +123,9 @@ class Attention(Module):
         if self.rotary_embed is not None:
             q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
 
-        if self.flash:
-            out = F.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2),
-                dropout_p=self.dropout if self.training else 0.
-            ).transpose(1, 2)
-        else:
-            out = self.attend(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2)
-            ).transpose(1, 2)
-
-        gates = self.to_gates(x)
-        out = out * gates.unsqueeze(-1).sigmoid()
-        out = out.flatten(start_dim=-2)
-        return self.to_out(out)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.) if self.flash else self.attend(q, k, v)
+        return self.to_out((out.transpose(1, 2) * self.to_gates(x).unsqueeze(-1).sigmoid()).flatten(start_dim=-2))
 
 
 class Transformer(Module):
@@ -166,10 +146,8 @@ class Transformer(Module):
             shared_out_bias=None,
     ):
         super().__init__()
-        self.layers = ModuleList([])
-
-        for _ in range(depth):
-            self.layers.append(ModuleList([
+        self.layers = ModuleList([
+            ModuleList([
                 Attention(
                     dim=dim,
                     dim_head=dim_head,
@@ -181,7 +159,9 @@ class Transformer(Module):
                     flash=flash_attn,
                 ),
                 FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)
-            ]))
+            ])
+            for _ in range(depth)
+        ])
 
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 

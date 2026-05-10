@@ -52,9 +52,9 @@ class ResidualRNN(nn.Module):
         batch, n_uncrossed, n_across, emb_dim = z.shape
 
         if self.use_batch_trick:
-            z = z.reshape(batch * n_uncrossed, n_across, emb_dim)
-            z = self.rnn(z.contiguous())[0]
-            z = z.reshape(batch, n_uncrossed, n_across, -1)
+            z = self.rnn(z.reshape(batch * n_uncrossed, n_across, emb_dim).contiguous())[0].reshape(
+                batch, n_uncrossed, n_across, -1
+            )
         else:
             z = torch.stack([self.rnn(z[:, i, :, :])[0] for i in range(n_uncrossed)], dim=1)
 

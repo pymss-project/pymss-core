@@ -8,36 +8,10 @@ from .bands import BandSplit, MaskEstimator
 from .transformer import RMSNorm, Transformer
 
 
-__all__ = [
-    'DEFAULT_FREQS_PER_BANDS',
-    'MaskEstimator',
-    'RMSNorm',
-    'RoformerRuntimeMixin',
-    'forward_bandsplit_roformer',
-    'forward_roformer_mask_core',
-    'forward_spectral_roformer',
-    'ignore_roformer_training_kwargs',
-    'init_roformer_band_modules',
-    'init_roformer_layers',
-    'init_roformer_runtime',
-    'init_roformer_shared_bias',
-    'init_roformer_stft',
-    'roformer_stft_freq_bins',
-    'roformer_transformer_kwargs',
-    'roformer_freqs_per_bands_with_complex',
-]
+__all__ = ('DEFAULT_FREQS_PER_BANDS', 'MaskEstimator', 'RMSNorm', 'RoformerRuntimeMixin', 'forward_bandsplit_roformer', 'forward_roformer_mask_core', 'forward_spectral_roformer', 'ignore_roformer_training_kwargs', 'init_roformer_band_modules', 'init_roformer_layers', 'init_roformer_runtime', 'init_roformer_shared_bias', 'init_roformer_stft', 'roformer_stft_freq_bins', 'roformer_transformer_kwargs', 'roformer_freqs_per_bands_with_complex')
 
 
-DEFAULT_FREQS_PER_BANDS = (
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-    2, 2, 2, 2,
-    4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
-    12, 12, 12, 12, 12, 12, 12, 12,
-    24, 24, 24, 24, 24, 24, 24, 24,
-    48, 48, 48, 48, 48, 48, 48, 48,
-    128, 129,
-)
+DEFAULT_FREQS_PER_BANDS = (2,) * 24 + (4,) * 12 + (12,) * 8 + (24,) * 8 + (48,) * 8 + (128, 129)
 
 
 class SpectralContext(NamedTuple):
@@ -78,21 +52,8 @@ def mask_to_complex_shape(mask, complex_dim=2):
     return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
 
 
-TRAINING_LOSS_KWARGS = frozenset({
-    'multi_stft_resolution_loss_weight',
-    'multi_stft_resolutions_window_sizes',
-    'multi_stft_hop_size',
-    'multi_stft_normalized',
-    'multi_stft_window_fn',
-})
-
-REMOVED_ROFORMER_KWARGS = frozenset({
-    'linear_transformer_depth',
-    'use_torch_checkpoint',
-    'skip_connection',
-    'attention_layout',
-    'dim_freqs_in',
-})
+TRAINING_LOSS_KWARGS = frozenset({'multi_stft_resolution_loss_weight', 'multi_stft_resolutions_window_sizes', 'multi_stft_hop_size', 'multi_stft_normalized', 'multi_stft_window_fn'})
+REMOVED_ROFORMER_KWARGS = frozenset({'linear_transformer_depth', 'use_torch_checkpoint', 'skip_connection', 'attention_layout', 'dim_freqs_in'})
 
 
 def ignore_roformer_training_kwargs(kwargs):
@@ -137,12 +98,9 @@ def roformer_transformer_kwargs(
         ff_dropout=ff_dropout,
         flash_attn=flash_attn,
     )
-    if norm_output is not None:
-        kwargs['norm_output'] = norm_output
-    if shared_qkv_bias is not None:
-        kwargs['shared_qkv_bias'] = shared_qkv_bias
-    if shared_out_bias is not None:
-        kwargs['shared_out_bias'] = shared_out_bias
+    kwargs.update({k: v for k, v in (
+        ('norm_output', norm_output), ('shared_qkv_bias', shared_qkv_bias), ('shared_out_bias', shared_out_bias)
+    ) if v is not None})
     return kwargs
 
 
@@ -155,12 +113,10 @@ def init_roformer_layers(
         dim_head,
         transformer_kwargs,
 ):
-    module.layers = nn.ModuleList([])
     time_rotary_embed = RotaryEmbedding(dim=dim_head)
     freq_rotary_embed = RotaryEmbedding(dim=dim_head)
-
-    for _ in range(depth):
-        module.layers.append(nn.ModuleList([
+    module.layers = nn.ModuleList([
+        nn.ModuleList([
             Transformer(
                 depth=time_transformer_depth,
                 rotary_embed=time_rotary_embed,
@@ -171,7 +127,9 @@ def init_roformer_layers(
                 rotary_embed=freq_rotary_embed,
                 **transformer_kwargs
             ),
-        ]))
+        ])
+        for _ in range(depth)
+    ])
 
 
 def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
@@ -193,9 +151,7 @@ def roformer_stft_freq_bins(module, window_length):
 
 def roformer_freqs_per_bands_with_complex(module, freqs_per_bands, freqs):
     assert len(freqs_per_bands) > 1
-    assert sum(
-        freqs_per_bands
-    ) == freqs, f'the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}'
+    assert sum(freqs_per_bands) == freqs, f'the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}'
     return tuple(2 * f * module.audio_channels for f in freqs_per_bands)
 
 
@@ -236,6 +192,8 @@ class RoformerRuntimeMixin:
         self.band_split.warm_group_cache(tensor.device, tensor.dtype)
         for mask_estimator in self.mask_estimators:
             mask_estimator.warm_group_cache(tensor.device, tensor.dtype)
+        if type(self)._estimate_masks is RoformerRuntimeMixin._estimate_masks:
+            MaskEstimator.warm_packed_estimators(self.mask_estimators, tensor.device, tensor.dtype)
 
     def _estimate_masks(self, x):
         use_packed = getattr(self, "_packed_mask_estimators_available", None)
@@ -262,17 +220,10 @@ def forward_roformer_mask_core(module, stft_repr):
 
     for time_transformer, freq_transformer in module.layers:
         b, t, f, d = x.shape
-        x = x.permute(0, 2, 1, 3).reshape(b * f, t, d)
-        x = time_transformer(x)
-        x = x.reshape(b, f, t, d).permute(0, 2, 1, 3)
+        x = time_transformer(x.permute(0, 2, 1, 3).reshape(b * f, t, d)).reshape(b, f, t, d).permute(0, 2, 1, 3)
+        x = freq_transformer(x.reshape(b * t, f, d)).reshape(b, t, f, d)
 
-        x = x.reshape(b * t, f, d)
-        x = freq_transformer(x)
-        x = x.reshape(b, t, f, d)
-
-    x = module.final_norm(x)
-    mask = module._estimate_masks(x)
-    return mask_to_complex_shape(mask, complex_dim=2)
+    return mask_to_complex_shape(module._estimate_masks(module.final_norm(x)), complex_dim=2)
 
 
 def stft_roformer(module, raw_audio):
@@ -302,12 +253,10 @@ def stft_roformer(module, raw_audio):
             return_complex=True
         ).to(device)
 
-    stft_repr = torch.view_as_real(stft_repr)
-    stft_repr = stft_repr.reshape(batch, audio_channels, *stft_repr.shape[-3:])
+    stft_repr = torch.view_as_real(stft_repr).reshape(batch, audio_channels, -1, stft_repr.shape[-1], 2)
 
     b, s, f, t, c = stft_repr.shape
-    stft_repr = stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c)
-    context = SpectralContext(
+    return stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c), SpectralContext(
         batch=batch,
         channels=audio_channels,
         freq_bins=f,
@@ -315,16 +264,13 @@ def stft_roformer(module, raw_audio):
         stft_window=stft_window,
         x_is_mps=x_is_mps,
     )
-    return stft_repr, context
 
 
 def istft_roformer(module, stft_repr, context, length):
     b, n, _, t = stft_repr.shape
-    stft_repr = stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(0, 1, 3, 2, 4).reshape(
-        b * n * context.channels,
-        context.freq_bins,
-        t
-    )
+    stft_repr = stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(
+        0, 1, 3, 2, 4
+    ).reshape(b * n * context.channels, context.freq_bins, t)
 
     try:
         recon_audio = torch.istft(
@@ -344,18 +290,12 @@ def istft_roformer(module, stft_repr, context, length):
         ).to(context.stft_window.device)
 
     recon_audio = recon_audio.reshape(context.batch, n, context.channels, recon_audio.shape[-1])
-
-    if n == 1:
-        return recon_audio[:, 0]
-
-    return recon_audio
+    return recon_audio[:, 0] if n == 1 else recon_audio
 
 
 def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True):
     stft_repr, context = stft_roformer(module, raw_audio)
-    stft_repr = module._mask_stft_repr(stft_repr, context)
-    length = context.audio_length if match_input_audio_length else None
-    return istft_roformer(module, stft_repr, context, length)
+    return istft_roformer(module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None)
 
 
 def forward_bandsplit_roformer(module, raw_audio):

@@ -10,4 +10,4 @@ class BandSplitModule(_ConfiguredBandSplitModule):
     flatten_input = True
 
 
-__all__ = ["BandSplitModule", "NormFC"]
+__all__ = ("BandSplitModule", "NormFC")

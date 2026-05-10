@@ -1,22 +1,25 @@
 import torch
 import torch.nn as nn
-from functools import partial
 
 from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
 
-def get_norm(norm_type):
-    def norm(c, norm_type):
-        if norm_type == 'BatchNorm':
-            return nn.BatchNorm2d(c)
-        elif norm_type == 'InstanceNorm':
-            return nn.InstanceNorm2d(c, affine=True)
-        elif 'GroupNorm' in norm_type:
-            g = int(norm_type.replace('GroupNorm', ''))
-            return nn.GroupNorm(num_groups=g, num_channels=c)
-        else:
-            return nn.Identity()
 
-    return partial(norm, norm_type=norm_type)
+def get_norm(norm_type):
+    if norm_type == 'BatchNorm':
+        return nn.BatchNorm2d
+    if norm_type == 'InstanceNorm':
+        return lambda c: nn.InstanceNorm2d(c, affine=True)
+    if 'GroupNorm' in norm_type:
+        groups = int(norm_type.replace('GroupNorm', ''))
+        return lambda c: nn.GroupNorm(num_groups=groups, num_channels=c)
+    return lambda c: nn.Identity()
+
+
+def _block(**modules):
+    block = nn.Module()
+    for name, module in modules.items():
+        block.add_module(name, module)
+    return block
 
 
 class Upscale(nn.Module):
@@ -48,41 +51,23 @@ class Downscale(nn.Module):
 class TFC_TDF(nn.Module):
     def __init__(self, in_c, c, l, f, bn, norm, act):
         super().__init__()
-
-        self.blocks = nn.ModuleList()
-        for i in range(l):
-            block = nn.Module()
-
-            block.tfc1 = nn.Sequential(
-                norm(in_c),
-                act,
-                nn.Conv2d(in_c, c, 3, 1, 1, bias=False),
+        def block():
+            nonlocal in_c
+            out = _block(
+                tfc1=nn.Sequential(norm(in_c), act, nn.Conv2d(in_c, c, 3, 1, 1, bias=False)),
+                tdf=nn.Sequential(norm(c), act, nn.Linear(f, f // bn, bias=False), norm(c), act, nn.Linear(f // bn, f, bias=False)),
+                tfc2=nn.Sequential(norm(c), act, nn.Conv2d(c, c, 3, 1, 1, bias=False)),
+                shortcut=nn.Conv2d(in_c, c, 1, 1, 0, bias=False),
             )
-            block.tdf = nn.Sequential(
-                norm(c),
-                act,
-                nn.Linear(f, f // bn, bias=False),
-                norm(c),
-                act,
-                nn.Linear(f // bn, f, bias=False),
-            )
-            block.tfc2 = nn.Sequential(
-                norm(c),
-                act,
-                nn.Conv2d(c, c, 3, 1, 1, bias=False),
-            )
-            block.shortcut = nn.Conv2d(in_c, c, 1, 1, 0, bias=False)
-
-            self.blocks.append(block)
             in_c = c
+            return out
+
+        self.blocks = nn.ModuleList([block() for _ in range(l)])
 
     def forward(self, x):
         for block in self.blocks:
             s = block.shortcut(x)
-            x = block.tfc1(x)
-            x = x + block.tdf(x)
-            x = block.tfc2(x)
-            x = x + s
+            x = block.tfc2((x := block.tfc1(x)) + block.tdf(x)) + s
         return x
 
 
@@ -91,9 +76,7 @@ class TFC_TDF_net(nn.Module):
         super().__init__()
         self.config = config
 
-        norm = get_norm(norm_type=config.model.norm)
-        act = get_activation(config.model.act)
-
+        norm, act = get_norm(norm_type=config.model.norm), get_activation(config.model.act)
         self.num_target_instruments = 1 if config.training.target_instrument else len(config.training.instruments)
         self.num_subbands = config.model.num_subbands
 
@@ -108,32 +91,27 @@ class TFC_TDF_net(nn.Module):
 
         self.first_conv = nn.Conv2d(dim_c, c, 1, 1, 0, bias=False)
 
-        self.encoder_blocks = nn.ModuleList()
-        for i in range(n):
-            block = nn.Module()
-            block.tfc_tdf = TFC_TDF(c, c, l, f, bn, norm, act)
-            block.downscale = Downscale(c, c + g, scale, norm, act)
+        def encoder_block():
+            nonlocal c, f
+            out = _block(tfc_tdf=TFC_TDF(c, c, l, f, bn, norm, act), downscale=Downscale(c, c + g, scale, norm, act))
             f = f // scale[1]
             c += g
-            self.encoder_blocks.append(block)
+            return out
+
+        self.encoder_blocks = nn.ModuleList([encoder_block() for _ in range(n)])
 
         self.bottleneck_block = TFC_TDF(c, c, l, f, bn, norm, act)
 
-        self.decoder_blocks = nn.ModuleList()
-        for i in range(n):
-            block = nn.Module()
-            block.upscale = Upscale(c, c - g, scale, norm, act)
+        def decoder_block():
+            nonlocal c, f
+            upscale = Upscale(c, c - g, scale, norm, act)
             f = f * scale[1]
             c -= g
-            block.tfc_tdf = TFC_TDF(2 * c, c, l, f, bn, norm, act)
-            self.decoder_blocks.append(block)
+            return _block(upscale=upscale, tfc_tdf=TFC_TDF(2 * c, c, l, f, bn, norm, act))
 
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False),
-            act,
-            nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False)
-        )
+        self.decoder_blocks = nn.ModuleList([decoder_block() for _ in range(n)])
 
+        self.final_conv = nn.Sequential(nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False), act, nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False))
         self.stft = SubbandSTFT(config.audio)
 
     def _forward_core(self, x):
@@ -147,8 +125,7 @@ class TFC_TDF_net(nn.Module):
 
         for block in self.decoder_blocks:
             x = block.upscale(x)
-            x = torch.cat([x, encoder_outputs.pop()], 1)
-            x = block.tfc_tdf(x)
+            x = block.tfc_tdf(torch.cat([x, encoder_outputs.pop()], 1))
 
         return x
 

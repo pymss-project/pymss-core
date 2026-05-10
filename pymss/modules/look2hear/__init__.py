@@ -1,3 +1,3 @@
 from .apollo import Apollo
 
-__all__ = ["Apollo"]
+__all__ = ("Apollo",)

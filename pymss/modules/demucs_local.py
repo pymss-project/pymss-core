@@ -27,11 +27,10 @@ def pad1d(x, paddings, mode='constant', value=0.):
 
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
-    x = x.reshape(-1, length)
     if x.device.type == 'mps':
         x = x.cpu()
     z = torch.stft(
-        x,
+        x.reshape(-1, length),
         n_fft * (1 + pad),
         hop_length or n_fft // 4,
         window=torch.hann_window(n_fft).to(x),
@@ -47,12 +46,11 @@ def spectro(x, n_fft=512, hop_length=None, pad=0):
 def ispectro(z, hop_length=None, length=None, pad=0):
     *other, freqs, frames = z.shape
     n_fft = 2 * freqs - 2
-    z = z.reshape(-1, freqs, frames)
     win_length = n_fft // (1 + pad)
     if z.device.type == 'mps':
         z = z.cpu()
     x = torch.istft(
-        z,
+        z.reshape(-1, freqs, frames),
         n_fft,
         hop_length,
         window=torch.hann_window(win_length).to(z.real),
@@ -166,10 +164,9 @@ class HEncLayer(nn.Module):
         if self.dconv:
             if self.freq:
                 b, c, fr, t = y.shape
-                y = y.permute(0, 2, 1, 3).reshape(-1, c, t)
-            y = self.dconv(y)
-            if self.freq:
-                y = y.view(b, fr, c, t).permute(0, 2, 1, 3)
+                y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
+            else:
+                y = self.dconv(y)
         return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
 
 
@@ -210,10 +207,9 @@ class HDecLayer(nn.Module):
             if self.dconv:
                 if self.freq:
                     b, c, fr, t = y.shape
-                    y = y.permute(0, 2, 1, 3).reshape(-1, c, t)
-                y = self.dconv(y)
-                if self.freq:
-                    y = y.view(b, fr, c, t).permute(0, 2, 1, 3)
+                    y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
+                else:
+                    y = self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
             z = z[..., self.pad:-self.pad, :]
@@ -229,8 +225,8 @@ class MultiWrap(nn.Module):
         super().__init__()
         self.split_ratios = split_ratios
         self.conv = isinstance(layer, HEncLayer)
-        self.layers = nn.ModuleList()
-        for _ in range(len(split_ratios) + 1):
+
+        def new_layer():
             lay = deepcopy(layer)
             if self.conv:
                 lay.conv.padding = (0, 0)
@@ -239,7 +235,9 @@ class MultiWrap(nn.Module):
             for m in lay.modules():
                 if hasattr(m, 'reset_parameters'):
                     m.reset_parameters()
-            self.layers.append(lay)
+            return lay
+
+        self.layers = nn.ModuleList([new_layer() for _ in range(len(split_ratios) + 1)])
 
     def forward(self, x, skip=None, length=None):
         _, _, fr, _ = x.shape
@@ -371,11 +369,17 @@ class CrossTransformerEncoderLayer(nn.Module):
 
     def forward(self, q, k, mask=None):
         if self.norm_first:
-            x = q + self.gamma_1(self.dropout1(self.cross_attn(self.norm1(q), self.norm2(k), self.norm2(k), attn_mask=mask, need_weights=False)[0]))
-            x = x + self.gamma_2(self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(self.norm3(x)))))))
+            norm_q = self.norm1(q)
+            norm_k = self.norm2(k)
+            attn_out = self.cross_attn(norm_q, norm_k, norm_k, attn_mask=mask, need_weights=False)[0]
+            x = q + self.gamma_1(self.dropout1(attn_out))
+            ffn_out = self.linear2(self.dropout(self.activation(self.linear1(self.norm3(x)))))
+            x = x + self.gamma_2(self.dropout2(ffn_out))
             return self.norm_out(x) if self.norm_out else x
-        x = self.norm1(q + self.gamma_1(self.dropout1(self.cross_attn(q, k, k, attn_mask=mask, need_weights=False)[0])))
-        return self.norm2(x + self.gamma_2(self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(x)))))))
+        attn_out = self.cross_attn(q, k, k, attn_mask=mask, need_weights=False)[0]
+        x = self.norm1(q + self.gamma_1(self.dropout1(attn_out)))
+        ffn_out = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        return self.norm2(x + self.gamma_2(self.dropout2(ffn_out)))
 
 
 class PositionEmbedding(nn.Module):
@@ -448,7 +452,8 @@ class CrossTransformerEncoder(nn.Module):
         pos = create_2d_sin_embedding(c, fr, t1, x.device, self.max_period).permute(0, 3, 2, 1).reshape(1, t1 * fr, c)
         x = self.norm_in(x.permute(0, 3, 2, 1).reshape(b, t1 * fr, c)) + self.weight_pos_embed * pos
         b, c, t2 = xt.shape
-        xt = self.norm_in_t(xt.permute(0, 2, 1)) + self.weight_pos_embed * self._get_pos_embedding(t2, b, c, x.device).permute(1, 0, 2)
+        xt_pos = self._get_pos_embedding(t2, b, c, x.device).permute(1, 0, 2)
+        xt = self.norm_in_t(xt.permute(0, 2, 1)) + self.weight_pos_embed * xt_pos
         for idx in range(self.num_layers):
             if idx % 2 == self.classic_parity:
                 x = self.layers[idx](x)

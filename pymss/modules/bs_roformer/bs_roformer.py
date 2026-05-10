@@ -34,7 +34,6 @@ class BSRoformer(RoformerRuntimeMixin, Module):
             time_transformer_depth=2,
             freq_transformer_depth=2,
             freqs_per_bands: Tuple[int, ...] = DEFAULT_FREQS_PER_BANDS,
-            # in the paper, they divide into ~60 bands, test with 1 for starters
             dim_head=64,
             heads=8,
             attn_dropout=0.,
@@ -42,7 +41,6 @@ class BSRoformer(RoformerRuntimeMixin, Module):
             flash_attn=True,
             stft_n_fft=2048,
             stft_hop_length=512,
-            # 10ms at 44100Hz, from sections 4.1, 4.4 in the paper - @faroit recommends // 2 or // 4 for better reconstruction
             stft_win_length=2048,
             stft_normalized=False,
             stft_window_fn: Optional[Callable] = None,

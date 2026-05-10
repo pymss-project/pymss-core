@@ -15,4 +15,4 @@ class SeqBandModellingModule(_SeqBandModellingPreset):
         }
 
 
-__all__ = ["ResidualRNN", "SeqBandModellingModule", "TimeFrequencyModellingModule", "Transpose"]
+__all__ = ("ResidualRNN", "SeqBandModellingModule", "TimeFrequencyModellingModule", "Transpose")

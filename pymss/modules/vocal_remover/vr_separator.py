@@ -206,22 +206,16 @@ class VRSeparator(CommonSeparator):
             return np.asfortranarray(mix)
         if mix.shape[-1] == 2:
             return np.asfortranarray(mix.T)
-        mono = np.mean(mix, axis=0)
-        return np.asfortranarray([mono, mono])
+        return np.asfortranarray([mono := np.mean(mix, axis=0), mono])
 
     @staticmethod
     def _resample_wave(wave, orig_sr, target_sr, res_type):
-        if int(orig_sr) == int(target_sr):
-            return np.asfortranarray(wave)
-        return spec_utils.resample_audio(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=res_type)
+        return np.asfortranarray(wave) if int(orig_sr) == int(target_sr) else spec_utils.resample_audio(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=res_type)
 
     def inference_vr(self, x_spec, device, aggressiveness):
         def execute(x_mag_pad, roi_size):
             patches = (x_mag_pad.shape[2] - 2 * self.model_run.offset) // roi_size
-            x_dataset = []
-            for i in range(patches):
-                start = i * roi_size
-                x_dataset.append(x_mag_pad[:, :, start:start + self.window_size])
+            x_dataset = [x_mag_pad[:, :, i * roi_size:i * roi_size + self.window_size] for i in range(patches)]
             if not x_dataset:
                 raise ValueError("Window size error: no VR patches generated")
 
@@ -233,17 +227,13 @@ class VRSeparator(CommonSeparator):
             with torch.inference_mode():
                 for i in process_batches:
                     x_batch_cpu = torch.from_numpy(x_dataset[i:i + self.batch_size])
-                    if self.use_channels_last:
-                        x_batch = x_batch_cpu.to(device=device, non_blocking=True, memory_format=torch.channels_last)
-                    else:
-                        x_batch = x_batch_cpu.to(device=device, non_blocking=True)
+                    x_batch = x_batch_cpu.to(device=device, non_blocking=True, memory_format=torch.channels_last) if self.use_channels_last else x_batch_cpu.to(device=device, non_blocking=True)
                     use_amp = self.use_amp and torch.device(device).type == "cuda"
                     with torch.amp.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                         pred = self.model_run.predict_mask(x_batch)
                     if not pred.size()[3] > 0:
                         raise ValueError("Window size error: h1_shape[3] must be greater than h2_shape[3]")
-                    pred = pred.detach().float()
-                    pred = pred.permute(1, 2, 0, 3).reshape(pred.size(1), pred.size(2), -1)
+                    pred = pred.detach().float().permute(1, 2, 0, 3).reshape(pred.size(1), pred.size(2), -1)
                     if mask is None:
                         mask = torch.empty(
                             (pred.size(0), pred.size(1), patches * pred.size(2)),
@@ -266,16 +256,14 @@ class VRSeparator(CommonSeparator):
             if aggr > 10 or aggr < -10:
                 print(f"Warning: Extreme aggressiveness values detected: {aggr}")
 
-            aggr = [aggr, aggr]
-            correction = aggressiveness["aggr_correction"]
-            if correction is not None:
+            aggr = torch.tensor([aggr, aggr], dtype=mask.dtype, device=mask.device)
+            if (correction := aggressiveness["aggr_correction"]) is not None:
                 aggr[0] += correction["left"]
                 aggr[1] += correction["right"]
 
             split_bin = aggressiveness["split_bin"]
-            for ch in range(2):
-                mask[ch, :split_bin] = torch.pow(mask[ch, :split_bin], 1 + aggr[ch] / 3)
-                mask[ch, split_bin:] = torch.pow(mask[ch, split_bin:], 1 + aggr[ch])
+            mask[:, :split_bin] = torch.pow(mask[:, :split_bin], 1 + aggr[:, None, None] / 3)
+            mask[:, split_bin:] = torch.pow(mask[:, split_bin:], 1 + aggr[:, None, None])
             return mask
 
         def postprocess(mask, x_spec):

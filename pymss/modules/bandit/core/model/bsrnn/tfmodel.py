@@ -9,4 +9,4 @@ class SeqBandModellingModule(_SeqBandModellingPreset):
     pass
 
 
-__all__ = ["ResidualRNN", "SeqBandModellingModule", "TimeFrequencyModellingModule"]
+__all__ = ("ResidualRNN", "SeqBandModellingModule", "TimeFrequencyModellingModule")

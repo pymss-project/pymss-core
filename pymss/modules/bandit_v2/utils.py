@@ -15,7 +15,7 @@ from ..bandit.core.model.bsrnn.utils import (
     musical_filterbank,
 )
 
-__all__ = [
+__all__ = (
     "BandsplitSpecification",
     "BassBandsplitSpecification",
     "DrumBandsplitSpecification",
@@ -30,4 +30,4 @@ __all__ = [
     "check_nonzero_bandwidth",
     "mel_filterbank",
     "musical_filterbank",
-]
+)

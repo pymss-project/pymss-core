@@ -16,6 +16,34 @@ from .logger import get_separation_logger, set_log_level
 from .config import AttrDict
 
 
+INFERENCE_PARAM_TARGETS = {
+    'batch_size': 'inference',
+    'overlap_size': 'inference',
+    'chunk_size': 'audio',
+    'normalize': 'inference',
+    'mask_mode': 'inference',
+    'window_size': 'inference',
+    'aggression': 'inference',
+    'enable_tta': 'inference',
+    'enable_post_process': 'inference',
+    'post_process_threshold': 'inference',
+    'high_end_process': 'inference',
+    'use_amp': 'inference',
+    'fuse_conv_bn': 'inference',
+    'use_channels_last': 'inference',
+}
+PASSTHROUGH_INFERENCE_PARAMS = frozenset({
+    'normalize',
+    'mask_mode',
+    'enable_tta',
+    'enable_post_process',
+    'high_end_process',
+    'use_amp',
+    'fuse_conv_bn',
+    'use_channels_last',
+})
+
+
 def _select_device(device, device_ids, logger):
     if device not in ['cpu', 'cuda', 'mps']:
         if torch.cuda.is_available():
@@ -31,6 +59,13 @@ def _select_device(device, device_ids, logger):
     return device
 
 
+def _unwrap_state_dict(state_dict):
+    for key in ('state', 'state_dict'):
+        if key in state_dict:
+            return state_dict[key]
+    return state_dict
+
+
 def _load_state_dict(model_type, model_path, device):
     if model_type == 'vr':
         return None
@@ -40,16 +75,9 @@ def _load_state_dict(model_type, model_path, device):
             state_dict = torch.load(model_path, map_location=device, weights_only=False)
         finally:
             _restore_modules(stubbed_modules)
-        for key in ('state', 'state_dict'):
-            if key in state_dict:
-                state_dict = state_dict[key]
-        return state_dict
+        return _unwrap_state_dict(state_dict)
     if model_type == 'apollo':
-        state_dict = torch.load(model_path, map_location=device, weights_only=False)
-        for key in ('state', 'state_dict'):
-            if key in state_dict:
-                state_dict = state_dict[key]
-        return state_dict
+        return _unwrap_state_dict(torch.load(model_path, map_location=device, weights_only=False))
     return torch.load(model_path, map_location=device, weights_only=True)
 
 
@@ -86,15 +114,11 @@ def _restore_modules(previous):
 
 
 def _runtime_model_type(model_type, state_dict):
-    if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict):
-        return 'bs_roformer_hyperace'
-    return model_type
+    return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
 
 
 def _model_is_stereo(model_type, config):
-    if model_type == 'vr':
-        return True
-    return config.model.get("stereo", True) if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'] else True
+    return True if model_type == 'vr' else config.model.get("stereo", True) if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'] else True
 
 
 def _prepare_mix_channels(mix, is_stereo, logger):
@@ -141,7 +165,7 @@ def _merge_tta_results(results):
             waveforms[stem] += audio[::-1].copy() if index == 1 else -1.0 * audio
 
     for stem in waveforms:
-        waveforms[stem] = waveforms[stem] / len(results)
+        waveforms[stem] /= len(results)
     return waveforms
 
 
@@ -337,35 +361,15 @@ class MSSeparator:
     def apply_model_inference_config(self, model, config):
         if hasattr(model, 'set_mask_mode'):
             model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
-    
+
     def update_inference_params(self, config, params):
-        for key, value in {
-            'batch_size': 'inference',
-            'overlap_size': 'inference',
-            'chunk_size': 'audio',
-            'normalize': 'inference',
-            'mask_mode': 'inference',
-            'window_size': 'inference',
-            'aggression': 'inference',
-            'enable_tta': 'inference',
-            'enable_post_process': 'inference',
-            'post_process_threshold': 'inference',
-            'high_end_process': 'inference',
-            'use_amp': 'inference',
-            'fuse_conv_bn': 'inference',
-            'use_channels_last': 'inference',
-        }.items():
-            if params.get(key) is not None:
-                if key in ('normalize', 'mask_mode', 'enable_tta', 'enable_post_process', 'high_end_process', 'use_amp', 'fuse_conv_bn', 'use_channels_last'):
-                    config[value][key] = params[key]
-                elif key == 'post_process_threshold':
-                    config[value][key] = float(params[key])
-                elif key == 'aggression':
-                    config[value][key] = int(params[key])
-                elif key == 'window_size':
-                    config[value][key] = int(params[key])
-                else:
-                    config[value][key] = int(params[key])
+        for key, section in INFERENCE_PARAM_TARGETS.items():
+            value = params.get(key)
+            if value is None:
+                continue
+            if key not in PASSTHROUGH_INFERENCE_PARAMS:
+                value = float(value) if key == 'post_process_threshold' else int(value)
+            config[section][key] = value
         return config
 
     def _save_output(self, instr, audio, sr, file_name, save_dir):
@@ -384,6 +388,27 @@ class MSSeparator:
                 self.logger.warning(f'Cannot save track: {path}, error: {str(e)}')
         return save_ok
 
+    @staticmethod
+    def _submit_load(load_executor, paths, index, sample_rate):
+        return None if index >= len(paths) else load_executor.submit(load_audio, paths[index], sr=sample_rate, mono=False)
+
+    def _submit_save_outputs(self, save_executor, results, sr, file_name):
+        return [
+            save_executor.submit(self._save_output, instr, audio, sr, file_name, output_dir)
+            for instr, audio in results.items()
+            for save_dir in [_get_store_dir(self.store_dirs, instr)]
+            if save_dir
+            for output_dir in (save_dir if isinstance(save_dir, list) else [save_dir])
+        ]
+
+    def _drain_save_queue(self, pending_saves, success_files, progress, max_pending_saves=0):
+        while len(pending_saves) > max_pending_saves:
+            saved_path, saved_futures = pending_saves.popleft()
+            if self._wait_save_futures(saved_path, saved_futures):
+                success_files.append(os.path.basename(saved_path))
+                if progress is not None:
+                    progress.update(1)
+
     def process_folder(self, input_folder):
         if not os.path.isdir(input_folder):
             raise ValueError(f"Input folder '{input_folder}' does not exist.")
@@ -397,8 +422,7 @@ class MSSeparator:
             sample_rate = self.config.audio['sample_rate']
         self.logger.info(f"Input_folder: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
 
-        success_files = []
-        pending_saves = deque()
+        success_files, pending_saves = [], deque()
         max_pending_saves = 12
 
         progress = tqdm(all_mixtures_path, desc="Total progress") if not self.debug else None
@@ -407,7 +431,7 @@ class MSSeparator:
                 ThreadPoolExecutor(max_workers=1, thread_name_prefix="pymss-load") as load_executor,
                 ThreadPoolExecutor(max_workers=2, thread_name_prefix="pymss-save") as save_executor,
             ):
-                load_future = load_executor.submit(load_audio, all_mixtures_path[0], sr=sample_rate, mono=False)
+                load_future = self._submit_load(load_executor, all_mixtures_path, 0, sample_rate)
 
                 for index, path in enumerate(all_mixtures_path):
                     if progress is not None:
@@ -417,14 +441,10 @@ class MSSeparator:
                         mix, sr = load_future.result()
                     except Exception as e:
                         self.logger.warning(f'Cannot process track: {path}, error: {str(e)}')
-                        if index + 1 < len(all_mixtures_path):
-                            load_future = load_executor.submit(load_audio, all_mixtures_path[index + 1], sr=sample_rate, mono=False)
+                        load_future = self._submit_load(load_executor, all_mixtures_path, index + 1, sample_rate)
                         continue
 
-                    if index + 1 < len(all_mixtures_path):
-                        load_future = load_executor.submit(load_audio, all_mixtures_path[index + 1], sr=sample_rate, mono=False)
-                    else:
-                        load_future = None
+                    load_future = self._submit_load(load_executor, all_mixtures_path, index + 1, sample_rate)
 
                     self.logger.debug(f"Starting separation process for audio_file: {path}")
                     try:
@@ -436,33 +456,12 @@ class MSSeparator:
 
                     self.logger.debug(f"Separation audio_file: {path} completed. Starting to save results.")
                     file_name, _ = os.path.splitext(os.path.basename(path))
-                    save_futures = []
-                    for instr, audio in results.items():
-                        save_dir = _get_store_dir(self.store_dirs, instr)
-                        if not save_dir:
-                            continue
-                        dirs = save_dir if isinstance(save_dir, list) else [save_dir]
-                        for dir in dirs:
-                            save_futures.append(
-                                save_executor.submit(self._save_output, instr, audio, sr, file_name, dir)
-                            )
-                    pending_saves.append((path, save_futures))
-
-                    while len(pending_saves) > max_pending_saves:
-                        saved_path, saved_futures = pending_saves.popleft()
-                        if self._wait_save_futures(saved_path, saved_futures):
-                            success_files.append(os.path.basename(saved_path))
-                            if progress is not None:
-                                progress.update(1)
+                    pending_saves.append((path, self._submit_save_outputs(save_executor, results, sr, file_name)))
+                    self._drain_save_queue(pending_saves, success_files, progress, max_pending_saves)
 
                     del mix, results
 
-                while pending_saves:
-                    saved_path, saved_futures = pending_saves.popleft()
-                    if self._wait_save_futures(saved_path, saved_futures):
-                        success_files.append(os.path.basename(saved_path))
-                        if progress is not None:
-                            progress.update(1)
+                self._drain_save_queue(pending_saves, success_files, progress)
         finally:
             if progress is not None:
                 progress.close()

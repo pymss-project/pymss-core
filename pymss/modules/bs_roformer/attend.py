@@ -2,38 +2,32 @@ from functools import wraps
 from collections import namedtuple
 
 import os
+import re
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 
-# constants
 
 FlashAttentionConfig = namedtuple('FlashAttentionConfig', ['enable_flash', 'enable_math', 'enable_mem_efficient'])
+_VERSION_RE = re.compile(r'\d+')
 
-# helpers
 
 def exists(val):
     return val is not None
+
 
 def default(v, d):
     return v if exists(v) else d
 
 
 def major_minor(version_string):
-    parts = version_string.split('+', 1)[0].split('.')[:2]
-    numbers = []
-    for part in parts:
-        digits = ''
-        for char in part:
-            if not char.isdigit():
-                break
-            digits += char
-        numbers.append(int(digits or 0))
+    numbers = [int(match.group(0)) if (match := _VERSION_RE.match(part)) else 0 for part in version_string.split('+', 1)[0].split('.')[:2]]
     return tuple(numbers + [0] * (2 - len(numbers)))
 
 
 def once(fn):
     called = False
+
     @wraps(fn)
     def inner(x):
         nonlocal called
@@ -45,7 +39,6 @@ def once(fn):
 
 print_once = once(print)
 
-# main class
 
 class Attend(nn.Module):
     def __init__(
@@ -61,8 +54,6 @@ class Attend(nn.Module):
 
         self.flash = flash
         assert not (flash and major_minor(torch.__version__) < (2, 0)), 'in order to use flash attention, you must be using pytorch 2.0 or above'
-
-        # determine efficient attention configs for cuda and cpu
 
         self.cpu_config = FlashAttentionConfig(True, True, True)
         self.cuda_config = None
@@ -84,51 +75,17 @@ class Attend(nn.Module):
             self.cuda_config = FlashAttentionConfig(False, True, True)
 
     def flash_attn(self, q, k, v):
-        is_cuda = q.is_cuda
-
         if exists(self.scale):
-            default_scale = q.shape[-1] ** -0.5
-            q = q * (self.scale / default_scale)
+            q = q * (self.scale / (q.shape[-1] ** -0.5))
 
-        # Check if there is a compatible device for flash attention
-
-        config = self.cuda_config if is_cuda else self.cpu_config
-
-        # pytorch 2.0 flash attn: q, k, v, mask, dropout, softmax_scale
-
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p = self.dropout if self.training else 0.
-            )
-
-        return out
+        with torch.backends.cuda.sdp_kernel(**(self.cuda_config if q.is_cuda else self.cpu_config)._asdict()):
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
 
     def forward(self, q, k, v):
-        """
-        einstein notation
-        b - batch
-        h - heads
-        n, i, j - sequence length (base sequence length, source, target)
-        d - feature dimension
-        """
-
         scale = default(self.scale, q.shape[-1] ** -0.5)
 
         if self.flash:
             return self.flash_attn(q, k, v)
 
-        # similarity
-
         sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
-
-        # attention
-
-        attn = sim.softmax(dim=-1)
-        attn = self.attn_dropout(attn)
-
-        # aggregate values
-
-        out = einsum("b h i j, b h j d -> b h i d", attn, v)
-
-        return out
+        return einsum("b h i j, b h j d -> b h i d", self.attn_dropout(sim.softmax(dim=-1)), v)

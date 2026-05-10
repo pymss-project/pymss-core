@@ -88,18 +88,11 @@ class NormMLP(BaseNormMLP):
     def reshape_output(self, mb):
         batch, n_time, _ = mb.shape
         if self.complex_mask:
-            mb = mb.reshape(
-                batch,
-                n_time,
-                self.in_channels,
-                self.bandwidth,
-                self.reim,
-            ).contiguous()
-            mb = torch.view_as_complex(mb)
+            mb = torch.view_as_complex(mb.reshape(batch, n_time, self.in_channels, self.bandwidth, self.reim).contiguous())
         else:
             mb = mb.reshape(batch, n_time, self.in_channels, self.bandwidth)
 
-        return torch.permute(mb, (0, 2, 3, 1))
+        return mb.permute(0, 2, 3, 1)
 
     def forward(self, qb):
         if hasattr(self, 'combined'):
@@ -261,11 +254,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
             return q
 
         batch, n_bands, n_time, _ = q.shape
-        cond = torch.ones(
-            (batch, n_bands, n_time, self.cond_dim),
-            device=q.device,
-            dtype=q.dtype,
-        )
+        cond = torch.ones(batch, n_bands, n_time, self.cond_dim, device=q.device, dtype=q.dtype)
         return torch.cat([q, cond], dim=-1)
 
     def forward(self, q, cond=None):
@@ -276,11 +265,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
 
         mask_list = self.compute_masks(q) if self.compute_all_masks else None
         dtype = torch.complex64 if self.output_dtype == 'complex64' else mask_list[0].dtype
-        masks = torch.zeros(
-            (batch, self.in_channels, self.n_freq, n_time),
-            device=q.device,
-            dtype=dtype,
-        )
+        masks = torch.zeros(batch, self.in_channels, self.n_freq, n_time, device=q.device, dtype=dtype)
 
         for im in range(n_bands):
             fstart, fend = self.band_specs[im]

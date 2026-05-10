@@ -29,9 +29,8 @@ class _TorchSpectrogram(nn.Module):
 
     def forward(self, x):
         leading_shape = x.shape[:-1]
-        x = x.reshape(-1, x.shape[-1])
         spec = torch.stft(
-            x,
+            x.reshape(-1, x.shape[-1]),
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,
@@ -48,9 +47,8 @@ class _TorchSpectrogram(nn.Module):
 class _TorchInverseSpectrogram(_TorchSpectrogram):
     def forward(self, x, length=None):
         leading_shape = x.shape[:-2]
-        x = x.reshape(-1, *x.shape[-2:])
         audio = torch.istft(
-            x,
+            x.reshape(-1, *x.shape[-2:]),
             n_fft=self.n_fft,
             hop_length=self.hop_length,
             win_length=self.win_length,

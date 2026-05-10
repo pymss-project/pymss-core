@@ -8,13 +8,13 @@ from .bandsplit import BandSplitModule
 from .maskestim import MaskEstimationModule, OverlappingMaskEstimationModule
 from .tfmodel import SeqBandModellingModule
 
-__all__ = ["MultiSourceMultiMaskBandSplitCoreRNN"]
+__all__ = ("MultiSourceMultiMaskBandSplitCoreRNN",)
 
 
 class MultiMaskBandSplitCoreBase(BandsplitCoreBase):
     def forward(self, x, cond=None, compute_residual: bool = True):
         batch, in_chan, n_freq, n_time = x.shape
-        x = torch.reshape(x, (-1, 1, n_freq, n_time))
+        x = x.reshape(-1, 1, n_freq, n_time)
 
         z = self.band_split(x)
         q = self.tf_model(z)
@@ -23,7 +23,7 @@ class MultiMaskBandSplitCoreBase(BandsplitCoreBase):
         for stem, mask_estimator in self.mask_estim.items():
             mask = mask_estimator(q, cond=cond)
             separated = self.mask(x, mask)
-            out[stem] = torch.reshape(separated, (batch, in_chan, n_freq, n_time))
+            out[stem] = separated.reshape(batch, in_chan, n_freq, n_time)
 
         return {"spectrogram": out}
 

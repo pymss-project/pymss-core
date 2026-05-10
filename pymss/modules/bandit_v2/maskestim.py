@@ -109,11 +109,11 @@ class MaskEstimationModule(_MaskEstimationModule):
         )
 
 
-__all__ = [
+__all__ = (
     "BaseNormMLP",
     "MaskEstimationModule",
     "MaskEstimationModuleBase",
     "MaskEstimationModuleSuperBase",
     "NormMLP",
     "OverlappingMaskEstimationModule",
-]
+)

@@ -8,11 +8,7 @@ import torch
 
 
 ARM = "arm"
-
-if platform.system() == "Darwin":
-    wav_resolution = "polyphase" if platform.processor() == ARM or ARM in platform.platform() else "soxr_hq"
-else:
-    wav_resolution = "soxr_hq"
+wav_resolution = "polyphase" if platform.system() == "Darwin" and (platform.processor() == ARM or ARM in platform.platform()) else "soxr_hq"
 
 
 _HANN_WINDOW_CACHE = {}
@@ -35,13 +31,8 @@ def resample_audio(wave, orig_sr, target_sr, res_type=None):
     if orig_sr == target_sr:
         return np.asfortranarray(wave)
 
-    candidates = []
-    if res_type:
-        candidates.append(res_type)
-    candidates.extend(["soxr_hq", "polyphase"])
-
     last_error = None
-    for candidate in dict.fromkeys(candidates):
+    for candidate in dict.fromkeys(([res_type] if res_type else []) + ["soxr_hq", "polyphase"]):
         try:
             return librosa.resample(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=candidate)
         except (ImportError, ModuleNotFoundError) as exc:
@@ -62,26 +53,23 @@ def _linear_resample(wave, orig_sr, target_sr):
     if original_length == target_length:
         return np.asfortranarray(wave)
 
-    old_x = np.linspace(0.0, 1.0, original_length, endpoint=False)
-    new_x = np.linspace(0.0, 1.0, target_length, endpoint=False)
+    old_x, new_x = np.linspace(0.0, 1.0, original_length, endpoint=False), np.linspace(0.0, 1.0, target_length, endpoint=False)
     if wave.ndim == 1:
         return np.asfortranarray(np.interp(new_x, old_x, wave).astype(wave.dtype, copy=False))
-    channels = [
+    return np.asfortranarray(np.stack([
         np.interp(new_x, old_x, channel).astype(wave.dtype, copy=False)
         for channel in wave.reshape((-1, original_length))
-    ]
-    return np.asfortranarray(np.stack(channels, axis=0).reshape(wave.shape[:-1] + (target_length,)))
+    ], axis=0).reshape(wave.shape[:-1] + (target_length,)))
 
 
 def crop_center(h1, h2):
-    h1_shape = h1.size()
-    h2_shape = h2.size()
-    if h1_shape[3] == h2_shape[3]:
+    h1_time, h2_time = h1.size(3), h2.size(3)
+    if h1_time == h2_time:
         return h1
-    if h1_shape[3] < h2_shape[3]:
+    if h1_time < h2_time:
         raise ValueError("h1_shape[3] must be greater than h2_shape[3]")
-    start = (h1_shape[3] - h2_shape[3]) // 2
-    return h1[:, :, :, start:start + h2_shape[3]]
+    start = (h1_time - h2_time) // 2
+    return h1[:, :, :, start:start + h2_time]
 
 
 def preprocess(x_spec):
@@ -89,12 +77,8 @@ def preprocess(x_spec):
 
 
 def make_padding(width, cropsize, offset):
-    left = offset
-    roi_size = cropsize - offset * 2
-    if roi_size == 0:
-        roi_size = cropsize
-    right = roi_size - (width % roi_size) + left
-    return left, right, roi_size
+    roi_size = cropsize - offset * 2 or cropsize
+    return offset, roi_size - (width % roi_size) + offset, roi_size
 
 
 def merge_artifacts(y_mask, thres=0.01, min_range=64, fade_size=32):
@@ -131,26 +115,19 @@ def merge_artifacts(y_mask, thres=0.01, min_range=64, fade_size=32):
         y_mask += weight * (1 - y_mask)
         mask = y_mask
     except Exception as exc:
-        error_name = type(exc).__name__
-        traceback_text = "".join(traceback.format_tb(exc.__traceback__))
-        print(f'Post Process Failed: {error_name}: "{exc}"\n{traceback_text}"')
+        print(f'Post Process Failed: {type(exc).__name__}: "{exc}"\n{"".join(traceback.format_tb(exc.__traceback__))}"')
     return mask
 
 
 def convert_channels(spec, mp, band):
     mode = mp.param["band"][band].get("convert_channels")
     if mode == "mid_side_c":
-        left = np.add(spec[0], spec[1] * 0.25)
-        right = np.subtract(spec[1], spec[0] * 0.25)
-    elif mode == "mid_side":
-        left = np.add(spec[0], spec[1]) / 2
-        right = np.subtract(spec[0], spec[1])
-    elif mode == "stereo_n":
-        left = np.add(spec[0], spec[1] * 0.25) / 0.9375
-        right = np.add(spec[1], spec[0] * 0.25) / 0.9375
-    else:
-        return spec
-    return np.asfortranarray([left, right])
+        return np.asfortranarray([np.add(spec[0], spec[1] * 0.25), np.subtract(spec[1], spec[0] * 0.25)])
+    if mode == "mid_side":
+        return np.asfortranarray([np.add(spec[0], spec[1]) / 2, np.subtract(spec[0], spec[1])])
+    if mode == "stereo_n":
+        return np.asfortranarray([np.add(spec[0], spec[1] * 0.25) / 0.9375, np.add(spec[1], spec[0] * 0.25) / 0.9375])
+    return spec
 
 
 def combine_spectrograms(specs, mp, is_v51_model=False):
@@ -158,6 +135,7 @@ def combine_spectrograms(specs, mp, is_v51_model=False):
     spec_c = np.zeros((2, mp.param["bins"] + 1, length), dtype=np.complex64)
     offset = 0
     bands_n = len(mp.param["band"])
+    pre_start, pre_stop = mp.param["pre_filter_start"], mp.param["pre_filter_stop"]
 
     for d in range(1, bands_n + 1):
         band = mp.param["band"][d]
@@ -168,15 +146,15 @@ def combine_spectrograms(specs, mp, is_v51_model=False):
     if offset > mp.param["bins"]:
         raise ValueError("Too much bins")
 
-    if mp.param["pre_filter_start"] > 0:
+    if pre_start > 0:
         if is_v51_model:
-            spec_c *= get_lp_filter_mask(spec_c.shape[1], mp.param["pre_filter_start"], mp.param["pre_filter_stop"])
+            spec_c *= get_lp_filter_mask(spec_c.shape[1], pre_start, pre_stop)
         elif bands_n == 1:
-            spec_c = fft_lp_filter(spec_c, mp.param["pre_filter_start"], mp.param["pre_filter_stop"])
+            spec_c = fft_lp_filter(spec_c, pre_start, pre_stop)
         else:
             gain_prev = 1
-            for b in range(mp.param["pre_filter_start"] + 1, mp.param["pre_filter_stop"]):
-                gain = math.pow(10, -(b - mp.param["pre_filter_start"]) * (3.5 - gain_prev) / 20.0)
+            for b in range(pre_start + 1, pre_stop):
+                gain = math.pow(10, -(b - pre_start) * (3.5 - gain_prev) / 20.0)
                 gain_prev = gain
                 spec_c[:, b, :] *= gain
 
@@ -187,22 +165,14 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False, t
     if wave.ndim == 1:
         wave = np.asfortranarray([wave, wave])
 
+    left, right = (np.asfortranarray(channel) for channel in wave[:2])
     if not is_v51_model:
         if mp.param["reverse"]:
-            left = np.flip(np.asfortranarray(wave[0]))
-            right = np.flip(np.asfortranarray(wave[1]))
+            left, right = np.flip(left), np.flip(right)
         elif mp.param["mid_side"]:
-            left = np.asfortranarray(np.add(wave[0], wave[1]) / 2)
-            right = np.asfortranarray(np.subtract(wave[0], wave[1]))
+            left, right = np.asfortranarray(np.add(wave[0], wave[1]) / 2), np.asfortranarray(np.subtract(wave[0], wave[1]))
         elif mp.param["mid_side_b2"]:
-            left = np.asfortranarray(np.add(wave[1], wave[0] * 0.5))
-            right = np.asfortranarray(np.subtract(wave[0], wave[1] * 0.5))
-        else:
-            left = np.asfortranarray(wave[0])
-            right = np.asfortranarray(wave[1])
-    else:
-        left = np.asfortranarray(wave[0])
-        right = np.asfortranarray(wave[1])
+            left, right = np.asfortranarray(np.add(wave[1], wave[0] * 0.5)), np.asfortranarray(np.subtract(wave[0], wave[1] * 0.5))
 
     spec = _torch_stft(np.asfortranarray([left, right]), n_fft, hop_length, torch_device)
     if spec is None:
@@ -216,8 +186,7 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False, t
 def _torch_stft(wave, n_fft, hop_length, device):
     if device is None or torch.device(device).type != "cuda":
         return None
-    wave_np = np.ascontiguousarray(wave)
-    wave_t = torch.from_numpy(wave_np).to(device)
+    wave_t = torch.from_numpy(np.ascontiguousarray(wave)).to(device)
     window = _hann_window(n_fft, wave_t.dtype, device)
     spec = torch.stft(
         wave_t,
@@ -270,10 +239,8 @@ def spectrogram_to_wave(spec, hop_length=1024, mp=None, band=0, is_v51_model=Tru
 
 def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v51_model=False, torch_device=None):
     spec_m = np.where(np.isnan(spec_m), 0, spec_m)
-    if extra_bins_h is not None:
-        extra_bins_h = int(extra_bins_h)
-    if extra_bins is not None:
-        extra_bins = np.where(np.isnan(extra_bins), 0, extra_bins)
+    extra_bins_h = None if extra_bins_h is None else int(extra_bins_h)
+    extra_bins = None if extra_bins is None else np.where(np.isnan(extra_bins), 0, extra_bins)
 
     bands_n = len(mp.param["band"])
     offset = 0
@@ -288,8 +255,7 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
 
         if d == bands_n:
             if extra_bins_h is not None:
-                max_bin = bp["n_fft"] // 2
-                spec_s[:, max_bin - extra_bins_h:max_bin, :] = extra_bins[:, :extra_bins_h, :]
+                spec_s[:, bp["n_fft"] // 2 - extra_bins_h:bp["n_fft"] // 2, :] = extra_bins[:, :extra_bins_h, :]
             if bp["hpf_start"] > 0:
                 spec_s = spec_s * get_hp_filter_mask(spec_s.shape[1], bp["hpf_start"], bp["hpf_stop"] - 1) if is_v51_model else fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
             band_wave = spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)
@@ -311,36 +277,34 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
                 else:
                     spec_s = fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
                     spec_s = fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
-                wave2 = np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device))
-                wave = resample_audio(wave2, orig_sr=bp["sr"], target_sr=sr, res_type=wav_resolution)
+                wave = resample_audio(np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)), orig_sr=bp["sr"], target_sr=sr, res_type=wav_resolution)
 
     return wave
 
 
-def get_lp_filter_mask(n_bins, bin_start, bin_stop):
-    key = ("lp", int(n_bins), int(bin_start), int(bin_stop))
+def _get_filter_mask(kind, n_bins, bin_start, bin_stop):
+    key = (kind, int(n_bins), int(bin_start), int(bin_stop))
     mask = _FILTER_MASK_CACHE.get(key)
     if mask is None:
-        mask = np.concatenate([
+        mask = np.concatenate(([
             np.ones((bin_start - 1, 1)),
             np.linspace(1, 0, bin_stop - bin_start + 1)[:, None],
             np.zeros((n_bins - bin_stop, 1)),
-        ], axis=0)
-        _FILTER_MASK_CACHE[key] = mask
-    return mask
-
-
-def get_hp_filter_mask(n_bins, bin_start, bin_stop):
-    key = ("hp", int(n_bins), int(bin_start), int(bin_stop))
-    mask = _FILTER_MASK_CACHE.get(key)
-    if mask is None:
-        mask = np.concatenate([
+        ] if kind == "lp" else [
             np.zeros((bin_stop + 1, 1)),
             np.linspace(0, 1, 1 + bin_start - bin_stop)[:, None],
             np.ones((n_bins - bin_start - 2, 1)),
-        ], axis=0)
+        ]), axis=0)
         _FILTER_MASK_CACHE[key] = mask
     return mask
+
+
+def get_lp_filter_mask(n_bins, bin_start, bin_stop):
+    return _get_filter_mask("lp", n_bins, bin_start, bin_stop)
+
+
+def get_hp_filter_mask(n_bins, bin_start, bin_stop):
+    return _get_filter_mask("hp", n_bins, bin_start, bin_stop)
 
 
 def fft_lp_filter(spec, bin_start, bin_stop):
@@ -362,16 +326,11 @@ def fft_hp_filter(spec, bin_start, bin_stop):
 
 
 def mirroring(mode, spec_m, input_high_end, mp):
-    if mode == "mirroring":
-        mirror = np.flip(np.abs(spec_m[:, mp.param["pre_filter_start"] - 10 - input_high_end.shape[1]:mp.param["pre_filter_start"] - 10, :]), 1)
-        mirror = mirror * np.exp(1.0j * np.angle(input_high_end))
-        return np.where(np.abs(input_high_end) <= np.abs(mirror), input_high_end, mirror)
-
-    if mode == "mirroring2":
-        mirror = np.flip(np.abs(spec_m[:, mp.param["pre_filter_start"] - 10 - input_high_end.shape[1]:mp.param["pre_filter_start"] - 10, :]), 1)
-        merged = np.multiply(mirror, input_high_end * 1.7)
-        return np.where(np.abs(input_high_end) <= np.abs(merged), input_high_end, merged)
-    return input_high_end
+    if mode not in ("mirroring", "mirroring2"):
+        return input_high_end
+    mirror = np.flip(np.abs(spec_m[:, mp.param["pre_filter_start"] - 10 - input_high_end.shape[1]:mp.param["pre_filter_start"] - 10, :]), 1)
+    mirror = mirror * np.exp(1.0j * np.angle(input_high_end)) if mode == "mirroring" else np.multiply(mirror, input_high_end * 1.7)
+    return np.where(np.abs(input_high_end) <= np.abs(mirror), input_high_end, mirror)
 
 
 def adjust_aggr(mask, is_non_accom_stem, aggressiveness):
@@ -382,14 +341,12 @@ def adjust_aggr(mask, is_non_accom_stem, aggressiveness):
         if np.any(aggr > 10) or np.any(aggr < -10):
             print(f"Warning: Extreme aggressiveness values detected: {aggr}")
 
-        aggr = [aggr, aggr]
-        correction = aggressiveness["aggr_correction"]
-        if correction is not None:
+        aggr = np.array([aggr, aggr])
+        if (correction := aggressiveness["aggr_correction"]) is not None:
             aggr[0] += correction["left"]
             aggr[1] += correction["right"]
 
         split_bin = aggressiveness["split_bin"]
-        for ch in range(2):
-            mask[ch, :split_bin] = np.power(mask[ch, :split_bin], 1 + aggr[ch] / 3)
-            mask[ch, split_bin:] = np.power(mask[ch, split_bin:], 1 + aggr[ch])
+        mask[:, :split_bin] = np.power(mask[:, :split_bin], 1 + aggr[:, None, None] / 3)
+        mask[:, split_bin:] = np.power(mask[:, split_bin:], 1 + aggr[:, None, None])
     return mask
