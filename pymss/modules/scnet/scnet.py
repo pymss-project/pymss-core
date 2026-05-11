@@ -108,6 +108,9 @@ class SDblock(nn.Module):
 
 
 class SCNet(nn.Module):
+    mps_model_backend = "torch"
+    mps_model_compute_dtype = torch.float16
+
     def __init__(self,
                  sources=['drums', 'bass', 'other', 'vocals'],
                  audio_channels=2,
@@ -149,7 +152,45 @@ class SCNet(nn.Module):
 
         self.separation_net = SeparationNet(channels=dims[-1], expand=expand, num_layers=num_dplayer)
 
+    def set_mps_model_backend(self, backend=None, compute_dtype=None):
+        backend = (backend or "torch").lower()
+        if backend not in ("torch", "mlx_full"):
+            raise ValueError("mps_model_backend must be 'torch' or 'mlx_full'")
+        self.mps_model_backend = backend
+        if compute_dtype is None:
+            return
+        if isinstance(compute_dtype, str):
+            compute_dtype = {
+                "float16": torch.float16,
+                "fp16": torch.float16,
+                "float32": torch.float32,
+                "fp32": torch.float32,
+            }.get(compute_dtype.lower(), compute_dtype)
+        if compute_dtype not in (torch.float16, torch.float32):
+            raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
+        self.mps_model_compute_dtype = compute_dtype
+
+    def _use_mlx_full_forward(self, x):
+        return (
+            not self.training
+            and self.mps_model_backend == "mlx_full"
+            and x.device.type == "mps"
+        )
+
+    def mlx_forward_mx(self, raw_audio):
+        from ..scnet_mlx import mlx_forward_scnet_mx
+
+        return mlx_forward_scnet_mx(self, raw_audio, self.mps_model_compute_dtype)
+
     def forward(self, x):
+        if self._use_mlx_full_forward(x):
+            try:
+                from ..scnet_mlx import mlx_forward_scnet
+
+                return mlx_forward_scnet(self, x, self.mps_model_compute_dtype)
+            except Exception as exc:
+                self._pymss_mlx_full_backend_error = repr(exc)
+                self.mps_model_backend = "torch"
         B = x.shape[0]
         padding = self.hop_length - x.shape[-1] % self.hop_length
         if (x.shape[-1] + padding) // self.hop_length % 2 == 0:

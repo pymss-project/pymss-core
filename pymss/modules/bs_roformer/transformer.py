@@ -102,6 +102,8 @@ class Attention(Module):
         self.flash = flash
         self.dropout = dropout
         self.rotary_embed = rotary_embed
+        self.mps_attention_backend = "torch"
+        self.mps_mlx_min_tokens = 128
         self.attend = Attend(flash=flash, dropout=dropout)
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=(shared_qkv_bias is not None))
@@ -116,7 +118,57 @@ class Attention(Module):
         if shared_out_bias is not None:
             self.to_out[0].bias = shared_out_bias
 
+    def set_mps_attention_backend(self, backend=None, min_tokens=128):
+        backend = (backend or "torch").lower()
+        if backend not in ("torch", "mlx", "mlx_attention", "mlx_transformer"):
+            raise ValueError("mps_attention_backend must be 'torch', 'mlx', 'mlx_attention', or 'mlx_transformer'")
+        self.mps_attention_backend = "torch" if backend == "mlx_transformer" else backend
+        self.mps_mlx_min_tokens = 128 if min_tokens is None else int(min_tokens)
+
+    def _use_mlx_attention_layer(self, x):
+        return (
+            self.flash
+            and not self.training
+            and self.mps_attention_backend == "mlx_attention"
+            and x.device.type == "mps"
+            and (x.dtype == torch.float16 or torch.is_autocast_enabled("mps"))
+            and x.shape[-2] >= self.mps_mlx_min_tokens
+        )
+
+    def _use_mlx_sdpa(self, q):
+        return (
+            self.flash
+            and not self.training
+            and self.mps_attention_backend == "mlx"
+            and q.device.type == "mps"
+            and q.dtype == torch.float16
+            and q.shape[-2] >= self.mps_mlx_min_tokens
+        )
+
+    def _attention(self, q, k, v):
+        if self._use_mlx_sdpa(q):
+            try:
+                from .mlx_attention import mlx_bridge_sdpa
+
+                return mlx_bridge_sdpa(q, k, v)
+            except Exception as exc:
+                self._pymss_mlx_backend_error = repr(exc)
+                self.mps_attention_backend = "torch"
+
+        if self.flash:
+            return F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.)
+        return self.attend(q, k, v)
+
     def forward(self, x):
+        if self._use_mlx_attention_layer(x):
+            try:
+                from .mlx_attention import mlx_bridge_attention
+
+                return mlx_bridge_attention(self, x)
+            except Exception as exc:
+                self._pymss_mlx_backend_error = repr(exc)
+                self.mps_attention_backend = "torch"
+
         x = self.norm(x)
         q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
 
@@ -124,7 +176,7 @@ class Attention(Module):
             q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
 
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=self.dropout if self.training else 0.) if self.flash else self.attend(q, k, v)
+        out = self._attention(q, k, v)
         return self.to_out((out.transpose(1, 2) * self.to_gates(x).unsqueeze(-1).sigmoid()).flatten(start_dim=-2))
 
 
@@ -165,7 +217,38 @@ class Transformer(Module):
 
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
 
+        self.mps_attention_backend = "torch"
+        self.mps_mlx_min_tokens = 128
+
+    def set_mps_attention_backend(self, backend=None, min_tokens=128):
+        backend = (backend or "torch").lower()
+        if backend not in ("torch", "mlx", "mlx_attention", "mlx_transformer"):
+            raise ValueError("mps_attention_backend must be 'torch', 'mlx', 'mlx_attention', or 'mlx_transformer'")
+        self.mps_attention_backend = backend
+        self.mps_mlx_min_tokens = 128 if min_tokens is None else int(min_tokens)
+        child_backend = "torch" if backend == "mlx_transformer" else backend
+        for attn, _ in self.layers:
+            attn.set_mps_attention_backend(child_backend, self.mps_mlx_min_tokens)
+
+    def _use_mlx_transformer(self, x):
+        return (
+            self.mps_attention_backend == "mlx_transformer"
+            and not self.training
+            and x.device.type == "mps"
+            and (x.dtype == torch.float16 or torch.is_autocast_enabled("mps"))
+            and x.shape[-2] >= self.mps_mlx_min_tokens
+        )
+
     def forward(self, x):
+        if self._use_mlx_transformer(x):
+            try:
+                from .mlx_attention import mlx_bridge_transformer
+
+                return mlx_bridge_transformer(self, x)
+            except Exception as exc:
+                self._pymss_mlx_backend_error = repr(exc)
+                self.set_mps_attention_backend("torch", self.mps_mlx_min_tokens)
+
         for attn, ff in self.layers:
             x = attn(x) + x
             x = ff(x) + x

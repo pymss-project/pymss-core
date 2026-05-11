@@ -59,6 +59,19 @@ separator.process_folder('path/to/input_folder')
 - debug: 是否启用调试模式，默认为 False。
 - inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size 和 normalize。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。
 
+### Apple Silicon MLX 后端
+
+在 `device='mps'` 时，可以通过 `inference_params` 显式启用可选 MLX 完整 forward：
+
+```python
+inference_params={
+    "mps_model_backend": "mlx_full",
+    "mps_model_compute_dtype": "float16",
+}
+```
+
+该后端需要本地安装 `mlx`，但当前不会作为 `setup.py` 必需依赖安装。默认推理仍使用 Torch 路径；缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退 Torch。
+
 ### 模型兼容性
 
 Demucs 仅支持配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint。当前无外部依赖推理路径不支持 classic `model: demucs`、`model: hdemucs` 和 non-CaC Wiener Demucs 配置。
