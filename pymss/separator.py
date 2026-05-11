@@ -138,6 +138,13 @@ def _runtime_model_type(model_type, state_dict):
     return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
 
 
+def _store_torch_model_on_cpu_for_mlx(config, device):
+    return (
+        torch.device(device).type == "mps"
+        and config.inference.get("mps_model_backend", "torch") == "mlx_full"
+    )
+
+
 def _coerce_mps_float64(module):
     for child in module.modules():
         for name, param in list(child._parameters.items()):
@@ -383,9 +390,10 @@ class MSSeparator:
         if torch.device(self.device).type == "mps":
             _coerce_mps_float64(model)
 
-        if len(self.device_ids) > 1:
+        keep_torch_model_cpu = _store_torch_model_on_cpu_for_mlx(config, self.device)
+        if len(self.device_ids) > 1 and not keep_torch_model_cpu:
             model = torch.nn.DataParallel(model, device_ids=self.device_ids)
-        model = model.to(self.device)
+        model = model.to("cpu" if keep_torch_model_cpu else self.device)
         model.eval()
 
         self.logger.debug(f"Loading model completed, duration: {time() - start_time:.2f} seconds")
