@@ -29,6 +29,10 @@ INFERENCE_PARAM_TARGETS = {
     'post_process_threshold': 'inference',
     'high_end_process': 'inference',
     'use_amp': 'inference',
+    'mps_attention_backend': 'inference',
+    'mps_mlx_min_tokens': 'inference',
+    'mps_model_backend': 'inference',
+    'mps_model_compute_dtype': 'inference',
     'fuse_conv_bn': 'inference',
     'use_channels_last': 'inference',
 }
@@ -39,6 +43,9 @@ PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'enable_post_process',
     'high_end_process',
     'use_amp',
+    'mps_attention_backend',
+    'mps_model_backend',
+    'mps_model_compute_dtype',
     'fuse_conv_bn',
     'use_channels_last',
 })
@@ -66,19 +73,33 @@ def _unwrap_state_dict(state_dict):
     return state_dict
 
 
+def _apollo_state_dict_path(model_path):
+    root, ext = os.path.splitext(model_path)
+    candidates = []
+    if ext:
+        candidates.append(f"{root}.pymss_state_dict.pt")
+    candidates.append(f"{model_path}.pymss_state_dict.pt")
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return model_path
+
+
 def _load_state_dict(model_type, model_path, device):
     if model_type == 'vr':
         return None
+    map_location = "cpu" if torch.device(device).type == "mps" else device
     if model_type == 'htdemucs':
         stubbed_modules = _install_demucs_pickle_stubs()
         try:
-            state_dict = torch.load(model_path, map_location=device, weights_only=False)
+            state_dict = torch.load(model_path, map_location=map_location, weights_only=False)
         finally:
             _restore_modules(stubbed_modules)
         return _unwrap_state_dict(state_dict)
     if model_type == 'apollo':
-        return _unwrap_state_dict(torch.load(model_path, map_location=device, weights_only=False))
-    return torch.load(model_path, map_location=device, weights_only=True)
+        model_path = _apollo_state_dict_path(model_path)
+        return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=False))
+    return torch.load(model_path, map_location=map_location, weights_only=True)
 
 
 def _install_demucs_pickle_stubs():
@@ -115,6 +136,16 @@ def _restore_modules(previous):
 
 def _runtime_model_type(model_type, state_dict):
     return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
+
+
+def _coerce_mps_float64(module):
+    for child in module.modules():
+        for name, param in list(child._parameters.items()):
+            if param is not None and param.dtype == torch.float64:
+                child._parameters[name] = torch.nn.Parameter(param.detach().float(), requires_grad=param.requires_grad)
+        for name, buffer in list(child._buffers.items()):
+            if buffer is not None and buffer.dtype == torch.float64:
+                child._buffers[name] = buffer.float()
 
 
 def _model_is_stereo(model_type, config):
@@ -349,6 +380,8 @@ class MSSeparator:
         self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
 
         model.load_state_dict(state_dict)
+        if torch.device(self.device).type == "mps":
+            _coerce_mps_float64(model)
 
         if len(self.device_ids) > 1:
             model = torch.nn.DataParallel(model, device_ids=self.device_ids)
@@ -361,6 +394,18 @@ class MSSeparator:
     def apply_model_inference_config(self, model, config):
         if hasattr(model, 'set_mask_mode'):
             model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
+        model_backend = config.inference.get('mps_model_backend', None)
+        if model_backend is not None:
+            compute_dtype = config.inference.get('mps_model_compute_dtype', None)
+            for module in model.modules():
+                if hasattr(module, 'set_mps_model_backend'):
+                    module.set_mps_model_backend(model_backend, compute_dtype)
+        backend = config.inference.get('mps_attention_backend', None)
+        min_tokens = config.inference.get('mps_mlx_min_tokens', 128)
+        if backend is not None:
+            for module in model.modules():
+                if hasattr(module, 'set_mps_attention_backend'):
+                    module.set_mps_attention_backend(backend, min_tokens)
 
     def update_inference_params(self, config, params):
         for key, section in INFERENCE_PARAM_TARGETS.items():

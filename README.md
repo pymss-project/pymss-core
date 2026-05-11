@@ -69,6 +69,19 @@ separator.process_folder('path/to/input_folder')
 - debug: Whether to enable debug mode, default is False.
 - inference_params: Inference parameters including batch_size, overlap_size, chunk_size, and normalize. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.
 
+### Apple Silicon MLX Backend
+
+On `device='mps'`, an optional full MLX forward path can be enabled explicitly:
+
+```python
+inference_params={
+    "mps_model_backend": "mlx_full",
+    "mps_model_compute_dtype": "float16",
+}
+```
+
+This backend requires `mlx` to be installed locally, but `mlx` is not a required dependency in `setup.py`. The default path remains Torch. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch.
+
 ### Model Compatibility
 
 Demucs support is limited to HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true`. Classic `model: demucs`, `model: hdemucs`, and non-CaC Wiener Demucs configs are not supported by this dependency-free inference path.

@@ -134,8 +134,9 @@ def _fit_tensor_length(x, length):
 
 
 def _autocast(device, enabled):
-    if torch.device(device).type == 'cuda' and enabled:
-        return torch.amp.autocast('cuda')
+    device_type = torch.device(device).type
+    if enabled and device_type in ('cuda', 'mps'):
+        return torch.amp.autocast(device_type, dtype=torch.float16)
     return nullcontext()
 
 
@@ -248,6 +249,158 @@ def _finalize_overlap(result, counter, length_init, border):
     return estimated_sources
 
 
+def _mlx_reflect_pad_1d(x, left=0, right=0):
+    import mlx.core as mx
+
+    parts = []
+    if left > 0:
+        parts.append(x[..., 1:left + 1][..., ::-1])
+    parts.append(x)
+    if right > 0:
+        parts.append(x[..., -right - 1:-1][..., ::-1])
+    return mx.concatenate(parts, axis=-1)
+
+
+def _mlx_get_windowing_array(window_size, fade_size):
+    import mlx.core as mx
+
+    if fade_size <= 0:
+        return mx.ones((window_size,), dtype=mx.float32)
+    fadein = mx.linspace(0, 1, fade_size)
+    fadeout = mx.linspace(1, 0, fade_size)
+    window = mx.ones((window_size,), dtype=mx.float32)
+    window = window.at[:fade_size].multiply(fadein)
+    window = window.at[-fade_size:].multiply(fadeout)
+    return window
+
+
+def _mlx_build_chunk_plan(total_length, chunk_size, step, fade_size):
+    starts = list(range(0, total_length, step))
+    normal_window = _mlx_get_windowing_array(chunk_size, fade_size)
+    windows = []
+    for start in starts:
+        length = min(chunk_size, total_length - start)
+        if start != 0 and start + length < total_length:
+            windows.append(normal_window)
+            continue
+        window = normal_window
+        if start == 0 and fade_size > 0:
+            window = window.at[:fade_size].add(1 - window[:fade_size])
+        if start + length >= total_length and fade_size > 0:
+            tail = slice(max(0, length - fade_size), length)
+            window = window.at[tail].add(1 - window[tail])
+        windows.append(window)
+    return starts, windows
+
+
+def _mlx_prepare_mix_for_chunks(mix, border):
+    import mlx.core as mx
+
+    length_init = mix.shape[-1]
+    mix = mx.array(np.asarray(mix, dtype=np.float32))
+    if mix.ndim == 1:
+        mix = mix[None, :]
+    if length_init > 2 * border and border > 0:
+        mix = _mlx_reflect_pad_1d(mix, border, border)
+    return mix, length_init
+
+
+def _mlx_extract_chunk(mix, start, chunk_size):
+    import mlx.core as mx
+
+    length = min(chunk_size, mix.shape[1] - start)
+    part = mix[:, start:start + chunk_size]
+    if length == chunk_size:
+        return part, length
+    pad = chunk_size - length
+    if length > chunk_size // 2 + 1:
+        part = _mlx_reflect_pad_1d(part, right=pad)
+    else:
+        part = mx.pad(part, [(0, 0), (0, pad)])
+    return part, length
+
+
+def _mlx_fit_length(x, length):
+    import mlx.core as mx
+
+    if x.shape[-1] > length:
+        return x[..., :length]
+    if x.shape[-1] < length:
+        return mx.pad(x, [(0, 0)] * (x.ndim - 1) + [(0, length - x.shape[-1])])
+    return x
+
+
+def _mlx_run_model_chunk(model, arr, chunk_size):
+    y = model.mlx_forward_mx(arr)
+    if y.ndim == arr.ndim:
+        y = y[:, None]
+    return _mlx_fit_length(y, chunk_size)
+
+
+def _mlx_add_weighted_chunk(result, counter, chunk, window, start, length):
+    window = window[:length].astype(result.dtype)
+    weighted = chunk[..., :length].astype(result.dtype) * window
+    target = slice(start, start + length)
+    for source_idx in range(result.shape[0]):
+        for channel_idx in range(result.shape[1]):
+            result = result.at[source_idx, channel_idx, target].add(weighted[source_idx, channel_idx])
+            counter = counter.at[source_idx, channel_idx, target].add(window)
+    return result, counter
+
+
+def _mlx_finalize_overlap(result, counter, length_init, border):
+    import mlx.core as mx
+
+    estimated_sources = result / counter
+    if length_init > 2 * border and border > 0:
+        estimated_sources = estimated_sources[..., border:-border]
+    estimated_sources = np.array(estimated_sources, copy=False)
+    np.nan_to_num(estimated_sources, copy=False, nan=0.0)
+    return estimated_sources
+
+
+def _can_demix_mlx_full(model, device):
+    return (
+        torch.device(device).type == "mps"
+        and getattr(model, "mps_model_backend", None) == "mlx_full"
+        and hasattr(model, "mps_model_compute_dtype")
+        and hasattr(model, "mlx_forward_mx")
+    )
+
+
+def demix_track_mlx_full(config, model, mix, device, pbar=False):
+    import mlx.core as mx
+
+    C = config.audio.chunk_size
+    step = _get_inference_step(config, C)
+    border = C - step
+    fade_size = min(C // 10, border)
+    batch_size = config.inference.batch_size
+
+    mix, length_init = _mlx_prepare_mix_for_chunks(mix, border)
+    starts, windows = _mlx_build_chunk_plan(mix.shape[1], C, step, fade_size)
+    result = mx.zeros((_source_count(config), mix.shape[0], mix.shape[1]), dtype=mx.float32)
+    counter = mx.zeros_like(result)
+    progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+
+    for batch_start in range(0, len(starts), batch_size):
+        batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
+        batch = [(_mlx_extract_chunk(mix, starts[idx], C), idx) for idx in batch_indices]
+        chunks = _mlx_run_model_chunk(model, mx.stack([chunk for (chunk, _), _ in batch], axis=0), C)
+        for j, ((_, length), idx) in enumerate(batch):
+            result, counter = _mlx_add_weighted_chunk(result, counter, chunks[j], windows[idx], starts[idx], length)
+        mx.eval(result, counter)
+        if progress_bar:
+            progress_bar.update(step * len(batch))
+
+    if progress_bar:
+        progress_bar.close()
+    return _sources_to_dict(config, _mlx_finalize_overlap(result, counter, length_init, border))
+
+
+demix_track_mlx_roformer = demix_track_mlx_full
+
+
 def demix_track(config, model, mix, device, pbar=False):
     C = config.audio.chunk_size
     step = _get_inference_step(config, C)
@@ -286,6 +439,9 @@ def demix_track(config, model, mix, device, pbar=False):
 
 
 def demix_track_demucs(config, model, mix, device, pbar=False):
+    if _can_demix_mlx_full(model, device):
+        return demix_track_mlx_full(config, model, mix.cpu().numpy(), device, pbar=pbar)
+
     S = len(config.training.instruments)
     C = config.training.samplerate * config.training.segment
     batch_size = config.inference.batch_size
@@ -331,6 +487,8 @@ def demix_track_demucs(config, model, mix, device, pbar=False):
     return dict(zip(config.training.instruments, estimated_sources)) if S > 1 else estimated_sources
 
 def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None) -> Dict[str, NDArray]:
+    if _can_demix_mlx_full(model, device):
+        return demix_track_mlx_full(config, model, mix, device, pbar=pbar)
     mix = torch.tensor(mix, dtype=torch.float32)
     if model_type == 'htdemucs':
         return demix_track_demucs(config, model, mix, device, pbar=pbar)

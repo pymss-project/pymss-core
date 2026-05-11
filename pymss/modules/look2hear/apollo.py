@@ -274,6 +274,9 @@ class BSNet(nn.Module):
 
 
 class Apollo(nn.Module):
+    mps_model_backend = "torch"
+    mps_model_compute_dtype = torch.float16
+
     def __init__(
             self,
             sr: int,
@@ -299,6 +302,36 @@ class Apollo(nn.Module):
         self.BN = nn.ModuleList([nn.Sequential(RMSNorm(width * 2 + 1), nn.Conv1d(width * 2 + 1, self.feature_dim, 1)) for width in self.band_width])
         self.net = nn.Sequential(*[BSNet(self.feature_dim) for _ in range(layer)])
         self.output = nn.ModuleList([nn.Sequential(RMSNorm(self.feature_dim), nn.Conv1d(self.feature_dim, width * 4, 1), nn.GLU(dim=1)) for width in self.band_width])
+
+    def set_mps_model_backend(self, backend=None, compute_dtype=None):
+        backend = (backend or "torch").lower()
+        if backend not in ("torch", "mlx_full"):
+            raise ValueError("mps_model_backend must be 'torch' or 'mlx_full'")
+        self.mps_model_backend = backend
+        if compute_dtype is None:
+            return
+        if isinstance(compute_dtype, str):
+            compute_dtype = {
+                "float16": torch.float16,
+                "fp16": torch.float16,
+                "float32": torch.float32,
+                "fp32": torch.float32,
+            }.get(compute_dtype.lower(), compute_dtype)
+        if compute_dtype not in (torch.float16, torch.float32):
+            raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
+        self.mps_model_compute_dtype = compute_dtype
+
+    def _use_mlx_full_forward(self, input):
+        return (
+            not self.training
+            and self.mps_model_backend == "mlx_full"
+            and input.device.type == "mps"
+        )
+
+    def mlx_forward_mx(self, raw_audio):
+        from ..apollo_mlx import mlx_forward_apollo_mx
+
+        return mlx_forward_apollo_mx(self, raw_audio, self.mps_model_compute_dtype)
 
     def _window(self, input):
         return self.window.to(device=input.device)
@@ -458,6 +491,14 @@ class Apollo(nn.Module):
         ], 1)
 
     def forward(self, input):
+        if self._use_mlx_full_forward(input):
+            try:
+                from ..apollo_mlx import mlx_forward_apollo
+
+                return mlx_forward_apollo(self, input, self.mps_model_compute_dtype)
+            except Exception as exc:
+                self._pymss_mlx_full_backend_error = repr(exc)
+                self.mps_model_backend = "torch"
 
         B, nch, nsample = input.shape
 

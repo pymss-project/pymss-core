@@ -127,14 +127,40 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         masks = self._forward_mask_core(x)
 
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
-        masks = torch.view_as_complex(masks.contiguous()).to(dtype=stft_repr.dtype)
         num_stems = len(self.mask_estimators)
-        scatter_indices = self.freq_indices[None, None, :, None].expand(context.batch, num_stems, -1, stft_repr.shape[-1])
-        masks_summed = stft_repr.new_zeros(context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1])
-        masks_summed.scatter_add_(2, scatter_indices, masks)
+        if stft_repr.device.type == "mps":
+            masks = masks.contiguous().to(dtype=stft_repr.real.dtype)
+            scatter_indices = self.freq_indices[None, None, :, None, None].expand(
+                context.batch,
+                num_stems,
+                -1,
+                stft_repr.shape[-1],
+                2,
+            )
+            masks_summed = masks.new_zeros(context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1], 2)
+            masks_summed.scatter_add_(2, scatter_indices, masks)
+            masks_summed = torch.view_as_complex(masks_summed.contiguous())
+        else:
+            masks = torch.view_as_complex(masks.contiguous()).to(dtype=stft_repr.dtype)
+            scatter_indices = self.freq_indices[None, None, :, None].expand(
+                context.batch,
+                num_stems,
+                -1,
+                stft_repr.shape[-1],
+            )
+            masks_summed = stft_repr.new_zeros(context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1])
+            masks_summed.scatter_add_(2, scatter_indices, masks)
         return stft_repr * (masks_summed / self.num_bands_per_channel_freq.clamp(min=1e-8))
 
     def forward(self, raw_audio):
+        if self._use_mlx_full_forward(raw_audio):
+            try:
+                from .mlx_roformer import mlx_forward_roformer
+
+                return mlx_forward_roformer(self, raw_audio, self.mps_model_compute_dtype)
+            except Exception as exc:
+                self._pymss_mlx_full_backend_error = repr(exc)
+                self.mps_model_backend = "torch"
         return forward_spectral_roformer(
             self,
             raw_audio,

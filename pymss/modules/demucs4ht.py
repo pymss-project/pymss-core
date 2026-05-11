@@ -19,6 +19,9 @@ from ..config import to_plain
 
 
 class HTDemucs(nn.Module):
+    mps_model_backend = "torch"
+    mps_model_compute_dtype = torch.float16
+
     def __init__(
         self,
         sources,
@@ -288,6 +291,36 @@ class HTDemucs(nn.Module):
         else:
             self.crosstransformer = None
 
+    def set_mps_model_backend(self, backend=None, compute_dtype=None):
+        backend = (backend or "torch").lower()
+        if backend not in ("torch", "mlx_full"):
+            raise ValueError("mps_model_backend must be 'torch' or 'mlx_full'")
+        self.mps_model_backend = backend
+        if compute_dtype is None:
+            return
+        if isinstance(compute_dtype, str):
+            compute_dtype = {
+                "float16": torch.float16,
+                "fp16": torch.float16,
+                "float32": torch.float32,
+                "fp32": torch.float32,
+            }.get(compute_dtype.lower(), compute_dtype)
+        if compute_dtype not in (torch.float16, torch.float32):
+            raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
+        self.mps_model_compute_dtype = compute_dtype
+
+    def _use_mlx_full_forward(self, mix):
+        return (
+            not self.training
+            and self.mps_model_backend == "mlx_full"
+            and mix.device.type == "mps"
+        )
+
+    def mlx_forward_mx(self, raw_audio):
+        from .demucs_mlx import mlx_forward_demucs_mx
+
+        return mlx_forward_demucs_mx(self, raw_audio, self.mps_model_compute_dtype)
+
     def _spec(self, x):
         hl = self.hop_length
         nfft = self.nfft
@@ -358,6 +391,14 @@ class HTDemucs(nn.Module):
         return x.reshape(b, c // k, f * k, t)
 
     def forward(self, mix):
+        if self._use_mlx_full_forward(mix):
+            try:
+                from .demucs_mlx import mlx_forward_demucs
+
+                return mlx_forward_demucs(self, mix, self.mps_model_compute_dtype)
+            except Exception as exc:
+                self._pymss_mlx_full_backend_error = repr(exc)
+                self.mps_model_backend = "torch"
         length = mix.shape[-1]
         length_pre_pad = None
         if self.use_train_segment:
