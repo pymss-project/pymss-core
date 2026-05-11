@@ -39,6 +39,7 @@ setup(
         "pyyaml",
         "torch",
         "tqdm",
+        "mlx; sys_platform == 'darwin' and platform_machine == 'arm64'",
     ],
     project_urls={
         'Bug Tracker': 'https://github.com/KitsuneX07/pymss/issues',
