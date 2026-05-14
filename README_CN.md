@@ -57,7 +57,11 @@ separator.process_folder('path/to/input_folder')
 - audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth 和 mp3_bit_rate。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}。
 - logger: Logger 实例。 默认为 pymss.get_separation_logger()
 - debug: 是否启用调试模式，默认为 False。
-- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size 和 normalize。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。
+- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size、normalize 和 `cuda_attention_backend`。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。
+
+### CUDA Attention 后端
+
+RoFormer 系列模型在已安装 PyTorch 暴露 cuDNN attention 时默认使用 cuDNN attention，否则使用 PyTorch 默认 SDPA 路径。需要探测式回退时可通过 `inference_params={"cuda_attention_backend": "auto"}` 覆盖。可选值为 `auto`、`default`、`flash`、`cudnn`、`efficient`、`math` 和 `xformers`。`auto` 会优先尝试 cuDNN attention，然后回退到 PyTorch memory-efficient SDPA，再回退到 PyTorch 默认 SDPA。`xformers` 是本地可选安装项，不作为必需依赖。
 
 ### Apple Silicon MLX 后端
 

@@ -29,6 +29,7 @@ INFERENCE_PARAM_TARGETS = {
     'post_process_threshold': 'inference',
     'high_end_process': 'inference',
     'use_amp': 'inference',
+    'cuda_attention_backend': 'inference',
     'mps_attention_backend': 'inference',
     'mps_mlx_min_tokens': 'inference',
     'mps_model_backend': 'inference',
@@ -43,6 +44,7 @@ PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'enable_post_process',
     'high_end_process',
     'use_amp',
+    'cuda_attention_backend',
     'mps_attention_backend',
     'mps_model_backend',
     'mps_model_compute_dtype',
@@ -402,6 +404,11 @@ class MSSeparator:
     def apply_model_inference_config(self, model, config):
         if hasattr(model, 'set_mask_mode'):
             model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
+        cuda_attention_backend = config.inference.get('cuda_attention_backend', None)
+        if cuda_attention_backend is not None:
+            for module in model.modules():
+                if hasattr(module, 'set_cuda_attention_backend'):
+                    module.set_cuda_attention_backend(cuda_attention_backend)
         model_backend = config.inference.get('mps_model_backend', None)
         if model_backend is not None:
             compute_dtype = config.inference.get('mps_model_compute_dtype', None)

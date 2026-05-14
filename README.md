@@ -67,7 +67,11 @@ separator.process_folder('path/to/input_folder')
 - audio_params: Audio parameters including wav_bit_depth, flac_bit_depth, and mp3_bit_rate. Default is {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}.
 - logger: Logger instance. Default is pymss.get_separation_logger()
 - debug: Whether to enable debug mode, default is False.
-- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, and normalize. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.
+- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, normalize, and `cuda_attention_backend`. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.
+
+### CUDA Attention Backend
+
+RoFormer-family models default to cuDNN attention on CUDA when the installed PyTorch build exposes it, otherwise they use PyTorch's default SDPA path. Override with `inference_params={"cuda_attention_backend": "auto"}` if you want fallback probing. Valid values are `auto`, `default`, `flash`, `cudnn`, `efficient`, `math`, and `xformers`. `auto` tries cuDNN attention first, then PyTorch memory-efficient SDPA, then PyTorch default SDPA. `xformers` is optional and only used if installed locally; it is not a required dependency.
 
 ### Apple Silicon MLX Backend
 
