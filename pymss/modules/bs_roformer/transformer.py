@@ -169,7 +169,7 @@ class Attention(Module):
         self.mps_mlx_min_tokens = 128
         self.cuda_attention_backend = default_cuda_attention_backend()
         self._disabled_cuda_attention_backends = set()
-        self.attend = Attend(flash=flash, dropout=dropout)
+        self.attend = Attend(flash=False, dropout=dropout)
         self.norm = RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, dim_inner * 3, bias=(shared_qkv_bias is not None))
         if shared_qkv_bias is not None:

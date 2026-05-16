@@ -144,9 +144,7 @@ def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stf
 
 
 def roformer_stft_freq_bins(module, window_length):
-    probe = torch.randn(1, 4096)
-    window = torch.ones(window_length)
-    return torch.stft(probe, **module.stft_kwargs, window=window, return_complex=True).shape[1]
+    return int(module.stft_kwargs["n_fft"]) // 2 + 1
 
 
 def roformer_freqs_per_bands_with_complex(module, freqs_per_bands, freqs):
