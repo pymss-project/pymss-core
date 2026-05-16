@@ -1,6 +1,7 @@
 import gc
 import os
 import logging
+from contextlib import contextmanager, nullcontext
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import torch
@@ -51,6 +52,7 @@ PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'fuse_conv_bn',
     'use_channels_last',
 })
+FAST_INIT_MODEL_TYPES = {'bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'}
 
 
 def _select_device(device, device_ids, logger):
@@ -90,7 +92,7 @@ def _apollo_state_dict_path(model_path):
 def _load_state_dict(model_type, model_path, device):
     if model_type == 'vr':
         return None
-    map_location = "cpu" if torch.device(device).type == "mps" else device
+    map_location = "cpu"
     if model_type == 'htdemucs':
         stubbed_modules = _install_demucs_pickle_stubs()
         try:
@@ -101,7 +103,46 @@ def _load_state_dict(model_type, model_path, device):
     if model_type == 'apollo':
         model_path = _apollo_state_dict_path(model_path)
         return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=False))
-    return torch.load(model_path, map_location=map_location, weights_only=True)
+    try:
+        return torch.load(model_path, map_location=map_location, weights_only=True, mmap=True)
+    except (TypeError, ValueError, RuntimeError):
+        return torch.load(model_path, map_location=map_location, weights_only=True)
+
+
+@contextmanager
+def _skip_torch_default_init():
+    classes = (
+        torch.nn.Linear,
+        torch.nn.Bilinear,
+        torch.nn.Conv1d,
+        torch.nn.Conv2d,
+        torch.nn.Conv3d,
+        torch.nn.ConvTranspose1d,
+        torch.nn.ConvTranspose2d,
+        torch.nn.ConvTranspose3d,
+        torch.nn.BatchNorm1d,
+        torch.nn.BatchNorm2d,
+        torch.nn.BatchNorm3d,
+        torch.nn.InstanceNorm1d,
+        torch.nn.InstanceNorm2d,
+        torch.nn.InstanceNorm3d,
+        torch.nn.LayerNorm,
+        torch.nn.GroupNorm,
+        torch.nn.Embedding,
+        torch.nn.EmbeddingBag,
+        torch.nn.RNN,
+        torch.nn.GRU,
+        torch.nn.LSTM,
+        torch.nn.MultiheadAttention,
+    )
+    saved = {cls: cls.reset_parameters for cls in classes if hasattr(cls, 'reset_parameters')}
+    try:
+        for cls in saved:
+            cls.reset_parameters = lambda self: None
+        yield
+    finally:
+        for cls, reset_parameters in saved.items():
+            cls.reset_parameters = reset_parameters
 
 
 def _install_demucs_pickle_stubs():
@@ -378,7 +419,9 @@ class MSSeparator:
         state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
         model_type = _runtime_model_type(self.model_type, state_dict)
 
-        model, config = get_model_from_config(model_type, self.config_path)
+        init_context = _skip_torch_default_init() if model_type in FAST_INIT_MODEL_TYPES else nullcontext()
+        with init_context:
+            model, config = get_model_from_config(model_type, self.config_path)
 
         self.update_inference_params(config, self.inference_params)
         self.apply_model_inference_config(model, config)
@@ -388,7 +431,10 @@ class MSSeparator:
         self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
         self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
 
-        model.load_state_dict(state_dict)
+        try:
+            model.load_state_dict(state_dict, assign=True)
+        except TypeError:
+            model.load_state_dict(state_dict)
         if torch.device(self.device).type == "mps":
             _coerce_mps_float64(model)
 
