@@ -30,7 +30,7 @@ separator = MSSeparator(
         "vocals": "./output/vocals",
         "other": None # None or missing this stem will result in no output file for this stem. This example will output the vocal's stem in ./output/vocals and ignoring the other(instrumental) stem. Making sure the key(s) match the config file.
     },
-    audio_params={"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}, # Can be omitted
+    audio_params={"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}, # Can be omitted
     logger=get_separation_logger(), # Can be omitted
     debug=False, # Can be omitted
     inference_params={
@@ -61,10 +61,10 @@ separator.process_folder('path/to/input_folder')
 - config_path: The path to the configuration file.
 - device: The type of device, default is 'auto'. Must be one of ['auto', 'cuda', 'mps', 'cpu']
 - device_ids: List of device IDs, default is [0].
-- output_format: The output audio format, default is 'wav'. Must be one of ['wav', 'flac', 'mp3']
+- output_format: The output audio format, default is 'wav'. Must be one of ['wav', 'flac', 'mp3', 'm4a']
 - use_tta: Whether to use TTA, default is False. Using TTA will triple the processing time with a little bit improvement in quality.
 - store_dirs: Storage directories, can be a single folder path or a dictionary with instrument keys.
-- audio_params: Audio parameters including wav_bit_depth, flac_bit_depth, and mp3_bit_rate. Default is {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}.
+- audio_params: Audio parameters including wav_bit_depth, flac_bit_depth, mp3_bit_rate, m4a_bit_rate, and m4a_aac_at_quality. Default is {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}.
 - logger: Logger instance. Default is pymss.get_separation_logger()
 - debug: Whether to enable debug mode, default is False.
 - inference_params: Inference parameters including batch_size, overlap_size, chunk_size, normalize, and `cuda_attention_backend`. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.

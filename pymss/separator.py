@@ -290,7 +290,7 @@ class MSSeparator:
             output_format = 'wav',
             use_tta = False,
             store_dirs = 'results', # str for single folder, dict with instrument keys for multiple folders
-            audio_params = {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"},
+            audio_params = {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2},
             logger = get_separation_logger(),
             debug = False,
             inference_params = {
