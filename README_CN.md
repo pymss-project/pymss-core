@@ -23,7 +23,7 @@ separator = MSSeparator(
         "vocals": "./output/vocals",
         "other": None # None 或缺少此音轨将导致不输出此音轨的文件。 此示例将在 ./output/vocals 中输出人声音轨，并忽略其他（乐器）音轨。 确保键与配置文件匹配。
     },
-    audio_params={"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}, # 可以省略
+    audio_params={"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}, # 可以省略
     logger=get_separation_logger(), # 可以省略
     debug=False, # 可以省略
     inference_params={
@@ -51,10 +51,10 @@ separator.process_folder('path/to/input_folder')
 - config_path: 配置文件路径。
 - device: 设备类型，默认为 'auto'。 必须是以下之一 ['auto', 'cuda', 'mps', 'cpu']
 - device_ids: 设备 ID 列表，默认为 [0]。
-- output_format: 输出音频格式，默认为 'wav'。 必须是以下之一 ['wav', 'flac', 'mp3']
+- output_format: 输出音频格式，默认为 'wav'。 必须是以下之一 ['wav', 'flac', 'mp3', 'm4a']
 - use_tta: 是否使用 TTA（测试时增强），默认为 False。 使用 TTA 会使处理时间增加三倍，但质量会略有提高。
 - store_dirs: 存储目录，可以是单个文件夹路径或带有乐器键的字典。
-- audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth 和 mp3_bit_rate。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k"}。
+- audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth、mp3_bit_rate、m4a_bit_rate 和 m4a_aac_at_quality。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}。
 - logger: Logger 实例。 默认为 pymss.get_separation_logger()
 - debug: 是否启用调试模式，默认为 False。
 - inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size、normalize 和 `cuda_attention_backend`。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。

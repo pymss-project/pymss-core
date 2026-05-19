@@ -50,6 +50,8 @@ def _bitrate_to_int(value):
 def _format_audio(audio, sample_format):
     audio = np.asarray(audio)
     audio = np.ascontiguousarray(audio[:, None] if audio.ndim == 1 else audio)
+    if sample_format == "s16":
+        return np.ascontiguousarray((np.clip(audio, -1, 1) * 32767).astype(np.int16).reshape(1, -1))
     if sample_format == "s16p":
         return np.ascontiguousarray((np.clip(audio, -1, 1) * 32767).astype(np.int16).T)
     if sample_format == "s32p":
@@ -64,6 +66,9 @@ def save_audio(path, audio, sr, output_format, audio_params):
 
     if output_format == "mp3":
         codec, sample_format = "libmp3lame", "s16p"
+    elif output_format == "m4a":
+        codec = audio_params.get("m4a_codec", "aac_at")
+        sample_format = "s16" if codec == "aac_at" else "fltp"
     elif output_format == "flac":
         codec, sample_format = "flac", "s32p" if audio_params.get("flac_bit_depth") == "PCM_24" else "s16p"
     else:
@@ -79,6 +84,10 @@ def save_audio(path, audio, sr, output_format, audio_params):
         stream.layout = layout
         if output_format == "mp3":
             stream.bit_rate = _bitrate_to_int(audio_params.get("mp3_bit_rate", "320k"))
+        elif output_format == "m4a":
+            stream.bit_rate = _bitrate_to_int(audio_params.get("m4a_bit_rate", "192k"))
+            if codec == "aac_at":
+                stream.codec_context.options = {"aac_at_quality": str(audio_params.get("m4a_aac_at_quality", 2))}
 
         frame = av.AudioFrame.from_ndarray(_format_audio(audio_array, sample_format), format=sample_format, layout=layout)
         frame.sample_rate = int(sr)
