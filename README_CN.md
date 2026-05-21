@@ -78,7 +78,9 @@ inference_params={
 
 ### 模型兼容性
 
-Demucs 仅支持配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint。当前无外部依赖推理路径不支持 classic `model: demucs`、`model: hdemucs` 和 non-CaC Wiener Demucs 配置。
+配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint 通过 `model_type='htdemucs'` 支持。
+
+旧 Demucs/TasNet `.th` 权重可以使用 `model_type='legacy_demucs'` 或 `model_type='legacy_tasnet'`，不需要 MSST YAML 配置。当前无外部依赖 legacy loader 支持 classic Demucs、v3 time-domain Demucs、ConvTasNet、CaC HDemucs、package 形式 HTDemucs、multi-frequency CaC HDemucs 和简单 Demucs bag YAML。DiffQ 量化 checkpoint 和 non-CaC/Wiener HDemucs 仍需要专门的旧模型加载器。
 
 UVR VR 可通过 `model_type='vr'` 使用，支持已适配的 UVR/VR 系列 `.pth` 权重。输出 stem 名称来自内置 VR 模型列表，例如 `Vocals`、`Instrumental`、`No Echo` 或 `Echo`。
 

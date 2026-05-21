@@ -490,6 +490,20 @@ def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = Non
     if _can_demix_mlx_full(model, device):
         return demix_track_mlx_full(config, model, mix, device, pbar=pbar)
     mix = torch.tensor(mix, dtype=torch.float32)
+    if model_type in {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}:
+        from .modules.legacy_demucs import apply_legacy_model
+
+        with _autocast(device, config.training.get('use_amp', True)):
+            with torch.inference_mode():
+                estimates = apply_legacy_model(
+                    model,
+                    mix.to(device),
+                    shifts=int(config.inference.get('shifts', 0)),
+                    split=bool(config.inference.get('split', True)),
+                    overlap=float(config.inference.get('overlap', 0.25)),
+                    progress=pbar,
+                ).cpu().numpy()
+        return dict(zip(config.training.instruments, estimates))
     if model_type == 'htdemucs':
         return demix_track_demucs(config, model, mix, device, pbar=pbar)
     return demix_track(config, model, mix, device, pbar=pbar)

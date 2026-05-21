@@ -37,6 +37,9 @@ INFERENCE_PARAM_TARGETS = {
     'mps_model_compute_dtype': 'inference',
     'fuse_conv_bn': 'inference',
     'use_channels_last': 'inference',
+    'shifts': 'inference',
+    'split': 'inference',
+    'overlap': 'inference',
 }
 PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'normalize',
@@ -51,8 +54,10 @@ PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'mps_model_compute_dtype',
     'fuse_conv_bn',
     'use_channels_last',
+    'split',
 })
 FAST_INIT_MODEL_TYPES = {'bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'}
+LEGACY_DEMUCS_MODEL_TYPES = {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}
 
 
 def _select_device(device, device_ids, logger):
@@ -199,7 +204,11 @@ def _coerce_mps_float64(module):
 
 
 def _model_is_stereo(model_type, config):
-    return True if model_type == 'vr' else config.model.get("stereo", True) if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'] else True
+    if model_type == 'vr':
+        return True
+    if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer', *LEGACY_DEMUCS_MODEL_TYPES]:
+        return config.model.get("stereo", True)
+    return True
 
 
 def _prepare_mix_channels(mix, is_stereo, logger):
@@ -310,6 +319,7 @@ class MSSeparator:
         self.model_type = model_type
 
         self.model_path = model_path
+        self.config_path_given = config_path is not None
         self.config_path = config_path if config_path else (model_path + '.yaml')
         self.output_format = output_format
         self.use_tta = use_tta
@@ -416,6 +426,23 @@ class MSSeparator:
             self.logger.debug(f"Loading VR model completed, duration: {time() - start_time:.2f} seconds")
             return model, config
 
+        if self.model_type in LEGACY_DEMUCS_MODEL_TYPES:
+            from .modules.legacy_demucs import load_legacy_demucs_model
+
+            config_path = self.config_path if self.config_path_given else None
+            model, config = load_legacy_demucs_model(self.model_path, config_path)
+            config = AttrDict(config)
+            self.update_inference_params(config, self.inference_params)
+            model = model.to(self.device)
+            model.eval()
+
+            self.logger.info(f"Separator params: model_type: {self.model_type}, model_path: {self.model_path}, config_path: {config_path}, output_folder: {self.store_dirs}")
+            self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
+            self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
+            self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
+            self.logger.debug(f"Loading legacy Demucs/TasNet model completed, duration: {time() - start_time:.2f} seconds")
+            return model, config
+
         state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
         model_type = _runtime_model_type(self.model_type, state_dict)
 
@@ -474,7 +501,7 @@ class MSSeparator:
             if value is None:
                 continue
             if key not in PASSTHROUGH_INFERENCE_PARAMS:
-                value = float(value) if key == 'post_process_threshold' else int(value)
+                value = float(value) if key in {'post_process_threshold', 'overlap'} else int(value)
             config[section][key] = value
         return config
 
