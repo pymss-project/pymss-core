@@ -88,7 +88,9 @@ This backend requires `mlx` to be installed locally, but `mlx` is not a required
 
 ### Model Compatibility
 
-Demucs support is limited to HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true`. Classic `model: demucs`, `model: hdemucs`, and non-CaC Wiener Demucs configs are not supported by this dependency-free inference path.
+HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true` are supported through `model_type='htdemucs'`.
+
+Legacy Demucs/TasNet `.th` weights can use `model_type='legacy_demucs'` or `model_type='legacy_tasnet'` without a MSST YAML config. The dependency-free legacy loader supports classic Demucs, v3 time-domain Demucs, ConvTasNet, CaC HDemucs, package-style HTDemucs, multi-frequency CaC HDemucs, and simple Demucs bag YAML files. DiffQ-quantized checkpoints and non-CaC/Wiener HDemucs still need a dedicated legacy loader.
 
 UVR VR support is available through `model_type='vr'` for the supported UVR/VR series `.pth` weights. The model output stems are read from the built-in VR model list, for example `Vocals`, `Instrumental`, `No Echo`, or `Echo`.
 
