@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+from ..mlx_utils import mlx_compile_cached
+
 
 _COMPUTE_DTYPE = torch.float16
 _ROTARY_METAL_KERNEL = None
@@ -222,6 +224,13 @@ def _mlx_attention(module, x, dtype):
 
     mx_dtype = _mlx_dtype(dtype)
     cache = _attention_cache(module, dtype)
+    if module.rotary_embed is None and not getattr(module, "_pymss_mlx_disable_compiled_attention", False):
+        try:
+            return _mlx_attention_compiled(module, x, dtype, cache)
+        except Exception as exc:
+            module._pymss_mlx_disable_compiled_attention = True
+            module._pymss_mlx_compiled_attention_error = repr(exc)
+
     x_norm = _rms_norm(x, cache["norm_gamma"])
     qkv = _linear(x_norm, cache["qkv_weight"], cache["qkv_bias"])
 
@@ -237,6 +246,52 @@ def _mlx_attention(module, x, dtype):
     gates = _sigmoid(_linear(x_norm, cache["gate_weight"], cache["gate_bias"]))
     out = (out * gates[..., None]).reshape(b, n, -1)
     return _linear(out, cache["out_weight"], cache["out_bias"])
+
+
+def _mlx_attention_compiled(module, x, dtype, cache):
+    import mlx.core as mx
+
+    if module.rotary_embed is not None:
+        raise TypeError("compiled MLX attention path does not include rotary embedding")
+
+    has_qkv_bias = cache["qkv_bias"] is not None
+    has_gate_bias = cache["gate_bias"] is not None
+    has_out_bias = cache["out_bias"] is not None
+    key = (
+        tuple(x.shape),
+        dtype,
+        int(module.heads),
+        has_qkv_bias,
+        has_gate_bias,
+        has_out_bias,
+        cache["key"],
+    )
+
+    def attention_core(x_arg, norm_gamma, qkv_weight, qkv_bias, gate_weight, gate_bias, out_weight, out_bias):
+        x_norm = _rms_norm(x_arg, norm_gamma)
+        qkv = _linear(x_norm, qkv_weight, qkv_bias if has_qkv_bias else None)
+        b, n, _ = qkv.shape
+        qkv = qkv.reshape(b, n, 3, module.heads, -1)
+        q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
+        q, k, v = mx.swapaxes(q, 1, 2), mx.swapaxes(k, 1, 2), mx.swapaxes(v, 1, 2)
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=q.shape[-1] ** -0.5)
+        out = mx.swapaxes(out, 1, 2)
+        gates = _sigmoid(_linear(x_norm, gate_weight, gate_bias if has_gate_bias else None))
+        out = (out * gates[..., None]).reshape(b, n, -1)
+        return _linear(out, out_weight, out_bias if has_out_bias else None)
+
+    fn = mlx_compile_cached(module, "_pymss_mlx_compiled_attention_cache", key, attention_core)
+    dummy = mx.zeros((1,), dtype=_mlx_dtype(dtype))
+    return fn(
+        x,
+        cache["norm_gamma"],
+        cache["qkv_weight"],
+        cache["qkv_bias"] if has_qkv_bias else dummy,
+        cache["gate_weight"],
+        cache["gate_bias"] if has_gate_bias else dummy,
+        cache["out_weight"],
+        cache["out_bias"] if has_out_bias else dummy,
+    )
 
 
 def mlx_bridge_attention(module, x):

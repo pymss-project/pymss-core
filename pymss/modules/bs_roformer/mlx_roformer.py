@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 
+from ..mlx_utils import mlx_periodic_hann_window
 from .bands import contiguous_dim_groups, dim_input_offsets
 from .bs_roformer_hyperace import BSRoformerHyperACE
 from . import hyperace_segm
@@ -34,11 +35,7 @@ def _is_identity(module):
 
 
 def _hann_window(length, dtype):
-    import mlx.core as mx
-
-    positions = mx.arange(length, dtype=mx.float32)
-    window = 0.5 - 0.5 * mx.cos((2 * np.pi * positions) / length)
-    return window.astype(dtype)
+    return mlx_periodic_hann_window(length, dtype)
 
 
 def _reflect_pad_last(x, pad):

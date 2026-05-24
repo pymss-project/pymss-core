@@ -93,7 +93,7 @@ inference_params={
 }
 ```
 
-This backend requires `mlx` to be installed locally, but `mlx` is not a required dependency in `setup.py`. The default path remains Torch. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch.
+On Apple Silicon, `setup.py` installs `mlx>=0.31.0` for this backend. The default path remains Torch. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch.
 
 ### Model Compatibility
 
