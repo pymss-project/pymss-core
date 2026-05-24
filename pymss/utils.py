@@ -10,7 +10,8 @@ from typing import Dict
 from .config import load_config
 
 
-def get_model_from_config(model_type, config_path):
+def get_model_from_config(model_type, config_path, model_kwargs_override=None):
+    model_kwargs_override = model_kwargs_override or {}
     config = load_config(config_path)
 
     if model_type == 'mdx23c':
@@ -21,7 +22,9 @@ def get_model_from_config(model_type, config_path):
         return get_model(config), config
     elif model_type == 'mel_band_roformer':
         from .modules.bs_roformer import MelBandRoformer
-        return MelBandRoformer(**dict(config.model)), config
+        model_kwargs = dict(config.model)
+        model_kwargs.update(model_kwargs_override)
+        return MelBandRoformer(**model_kwargs), config
     elif model_type == 'bs_roformer':
         from .modules.bs_roformer import BSRoformer
         return BSRoformer(**dict(config.model)), config

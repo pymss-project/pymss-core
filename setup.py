@@ -27,7 +27,7 @@ setup(
     keywords='music source separation, audio separation, music processing, machine learning, audio',
     python_requires='>=3.10',
     package_data={
-        "pymss": ["resources/vr_modelparams/*.json"],
+        "pymss": ["resources/model_catalog.json", "resources/vr_modelparams/*.json"],
     },
     install_requires=[
         "av>=14",
@@ -42,5 +42,10 @@ setup(
         'Bug Tracker': 'https://github.com/KitsuneX07/pymss/issues',
         'Source Code': 'https://github.com/KitsuneX07/pymss',
         'Documentation': 'https://github.com/KitsuneX07/pymss/blob/main/README.md',
+    },
+    entry_points={
+        "console_scripts": [
+            "pymss=pymss.cli:main",
+        ],
     },
 )

@@ -36,6 +36,15 @@ separator = MSSeparator(
 # 处理文件夹中的所有音频文件
 separator.process_folder('path/to/input_folder')
 ```
+
+也可以直接使用模型名：
+
+```python
+from pymss import MSSeparator
+
+separator = MSSeparator.from_model_name("model_vocals_mel_band_roformer_sdr_8.42")
+separator.process_folder("path/to/input_folder")
+```
 ### 参数
 - model_type: 模型类型，例如 'htdemucs'。 必须是以下之一
     ['bs_roformer',
