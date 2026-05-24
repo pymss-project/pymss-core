@@ -83,7 +83,7 @@ inference_params={
 }
 ```
 
-该后端需要本地安装 `mlx`，但当前不会作为 `setup.py` 必需依赖安装。默认推理仍使用 Torch 路径；缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退 Torch。
+在 Apple Silicon 上，`setup.py` 会为该后端安装 `mlx>=0.31.0`。默认推理仍使用 Torch 路径；缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退 Torch。
 
 ### 模型兼容性
 

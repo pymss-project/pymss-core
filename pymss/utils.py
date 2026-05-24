@@ -411,15 +411,22 @@ def _mlx_run_model_chunk(model, arr, chunk_size):
     return _mlx_fit_length(y, chunk_size)
 
 
+def _mlx_select_sources(chunks, source_indices):
+    if source_indices is None:
+        return chunks
+
+    import mlx.core as mx
+
+    return mx.take(chunks, mx.array(source_indices, dtype=mx.int32), axis=1)
+
+
 def _mlx_add_weighted_chunk(result, counter, chunk, window, start, length):
+    import mlx.core as mx
+
     window = window[:length].astype(result.dtype)
     weighted = chunk[..., :length].astype(result.dtype) * window
-    target = slice(start, start + length)
-    for source_idx in range(result.shape[0]):
-        for channel_idx in range(result.shape[1]):
-            result = result.at[source_idx, channel_idx, target].add(weighted[source_idx, channel_idx])
-            counter = counter.at[source_idx, channel_idx, target].add(window)
-    return result, counter
+    positions = mx.arange(start, start + length)
+    return result.at[:, :, positions].add(weighted), counter.at[:, :, positions].add(window)
 
 
 def _mlx_finalize_overlap(result, counter, length_init, border):
@@ -462,8 +469,7 @@ def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=
         batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
         batch = [(_mlx_extract_chunk(mix, starts[idx], C), idx) for idx in batch_indices]
         chunks = _mlx_run_model_chunk(model, mx.stack([chunk for (chunk, _), _ in batch], axis=0), C)
-        if source_indices is not None:
-            chunks = chunks[:, source_indices]
+        chunks = _mlx_select_sources(chunks, source_indices)
         for j, ((_, length), idx) in enumerate(batch):
             result, counter = _mlx_add_weighted_chunk(result, counter, chunks[j], windows[idx], starts[idx], length)
         mx.eval(result, counter)
