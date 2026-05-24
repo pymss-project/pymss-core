@@ -218,28 +218,50 @@ class RoformerRuntimeMixin:
             self._stft_window_cache[key] = window
         return window
 
+    def _active_source_indices(self):
+        indices = getattr(self, "_pymss_source_indices", None)
+        return None if indices is None else tuple(int(index) for index in indices)
+
+    def _active_mask_estimators(self):
+        indices = self._active_source_indices()
+        if indices is None:
+            return tuple(self.mask_estimators)
+        return tuple(self.mask_estimators[index] for index in indices)
+
+    def _active_source_count(self):
+        indices = self._active_source_indices()
+        return len(self.mask_estimators) if indices is None else len(indices)
+
     def _warm_group_cache(self, tensor):
+        key = (tensor.device.type, tensor.device.index, tensor.dtype)
+        if getattr(self, "_pymss_group_cache_warm_key", None) == key:
+            return
+
         self.band_split.warm_group_cache(tensor.device, tensor.dtype)
-        for mask_estimator in self.mask_estimators:
-            mask_estimator.warm_group_cache(tensor.device, tensor.dtype)
-        if type(self)._estimate_masks is RoformerRuntimeMixin._estimate_masks:
-            MaskEstimator.warm_packed_estimators(self.mask_estimators, tensor.device, tensor.dtype)
+        self._pymss_group_cache_warm_key = key
 
     def _estimate_masks(self, x):
+        estimators = self._active_mask_estimators()
+        if self._active_source_indices() is not None:
+            packed = MaskEstimator.forward_packed_estimators(estimators, x)
+            if packed is not None:
+                return packed
+            return torch.stack([fn(x) for fn in estimators], dim=1)
+
         use_packed = getattr(self, "_packed_mask_estimators_available", None)
         if use_packed is not False:
-            packed = MaskEstimator.forward_packed_estimators(self.mask_estimators, x)
+            packed = MaskEstimator.forward_packed_estimators(estimators, x)
             if packed is not None:
                 self._packed_mask_estimators_available = True
                 return packed
             self._packed_mask_estimators_available = False
-        return torch.stack([fn(x) for fn in self.mask_estimators], dim=1)
+        return torch.stack([fn(x) for fn in estimators], dim=1)
 
     def _mask_stft_repr(self, stft_repr, context):
         self._warm_group_cache(stft_repr)
         mask = self._forward_mask_core(stft_repr)
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
-        mask = torch.view_as_complex(mask.contiguous()).type(stft_repr.dtype)
+        mask = torch.view_as_complex(mask).type(stft_repr.dtype)
         return stft_repr * mask
 
 

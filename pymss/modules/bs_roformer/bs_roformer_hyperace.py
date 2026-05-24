@@ -46,4 +46,4 @@ class BSRoformerHyperACE(BSRoformer):
         self.mask_mode = mode
 
     def _estimate_masks(self, x):
-        return torch.stack([fn(x, self.mask_mode) for fn in self.mask_estimators], dim=1)
+        return torch.stack([fn(x, self.mask_mode) for fn in self._active_mask_estimators()], dim=1)

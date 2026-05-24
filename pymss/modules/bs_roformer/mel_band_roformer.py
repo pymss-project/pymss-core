@@ -128,7 +128,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         masks = self._forward_mask_core(x)
 
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
-        num_stems = len(self.mask_estimators)
+        num_stems = self._active_source_count()
         if stft_repr.device.type == "mps":
             masks = masks.contiguous().to(dtype=stft_repr.real.dtype)
             scatter_indices = self.freq_indices[None, None, :, None, None].expand(

@@ -41,6 +41,7 @@ INFERENCE_PARAM_TARGETS = {
     'shifts': 'inference',
     'split': 'inference',
     'overlap': 'inference',
+    'stem_batch_size': 'inference',
 }
 PASSTHROUGH_INFERENCE_PARAMS = frozenset({
     'normalize',
@@ -269,22 +270,48 @@ def _merge_tta_results(results):
 
 
 def _build_results(waveforms, instruments, mix_orig, config, norm_stats, logger):
-    results = {
-        instr: _denormalize(waveforms[instr].T, norm_stats)
-        for instr in instruments
-    }
-
     target_instrument = config.training.target_instrument
     if target_instrument is None:
-        return results
+        return {
+            instr: _denormalize(waveforms[instr].T, norm_stats)
+            for instr in instruments
+        }
 
+    results = {}
+    if target_instrument in instruments:
+        results[target_instrument] = _denormalize(waveforms[target_instrument].T, norm_stats)
     other_instruments = [instr for instr in config.training.instruments if instr != target_instrument]
     logger.debug(f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}")
     if other_instruments:
         secondary = other_instruments[0]
-        waveforms[secondary] = mix_orig - waveforms[target_instrument]
-        results[secondary] = _denormalize(waveforms[secondary].T, norm_stats)
+        if secondary in instruments:
+            waveforms[secondary] = mix_orig - waveforms[target_instrument]
+            results[secondary] = _denormalize(waveforms[secondary].T, norm_stats)
     return results
+
+
+def _resolve_instruments(config, stems=None):
+    instruments = config.training.instruments.copy()
+    if stems is None:
+        source_indices = None if config.training.target_instrument is None else (0,)
+        return instruments, source_indices
+
+    stem_list = [stems] if isinstance(stems, str) else list(stems)
+    lower_to_index = {instr.lower(): index for index, instr in enumerate(instruments)}
+    selected, indices = [], []
+    for stem in stem_list:
+        key = stem.lower()
+        if key not in lower_to_index:
+            raise ValueError(f"Invalid instrument key: {stem}. Valid instrument keys: {instruments}")
+        index = lower_to_index[key]
+        if index in indices:
+            continue
+        selected.append(instruments[index])
+        indices.append(index)
+    if not selected:
+        raise ValueError("stems must not be empty")
+    source_indices = tuple(indices) if config.training.target_instrument is None else (0,)
+    return selected, source_indices
 
 
 def _get_store_dir(store_dirs, instr):
@@ -560,13 +587,41 @@ class MSSeparator:
             for output_dir in (save_dir if isinstance(save_dir, list) else [save_dir])
         ]
 
-    def _drain_save_queue(self, pending_saves, success_files, progress, max_pending_saves=0):
+    def _stems_to_save(self):
+        stems = [
+            instr
+            for instr in self.config.training.instruments
+            if _get_store_dir(self.store_dirs, instr)
+        ]
+        return stems or None
+
+    def _stem_batches_to_save(self):
+        stems = self._stems_to_save()
+        if stems is None:
+            return [None]
+        batch_size = int(self.config.inference.get('stem_batch_size', 0))
+        if batch_size <= 0 or len(stems) <= batch_size:
+            return [stems]
+        return [stems[index:index + batch_size] for index in range(0, len(stems), batch_size)]
+
+    def _drain_save_queue(self, pending_saves, success_files, progress, max_pending_saves=0, record_success=True):
+        ok = True
         while len(pending_saves) > max_pending_saves:
             saved_path, saved_futures = pending_saves.popleft()
-            if self._wait_save_futures(saved_path, saved_futures):
+            saved_ok = self._wait_save_futures(saved_path, saved_futures)
+            ok = saved_ok and ok
+            if saved_ok and record_success:
                 success_files.append(os.path.basename(saved_path))
                 if progress is not None:
                     progress.update(1)
+        return ok
+
+    def _wait_pending_saves(self, pending_saves):
+        ok = True
+        while pending_saves:
+            saved_path, saved_futures = pending_saves.popleft()
+            ok = self._wait_save_futures(saved_path, saved_futures) and ok
+        return ok
 
     def process_folder(self, input_folder):
         if not os.path.isdir(input_folder):
@@ -607,18 +662,29 @@ class MSSeparator:
 
                     self.logger.debug(f"Starting separation process for audio_file: {path}")
                     try:
-                        results = self.separate(mix, pbar=False)
+                        file_name, _ = os.path.splitext(os.path.basename(path))
+                        track_saves = deque()
+                        save_ok = True
+                        for stems in self._stem_batches_to_save():
+                            results = self.separate(mix, pbar=False, stems=stems)
+                            track_saves.append((path, self._submit_save_outputs(save_executor, results, sr, file_name)))
+                            save_ok = self._drain_save_queue(
+                                track_saves, success_files, None, 1, record_success=False
+                            ) and save_ok
+                            del results
+                        save_ok = self._wait_pending_saves(track_saves) and save_ok
                     except Exception as e:
                         self.logger.warning(f'Cannot separate track: {path}, error: {str(e)}')
                         del mix
                         continue
 
                     self.logger.debug(f"Separation audio_file: {path} completed. Starting to save results.")
-                    file_name, _ = os.path.splitext(os.path.basename(path))
-                    pending_saves.append((path, self._submit_save_outputs(save_executor, results, sr, file_name)))
-                    self._drain_save_queue(pending_saves, success_files, progress, max_pending_saves)
+                    if save_ok:
+                        success_files.append(os.path.basename(path))
+                        if progress is not None:
+                            progress.update(1)
 
-                    del mix, results
+                    del mix
 
                 self._drain_save_queue(pending_saves, success_files, progress)
         finally:
@@ -626,23 +692,22 @@ class MSSeparator:
                 progress.close()
         return success_files
 
-    def separate(self, mix, pbar=True):
-        return self._separate(mix, pbar=pbar)
+    def separate(self, mix, pbar=True, stems=None):
+        return self._separate(mix, pbar=pbar, stems=stems)
 
-    def _separate(self, mix, pbar):
+    def _separate(self, mix, pbar, stems=None):
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
         if self.model_type == 'vr':
             return self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
 
-        target = self.config.training.target_instrument
-        instruments = [target] if target is not None else self.config.training.instruments.copy()
-        if target is not None:
+        instruments, source_indices = _resolve_instruments(self.config, stems)
+        if self.config.training.target_instrument is not None:
             self.logger.debug("Target instrument is not null, set primary_stem to target_instrument, secondary_stem will be calculated by mix - target_instrument")
 
         mix_orig = mix.copy()
         mix, norm_stats = _normalize_mix(mix, self.config.inference.get('normalize', False), self.logger)
         full_result = [
-            demix(self.config, self.model, track, self.device, pbar=pbar, model_type=self.model_type)
+            demix(self.config, self.model, track, self.device, pbar=pbar, model_type=self.model_type, source_indices=source_indices)
             for track in _tta_variants(mix, self.use_tta, self.logger)
         ]
 
