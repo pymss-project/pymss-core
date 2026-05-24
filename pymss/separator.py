@@ -1,6 +1,7 @@
 import gc
 import os
 import logging
+import re
 from contextlib import contextmanager, nullcontext
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -76,7 +77,7 @@ def _select_device(device, device_ids, logger):
 
 
 def _unwrap_state_dict(state_dict):
-    for key in ('state', 'state_dict'):
+    for key in ('state', 'state_dict', 'model_state_dict'):
         if key in state_dict:
             return state_dict[key]
     return state_dict
@@ -109,9 +110,9 @@ def _load_state_dict(model_type, model_path, device):
         model_path = _apollo_state_dict_path(model_path)
         return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=False))
     try:
-        return torch.load(model_path, map_location=map_location, weights_only=True, mmap=True)
+        return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=True, mmap=True))
     except (TypeError, ValueError, RuntimeError):
-        return torch.load(model_path, map_location=map_location, weights_only=True)
+        return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=True))
 
 
 @contextmanager
@@ -184,6 +185,14 @@ def _restore_modules(previous):
 
 def _runtime_model_type(model_type, state_dict):
     return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
+
+
+def _infer_mel_band_roformer_mlp_hidden_layers(state_dict):
+    pattern = re.compile(r'(?:^|\.)mask_estimators\.0\.to_freqs\.0\.0\.(\d+)\.weight$')
+    layer_indices = sorted({int(match.group(1)) for key in state_dict for match in [pattern.search(key)] if match})
+    if not layer_indices:
+        return None
+    return len(layer_indices) - 1
 
 
 def _store_torch_model_on_cpu_for_mlx(config, device):
@@ -355,6 +364,18 @@ class MSSeparator:
                 self.logger.warning(f"Invalid instrument key: {key}, removing from store_dirs")
                 self.logger.warning(f"Valid instrument keys: {self.config.training.instruments}")
 
+    @classmethod
+    def from_model_name(cls, model_name, model_dir=None, **kwargs):
+        from .model_registry import resolve_model
+
+        resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)
+        return cls(
+            model_type=resolved["model_type"],
+            model_path=resolved["model_path"],
+            config_path=resolved["config_path"],
+            **kwargs,
+        )
+
     def log_system_info(self):
         os_name = platform.system()
         os_version = platform.version()
@@ -445,10 +466,15 @@ class MSSeparator:
 
         state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
         model_type = _runtime_model_type(self.model_type, state_dict)
+        model_kwargs_override = None
+        if model_type == 'mel_band_roformer':
+            model_kwargs_override = {
+                'mlp_hidden_layers': _infer_mel_band_roformer_mlp_hidden_layers(state_dict),
+            }
 
         init_context = _skip_torch_default_init() if model_type in FAST_INIT_MODEL_TYPES else nullcontext()
         with init_context:
-            model, config = get_model_from_config(model_type, self.config_path)
+            model, config = get_model_from_config(model_type, self.config_path, model_kwargs_override=model_kwargs_override)
 
         self.update_inference_params(config, self.inference_params)
         self.apply_model_inference_config(model, config)

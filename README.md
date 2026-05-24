@@ -45,6 +45,15 @@ separator = MSSeparator(
 separator.process_folder('path/to/input_folder')
 ```
 
+You can also use a model name directly:
+
+```python
+from pymss import MSSeparator
+
+separator = MSSeparator.from_model_name("model_vocals_mel_band_roformer_sdr_8.42")
+separator.process_folder("path/to/input_folder")
+```
+
 ### Parameters
 
 - model_type: The type of model, e.g., 'htdemucs'. Must be one of 

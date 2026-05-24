@@ -46,6 +46,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             mask_estimator_depth=1,
             match_input_audio_length=False,
             mlp_expansion_factor=4,
+            mlp_hidden_layers=None,
             **kwargs,
     ):
         super().__init__()
@@ -113,7 +114,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             mask_estimator_cls=MaskEstimator,
             mask_estimator_depth=mask_estimator_depth,
             mlp_expansion_factor=mlp_expansion_factor,
-            mask_estimator_kwargs={'mlp_hidden_layers': mask_estimator_depth},
+            mask_estimator_kwargs={'mlp_hidden_layers': mlp_hidden_layers},
         )
 
         self.match_input_audio_length = match_input_audio_length
