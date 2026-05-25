@@ -392,7 +392,12 @@ class MSSeparator:
                 self.logger.warning(f"Valid instrument keys: {self.config.training.instruments}")
 
     @classmethod
-    def from_model_name(cls, model_name, model_dir=None, **kwargs):
+    def from_model_name(cls, model_name, model_dir=None, download=False, source="modelscope", endpoint=None, **kwargs):
+        if download:
+            from .model_download import download_model
+
+            download_model(model_name, model_dir=model_dir, source=source, endpoint=endpoint)
+
         from .model_registry import resolve_model
 
         resolved = resolve_model(model_name, model_dir=model_dir, require_supported=True, require_exists=True)

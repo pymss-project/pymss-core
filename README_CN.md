@@ -7,7 +7,53 @@
 pip install pymss
 ```
 ## 用法
-这是一个简单的例子。
+
+### CLI 推理
+
+可以直接用 catalog 里的模型名推理。如果本地缺少模型、配置或辅助文件，CLI 会在推理前自动下载。
+
+```sh
+pymss infer bs_roformer_voc_hyperacev2 \
+  -i path/to/input_folder \
+  -o results \
+  --device auto \
+  --format wav
+```
+
+默认下载源是 ModelScope。也可以指定下载源或模型目录：
+
+```sh
+pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
+  --source hf-mirror \
+  -i path/to/input_folder \
+  -o results
+```
+
+如果是在源码目录里未安装运行，可以用 `python -m pymss.cli` 代替 `pymss`。
+
+### Python API
+
+直接用 catalog 里的模型名即可，不需要传 `model_type`、`model_path`、`config_path`。
+
+```python
+from pymss import MSSeparator
+
+separator = MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
+)
+separator.process_folder("path/to/input_folder")
+```
+
+`download=True` 会在加载前下载缺失的模型文件；如果只想使用本地已有模型，可以省略它。
+
+### 手动模型路径
+
+自定义权重不在模型 catalog 中时，可以使用完整构造方式。
+
 ```python
 from pymss import MSSeparator, get_separation_logger
 # 初始化
@@ -36,16 +82,7 @@ separator = MSSeparator(
 # 处理文件夹中的所有音频文件
 separator.process_folder('path/to/input_folder')
 ```
-
-也可以直接使用模型名：
-
-```python
-from pymss import MSSeparator
-
-separator = MSSeparator.from_model_name("model_vocals_mel_band_roformer_sdr_8.42")
-separator.process_folder("path/to/input_folder")
-```
-### 参数
+### 手动构造参数
 - model_type: 模型类型，例如 'htdemucs'。 必须是以下之一
     ['bs_roformer',
     'mel_band_roformer',
@@ -91,25 +128,32 @@ inference_params={
 
 旧 Demucs/TasNet `.th` 权重可以使用 `model_type='legacy_demucs'` 或 `model_type='legacy_tasnet'`，不需要 MSST YAML 配置。当前无外部依赖 legacy loader 支持 classic Demucs、v3 time-domain Demucs、ConvTasNet、CaC HDemucs、package 形式 HTDemucs、multi-frequency CaC HDemucs 和简单 Demucs bag YAML。DiffQ 量化 checkpoint 和 non-CaC/Wiener HDemucs 仍需要专门的旧模型加载器。
 
-UVR VR 可通过 `model_type='vr'` 使用，支持已适配的 UVR/VR 系列 `.pth` 权重。输出 stem 名称来自内置 VR 模型列表，例如 `Vocals`、`Instrumental`、`No Echo` 或 `Echo`。
+UVR VR 支持已适配的 UVR/VR 系列 `.pth` 权重。和其他模型一样，直接用 catalog 里的模型名走 CLI 或 Python API。输出 stem 名称来自内置 VR 模型列表，例如 `Vocals`、`Instrumental`、`No Echo` 或 `Echo`。
+
+```sh
+pymss infer 1_HP-UVR \
+  -i path/to/input_folder \
+  -o results \
+  --device auto \
+  --param batch_size=2 \
+  --param window_size=512 \
+  --param aggression=5
+```
 
 ```python
-separator = MSSeparator(
-    model_type='vr',
-    model_path='pretrain/VR_Models/1_HP-UVR.pth',
-    device='cuda',
-    output_format='wav',
-    store_dirs={
-        "Vocals": "./output/vocals",
-        "Instrumental": "./output/instrumental",
-    },
+separator = MSSeparator.from_model_name(
+    "1_HP-UVR",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
     inference_params={
         "batch_size": 2,
         "window_size": 512,
         "aggression": 5,
     },
 )
-separator.process_folder('path/to/input_folder')
+separator.process_folder("path/to/input_folder")
 ```
 
 ### Hugging Face 配置提醒
