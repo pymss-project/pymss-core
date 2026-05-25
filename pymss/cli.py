@@ -92,16 +92,31 @@ def cmd_download(args):
         endpoint=args.endpoint,
         force=args.force,
     )
+    _print_download_result(result)
+    return 0
+
+
+def _print_download_result(result):
     for path in result["skipped"]:
         print(f"exists {path}")
     for path in result["downloaded"]:
         print(f"downloaded {path}")
-    return 0
+
+
+def _ensure_model_files(args):
+    try:
+        resolve_model(args.model, model_dir=args.model_dir, require_supported=True, require_exists=True)
+    except FileNotFoundError:
+        result = download_model(args.model, model_dir=args.model_dir, source=args.source, endpoint=args.endpoint)
+        _print_download_result(result)
+    else:
+        if args.download:
+            result = download_model(args.model, model_dir=args.model_dir, source=args.source, endpoint=args.endpoint)
+            _print_download_result(result)
 
 
 def cmd_infer(args):
-    if args.download:
-        download_model(args.model, model_dir=args.model_dir, source=args.source, endpoint=args.endpoint)
+    _ensure_model_files(args)
     logger = get_separation_logger()
     separator = create_separator(
         args.model,
@@ -146,7 +161,11 @@ def build_parser():
 
     infer_parser = subparsers.add_parser("infer", help="Run inference by model name.")
     infer_parser.add_argument("model")
-    infer_parser.add_argument("--download", action="store_true", help="Download the model first if needed.")
+    infer_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Check/download the model before inference. Missing model files are downloaded automatically.",
+    )
     infer_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     infer_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
     _add_common_runtime_args(infer_parser)
