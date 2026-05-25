@@ -138,7 +138,10 @@ def cmd_infer(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(prog="pymss", description="pymss model downloader and inference CLI.")
-    parser.add_argument("--model-dir", help="Local model cache directory. Defaults to PYMSS_MODEL_DIR or ~/.cache/pymss/models.")
+    parser.add_argument(
+        "--model-dir",
+        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     list_parser = subparsers.add_parser("list", help="List known models.")

@@ -13,7 +13,52 @@ pip install pymss
 
 ## Usage
 
-Here's a simple example.
+### CLI inference
+
+Run inference by catalog model name. If the model, config, or auxiliary files are missing locally, the CLI downloads them automatically before inference.
+
+```sh
+pymss infer bs_roformer_voc_hyperacev2 \
+  -i path/to/input_folder \
+  -o results \
+  --device auto \
+  --format wav
+```
+
+The default download source is ModelScope. You can choose another source or model directory:
+
+```sh
+pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
+  --source hf-mirror \
+  -i path/to/input_folder \
+  -o results
+```
+
+When running from a source checkout without installation, use `python -m pymss.cli` instead of `pymss`.
+
+### Python API
+
+Use a catalog model name directly. You do not need to pass `model_type`, `model_path`, or `config_path`.
+
+```python
+from pymss import MSSeparator
+
+separator = MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
+)
+separator.process_folder("path/to/input_folder")
+```
+
+`download=True` downloads missing model files before loading. Omit it for strict local-only loading.
+
+### Manual model paths
+
+Use the full constructor for custom weights that are not in the model catalog.
+
 ```python
 from pymss import MSSeparator, get_separation_logger
 
@@ -45,16 +90,7 @@ separator = MSSeparator(
 separator.process_folder('path/to/input_folder')
 ```
 
-You can also use a model name directly:
-
-```python
-from pymss import MSSeparator
-
-separator = MSSeparator.from_model_name("model_vocals_mel_band_roformer_sdr_8.42")
-separator.process_folder("path/to/input_folder")
-```
-
-### Parameters
+### Manual Constructor Parameters
 
 - model_type: The type of model, e.g., 'htdemucs'. Must be one of 
     ['bs_roformer', 
@@ -101,25 +137,32 @@ HTDemucs checkpoints whose config uses `model: htdemucs` and `htdemucs.cac: true
 
 Legacy Demucs/TasNet `.th` weights can use `model_type='legacy_demucs'` or `model_type='legacy_tasnet'` without a MSST YAML config. The dependency-free legacy loader supports classic Demucs, v3 time-domain Demucs, ConvTasNet, CaC HDemucs, package-style HTDemucs, multi-frequency CaC HDemucs, and simple Demucs bag YAML files. DiffQ-quantized checkpoints and non-CaC/Wiener HDemucs still need a dedicated legacy loader.
 
-UVR VR support is available through `model_type='vr'` for the supported UVR/VR series `.pth` weights. The model output stems are read from the built-in VR model list, for example `Vocals`, `Instrumental`, `No Echo`, or `Echo`.
+UVR VR support is available for the supported UVR/VR series `.pth` weights. Use the catalog model name in the same CLI/API paths as other models. The output stems are read from the built-in VR model list, for example `Vocals`, `Instrumental`, `No Echo`, or `Echo`.
+
+```sh
+pymss infer 1_HP-UVR \
+  -i path/to/input_folder \
+  -o results \
+  --device auto \
+  --param batch_size=2 \
+  --param window_size=512 \
+  --param aggression=5
+```
 
 ```python
-separator = MSSeparator(
-    model_type='vr',
-    model_path='pretrain/VR_Models/1_HP-UVR.pth',
-    device='cuda',
-    output_format='wav',
-    store_dirs={
-        "Vocals": "./output/vocals",
-        "Instrumental": "./output/instrumental",
-    },
+separator = MSSeparator.from_model_name(
+    "1_HP-UVR",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
     inference_params={
         "batch_size": 2,
         "window_size": 512,
         "aggression": 5,
     },
 )
-separator.process_folder('path/to/input_folder')
+separator.process_folder("path/to/input_folder")
 ```
 
 ### Hugging Face Configs
