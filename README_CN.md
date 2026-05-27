@@ -14,18 +14,20 @@ pip install pymss
 
 ```sh
 pymss infer bs_roformer_voc_hyperacev2 \
-  -i path/to/input_folder \
+  -i path/to/input_file_or_folder \
   -o results \
   --device auto \
   --format wav
 ```
+
+`--device auto` 在有 NVIDIA GPU 时优先使用 CUDA；Apple Silicon Mac 默认使用 MLX 后端。可以用 `--device mlx` 强制 MLX，或用 `--device mps` 强制 PyTorch MPS。
 
 默认下载源是 ModelScope。也可以指定下载源或模型目录：
 
 ```sh
 pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
   --source hf-mirror \
-  -i path/to/input_folder \
+  -i path/to/input_file_or_folder \
   -o results
 ```
 
@@ -45,7 +47,7 @@ separator = MSSeparator.from_model_name(
     output_format="wav",
     store_dirs="results",
 )
-separator.process_folder("path/to/input_folder")
+separator.process_folder("path/to/input_file_or_folder")
 ```
 
 `download=True` 会在加载前下载缺失的模型文件；如果只想使用本地已有模型，可以省略它。
@@ -111,16 +113,19 @@ RoFormer 系列模型在已安装 PyTorch 暴露 cuDNN attention 时默认使用
 
 ### Apple Silicon MLX 后端
 
-在 `device='mps'` 时，可以通过 `inference_params` 显式启用可选 MLX 完整 forward：
+使用 `device='mlx'` 可以启用 Apple Silicon MLX 后端：
 
 ```python
-inference_params={
-    "mps_model_backend": "mlx_full",
-    "mps_model_compute_dtype": "float16",
-}
+separator = MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="mlx",
+    output_format="wav",
+    store_dirs="results",
+)
 ```
 
-在 Apple Silicon 上，`setup.py` 会为该后端安装 `mlx>=0.31.0`。默认推理仍使用 Torch 路径；缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退 Torch。
+在 Apple Silicon 上，`setup.py` 会为该后端安装 `mlx>=0.31.0`。缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退到 Torch MPS。高级用户仍然可以通过 `inference_params` 覆盖 `mps_model_backend` 和 `mps_model_compute_dtype`。
 
 ### 模型兼容性
 

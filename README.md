@@ -19,18 +19,20 @@ Run inference by catalog model name. If the model, config, or auxiliary files ar
 
 ```sh
 pymss infer bs_roformer_voc_hyperacev2 \
-  -i path/to/input_folder \
+  -i path/to/input_file_or_folder \
   -o results \
   --device auto \
   --format wav
 ```
+
+`--device auto` uses CUDA first when an NVIDIA GPU is available. On Apple Silicon it uses the MLX backend by default. Use `--device mlx` to force MLX, or `--device mps` to force PyTorch MPS.
 
 The default download source is ModelScope. You can choose another source or model directory:
 
 ```sh
 pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
   --source hf-mirror \
-  -i path/to/input_folder \
+  -i path/to/input_file_or_folder \
   -o results
 ```
 
@@ -50,7 +52,7 @@ separator = MSSeparator.from_model_name(
     output_format="wav",
     store_dirs="results",
 )
-separator.process_folder("path/to/input_folder")
+separator.process_folder("path/to/input_file_or_folder")
 ```
 
 `download=True` downloads missing model files before loading. Omit it for strict local-only loading.
@@ -120,16 +122,19 @@ RoFormer-family models default to cuDNN attention on CUDA when the installed PyT
 
 ### Apple Silicon MLX Backend
 
-On `device='mps'`, an optional full MLX forward path can be enabled explicitly:
+Use `device='mlx'` to run the Apple Silicon MLX backend:
 
 ```python
-inference_params={
-    "mps_model_backend": "mlx_full",
-    "mps_model_compute_dtype": "float16",
-}
+separator = MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="mlx",
+    output_format="wav",
+    store_dirs="results",
+)
 ```
 
-On Apple Silicon, `setup.py` installs `mlx>=0.31.0` for this backend. The default path remains Torch. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch.
+On Apple Silicon, `setup.py` installs `mlx>=0.31.0` for this backend. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch MPS. Advanced users can still override `mps_model_backend` and `mps_model_compute_dtype` through `inference_params`.
 
 ### Model Compatibility
 

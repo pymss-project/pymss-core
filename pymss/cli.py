@@ -28,9 +28,9 @@ def _parse_key_value(values):
 
 
 def _add_common_runtime_args(parser):
-    parser.add_argument("-i", "--input", required=True, help="Input audio folder.")
+    parser.add_argument("-i", "--input", required=True, help="Input audio file or folder.")
     parser.add_argument("-o", "--output", default="results", help="Output folder.")
-    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
     parser.add_argument("--device-id", action="append", type=int, dest="device_ids", help="CUDA device id. Can be repeated.")
     parser.add_argument("--format", default="wav", choices=["wav", "flac", "mp3", "m4a"], dest="output_format")
     parser.add_argument("--tta", action="store_true", help="Enable test time augmentation.")

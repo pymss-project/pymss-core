@@ -62,6 +62,21 @@ FAST_INIT_MODEL_TYPES = {'bs_roformer', 'bs_roformer_hyperace', 'mel_band_roform
 LEGACY_DEMUCS_MODEL_TYPES = {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}
 
 
+def _resolve_public_device(device, inference_params, logger):
+    inference_params = dict(inference_params or {})
+    requested_device = device
+    if requested_device == "mlx":
+        if not torch.backends.mps.is_available():
+            raise RuntimeError("device='mlx' requires Apple Silicon MPS support")
+        inference_params.setdefault("mps_model_backend", "mlx_full")
+        inference_params.setdefault("mps_model_compute_dtype", "float16")
+        logger.debug("Mapping device='mlx' to device='mps' with MLX full model backend")
+        return "mps", inference_params
+    if requested_device not in {"auto", "cpu", "cuda", "mps"}:
+        raise ValueError("device must be 'auto', 'cpu', 'cuda', 'mps', or 'mlx'")
+    return requested_device, inference_params
+
+
 def _select_device(device, device_ids, logger):
     if device not in ['cpu', 'cuda', 'mps']:
         if torch.cuda.is_available():
@@ -75,6 +90,15 @@ def _select_device(device, device_ids, logger):
     if device == "cpu":
         logger.warning("No hardware acceleration could be configured, running in CPU mode")
     return device
+
+
+def _prefer_mlx_for_auto(requested_device, selected_device, inference_params, logger):
+    if requested_device == "auto" and torch.device(selected_device).type == "mps":
+        if "mps_model_backend" not in inference_params:
+            inference_params["mps_model_backend"] = "mlx_full"
+            inference_params.setdefault("mps_model_compute_dtype", "float16")
+            logger.debug("Auto device selected MPS, enabling MLX full model backend")
+    return inference_params
 
 
 def _unwrap_state_dict(state_dict):
@@ -336,7 +360,7 @@ class MSSeparator:
             use_tta = False,
             store_dirs = 'results', # str for single folder, dict with instrument keys for multiple folders
             audio_params = {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2},
-            logger = get_separation_logger(),
+            logger = None,
             debug = False,
             inference_params = {
                 "batch_size": None,
@@ -352,6 +376,9 @@ class MSSeparator:
         if not model_path:
             raise ValueError('model_path is required')
 
+        logger = logger if logger is not None else get_separation_logger()
+        device, inference_params = _resolve_public_device(device, inference_params, logger)
+
         self.model_type = model_type
 
         self.model_path = model_path
@@ -366,15 +393,16 @@ class MSSeparator:
         self.inference_params = inference_params
 
         if self.debug:
-            set_log_level(logger, logging.DEBUG)
+            set_log_level(self.logger, logging.DEBUG)
         else:
-            set_log_level(logger, logging.INFO)
+            set_log_level(self.logger, logging.INFO)
 
         self.log_system_info()
         self.check_ffmpeg_installed()
 
         self.device_ids = device_ids
         self.device = _select_device(device, self.device_ids, self.logger)
+        self.inference_params = _prefer_mlx_for_auto(device, self.device, self.inference_params, self.logger)
 
         torch.backends.cudnn.benchmark = True
         self.logger.info(f'Using device: {self.device}, device_ids: {self.device_ids}')
@@ -629,17 +657,22 @@ class MSSeparator:
         return ok
 
     def process_folder(self, input_folder):
-        if not os.path.isdir(input_folder):
-            raise ValueError(f"Input folder '{input_folder}' does not exist.")
+        if os.path.isfile(input_folder):
+            all_mixtures_path = [input_folder]
+            input_label = "Input_file"
+        elif os.path.isdir(input_folder):
+            all_mixtures_path = [os.path.join(input_folder, f) for f in os.listdir(input_folder)]
+            input_label = "Input_folder"
+        else:
+            raise ValueError(f"Input path '{input_folder}' does not exist.")
 
-        all_mixtures_path = [os.path.join(input_folder, f) for f in os.listdir(input_folder)]
         if not all_mixtures_path:
             return []
 
         sample_rate = 44100
         if 'sample_rate' in self.config.audio:
             sample_rate = self.config.audio['sample_rate']
-        self.logger.info(f"Input_folder: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
+        self.logger.info(f"{input_label}: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
 
         success_files, pending_saves = [], deque()
         max_pending_saves = 12
