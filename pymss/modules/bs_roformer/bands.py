@@ -396,12 +396,14 @@ class MaskEstimator(Module):
                         outs[band_position] = band_out
                 return torch.cat(outs, dim=-1)
 
-            next_x = group_x.new_empty(*group_x.shape[:-1], next(iter(out_dims)))
+            next_x = None
             for signature, indices in groups:
                 weight, bias = self._get_layer_group_params(layer_index, signature, indices, x.device, x.dtype)
                 band_index = self._indices_tensor(indices, x.device)
                 selected = group_x.index_select(-2, band_index)
                 out = grouped_linear(selected, weight, bias)
+                if next_x is None:
+                    next_x = out.new_empty(*group_x.shape[:-1], out.shape[-1])
                 next_x.index_copy_(-2, band_index, out)
             group_x = next_x
 
@@ -551,7 +553,7 @@ class MaskEstimator(Module):
                 return result.permute(0, 2, 1, 3)
 
             out_dim = next(iter(out_dims))
-            next_x = x.new_empty(x.shape[0], x.shape[1], stem_count, band_count, out_dim)
+            next_x = None
             for signature, indices in groups:
                 weight, bias = first._get_packed_layer_group_params(
                     estimators, layer_index, signature, indices, x.device, x.dtype
@@ -560,7 +562,10 @@ class MaskEstimator(Module):
                 selected = MaskEstimator._select_packed_group(group_x, band_index, stem_count)
                 b, t, s, g, d = selected.shape
                 out = grouped_linear(selected.reshape(b, t, s * g, d), weight, bias)
-                next_x.index_copy_(-2, band_index, out.reshape(b, t, s, g, out_dim))
+                out = out.reshape(b, t, s, g, out_dim)
+                if next_x is None:
+                    next_x = out.new_empty(x.shape[0], x.shape[1], stem_count, band_count, out_dim)
+                next_x.index_copy_(-2, band_index, out)
             group_x = next_x
 
         out = F.glu(group_x, dim=-1).flatten(start_dim=-2)
