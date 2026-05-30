@@ -11,6 +11,24 @@ Example of using pip to install `pymss` package：
 pip install pymss
 ```
 
+When installing from a source checkout, `uv` can use the indexes configured in `pyproject.toml`. On Linux and Windows, the project maps `torch` to the PyTorch CUDA 12.8 wheel index:
+
+```sh
+uv sync
+```
+
+The equivalent pip install needs the PyTorch index to be passed explicitly:
+
+```sh
+pip install . --extra-index-url https://download.pytorch.org/whl/cu128
+```
+
+For development tools, install the `dev` dependency group:
+
+```sh
+uv sync --group dev
+```
+
 ## Usage
 
 ### CLI inference
@@ -134,7 +152,7 @@ separator = MSSeparator.from_model_name(
 )
 ```
 
-On Apple Silicon, `setup.py` installs `mlx>=0.31.0` for this backend. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch MPS. Advanced users can still override `mps_model_backend` and `mps_model_compute_dtype` through `inference_params`.
+On Apple Silicon, `pyproject.toml` installs `mlx>=0.31.0` for this backend. If MLX is missing or a non-VR backend fails, the model records `_pymss_mlx_full_backend_error` and falls back to Torch MPS. Advanced users can still override `mps_model_backend` and `mps_model_compute_dtype` through `inference_params`.
 
 ### Model Compatibility
 
@@ -237,4 +255,23 @@ VR models were measured with `batch_size=2`, `window_size=512`, `aggression=5`, 
 | 7_HP2-UVR | 56.10x | 64.2s |
 
 ## Contributing
-Contributions are welcome! 
+Contributions are welcome!
+
+This project uses `pyproject.toml` for packaging metadata and build settings. Build source and wheel distributions with:
+
+```sh
+uv build
+```
+
+The test suite uses `pytest`. The migrated integration tests live in `test/` and are parameterized through `test/test_all.py`. They require local model weights, configs, and input audio; missing assets are skipped automatically.
+
+```sh
+uv run pytest test -q
+```
+
+If you prefer a standard pip environment, install the package with test dependencies first:
+
+```sh
+pip install -e . pytest --extra-index-url https://download.pytorch.org/whl/cu128
+pytest test -q
+```
