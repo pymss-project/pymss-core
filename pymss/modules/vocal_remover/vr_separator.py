@@ -271,6 +271,8 @@ class VRSeparator(CommonSeparator):
             write_pos = 0
             batch_starts = range(0, patches, self.batch_size)
             process_batches = tqdm(batch_starts, leave=False, desc="Processing VR batches") if self.debug else batch_starts
+            if self.progress_callback:
+                self.progress_callback(0, patches, "Processing VR batches")
             if self._use_mlx_full_forward(device):
                 import mlx.core as mx
 
@@ -280,8 +282,8 @@ class VRSeparator(CommonSeparator):
                     pred = pred.astype(mx.float32).transpose(1, 2, 0, 3).reshape(pred.shape[1], pred.shape[2], -1)
                     mask_batches.append(pred)
                     write_pos += pred.shape[2]
-                    if self.callback:
-                        self.callback["progress"] = min(0.99 * (i / patches), 0.99)
+                    if self.progress_callback:
+                        self.progress_callback(min(i + self.batch_size, patches), patches, "Processing VR batches")
                 return mx.concatenate(mask_batches, axis=2)[:, :, :write_pos]
 
             with torch.inference_mode():
@@ -303,8 +305,8 @@ class VRSeparator(CommonSeparator):
                         )
                     mask[:, :, write_pos:write_pos + pred.size(2)] = pred
                     write_pos += pred.size(2)
-                    if self.callback:
-                        self.callback["progress"] = min(0.99 * (i / patches), 0.99)
+                    if self.progress_callback:
+                        self.progress_callback(min(i + self.batch_size, patches), patches, "Processing VR batches")
             return mask[:, :, :write_pos]
 
         def adjust_aggr_torch(mask, is_non_accom_stem):

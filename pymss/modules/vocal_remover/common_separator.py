@@ -35,7 +35,7 @@ class CommonSeparator:
         self.model_path = config.get("model_path")
         self.model_data = config.get("model_data")
         self.sample_rate = config.get("sample_rate")
-        self.callback = config.get("callback", None)
+        self.progress_callback = config.get("progress_callback", None)
 
         self.primary_stem_name = self.model_data.get("primary_stem", "primary_stem")
         self.secondary_stem_name = self.model_data.get("secondary_stem", "secondary_stem")

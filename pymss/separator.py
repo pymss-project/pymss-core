@@ -362,6 +362,7 @@ class MSSeparator:
             audio_params = {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2},
             logger = None,
             debug = False,
+            progress_callback = None,
             inference_params = {
                 "batch_size": None,
                 "overlap_size": None,
@@ -390,6 +391,7 @@ class MSSeparator:
         self.audio_params = audio_params
         self.logger = logger
         self.debug = debug
+        self.progress_callback = progress_callback
         self.inference_params = inference_params
 
         if self.debug:
@@ -497,7 +499,7 @@ class MSSeparator:
                 "model_path": self.model_path,
                 "model_data": model_data,
                 "sample_rate": 44100,
-                "callback": None,
+                "progress_callback": self.progress_callback,
             }
             model = VRSeparator(common_config, config.inference)
             model.load_model()
@@ -745,7 +747,16 @@ class MSSeparator:
         mix_orig = mix.copy()
         mix, norm_stats = _normalize_mix(mix, self.config.inference.get('normalize', False), self.logger)
         full_result = [
-            demix(self.config, self.model, track, self.device, pbar=pbar, model_type=self.model_type, source_indices=source_indices)
+            demix(
+                self.config,
+                self.model,
+                track,
+                self.device,
+                pbar=pbar,
+                model_type=self.model_type,
+                source_indices=source_indices,
+                progress_callback=self.progress_callback,
+            )
             for track in _tta_variants(mix, self.use_tta, self.logger)
         ]
 
