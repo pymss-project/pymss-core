@@ -10,6 +10,45 @@ from typing import Dict
 from .config import load_config
 
 
+class _ProgressContext:
+    def __init__(self, pbar=False, total=1, callback=None, done=0, message="Processing audio chunks"):
+        self.enabled = bool(pbar or callback)
+        self.bar = None
+        self.callback = callback
+        self.done = done
+        self.total = total
+        self.message = message
+        if not self.enabled:
+            return
+        self.bar = tqdm(total=total, desc=message, leave=False) if pbar else None
+        self.total = int(self.total or 1)
+        self.done = int(self.done or 0)
+        self.emit()
+
+    def emit(self, done=None):
+        if not self.enabled:
+            return
+        if done is not None:
+            self.done = int(done)
+        if self.callback is None:
+            return
+        self.callback(min(self.done, self.total), self.total, self.message)
+
+    def update(self, amount):
+        if not self.enabled:
+            return
+        amount = int(amount)
+        if self.bar:
+            self.bar.update(amount)
+        self.done += amount
+        self.emit()
+
+    def close(self):
+        if not self.enabled:
+            return
+        if self.bar:
+            self.bar.close()
+
 def get_model_from_config(model_type, config_path, model_kwargs_override=None):
     model_kwargs_override = model_kwargs_override or {}
     config = load_config(config_path)
@@ -247,7 +286,18 @@ def _add_weighted_chunk(result, counter, chunk, window, start, length):
     counter[..., start:start + length] += window
 
 
-def _run_complete_chunks(model, mix, windows, result, counter, chunk_size, step, batch_size, progress_bar, source_indices=None):
+def _run_complete_chunks(
+    model,
+    mix,
+    windows,
+    result,
+    counter,
+    chunk_size,
+    step,
+    batch_size,
+    progress,
+    source_indices=None,
+):
     n_chunks = _complete_chunk_count(mix.shape[1], chunk_size, step)
     if n_chunks == 0:
         return 0
@@ -272,13 +322,25 @@ def _run_complete_chunks(model, mix, windows, result, counter, chunk_size, step,
             step,
             start_offset=batch_start * step,
         )
-        if progress_bar:
-            progress_bar.update(step * (batch_end - batch_start))
+        progress.update(step * (batch_end - batch_start))
 
     return n_complete
 
 
-def _run_tail_chunks(model, mix, starts, windows, result, counter, chunk_size, step, batch_size, first_chunk, progress_bar, source_indices=None):
+def _run_tail_chunks(
+    model,
+    mix,
+    starts,
+    windows,
+    result,
+    counter,
+    chunk_size,
+    step,
+    batch_size,
+    first_chunk,
+    progress,
+    source_indices=None,
+):
     for batch_start in range(first_chunk, len(starts), batch_size):
         batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
         batch = [(_extract_chunk(mix, starts[idx], chunk_size), idx) for idx in batch_indices]
@@ -288,8 +350,7 @@ def _run_tail_chunks(model, mix, starts, windows, result, counter, chunk_size, s
             start = starts[idx]
             _add_weighted_chunk(result, counter, chunks[j], windows[idx], start, length)
 
-        if progress_bar:
-            progress_bar.update(step * len(batch_data))
+        progress.update(step * len(batch_data))
 
 
 def _finalize_overlap(result, counter, length_init, border):
@@ -449,7 +510,7 @@ def _can_demix_mlx_full(model, device):
     )
 
 
-def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=None):
+def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=None, progress_callback=None):
     import mlx.core as mx
 
     C = config.audio.chunk_size
@@ -463,7 +524,7 @@ def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=
     starts, windows = _mlx_build_chunk_plan(mix.shape[1], C, step, fade_size)
     result = mx.zeros((_source_count(config, source_indices), mix.shape[0], mix.shape[1]), dtype=mx.float32)
     counter = mx.zeros((1, 1, mix.shape[1]), dtype=mx.float32)
-    progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+    progress = _ProgressContext(pbar, mix.shape[1], progress_callback)
 
     for batch_start in range(0, len(starts), batch_size):
         batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
@@ -473,18 +534,17 @@ def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=
         for j, ((_, length), idx) in enumerate(batch):
             result, counter = _mlx_add_weighted_chunk(result, counter, chunks[j], windows[idx], starts[idx], length)
         mx.eval(result, counter)
-        if progress_bar:
-            progress_bar.update(step * len(batch))
+        progress.update(step * len(batch))
 
-    if progress_bar:
-        progress_bar.close()
+    progress.close()
+    progress.emit(mix.shape[1])
     return _sources_to_dict(config, _mlx_finalize_overlap(result, counter, length_init, border), source_indices)
 
 
 demix_track_mlx_roformer = demix_track_mlx_full
 
 
-def demix_track(config, model, mix, device, pbar=False, source_indices=None):
+def demix_track(config, model, mix, device, pbar=False, source_indices=None, progress_callback=None):
     C = config.audio.chunk_size
     source_indices = _normalize_source_indices(config, source_indices)
     step = _get_inference_step(config, C)
@@ -501,32 +561,51 @@ def demix_track(config, model, mix, device, pbar=False, source_indices=None):
     with _autocast(device, config.training.get('use_amp', True)):
         with torch.inference_mode():
             result, counter = _init_overlap_buffers(config, mix, device, use_complete_fast_path, source_indices)
-            progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+            progress = _ProgressContext(pbar, mix.shape[1], progress_callback)
 
             with _model_source_context(model, source_indices):
                 complete_chunks = 0
                 if use_complete_fast_path:
                     complete_chunks = _run_complete_chunks(
-                        model, mix_device, chunk_windows, result, counter, C, step, batch_size, progress_bar, source_indices
+                        model,
+                        mix_device,
+                        chunk_windows,
+                        result,
+                        counter,
+                        C,
+                        step,
+                        batch_size,
+                        progress,
+                        source_indices,
                     )
 
                 _run_tail_chunks(
-                    model, mix_device, chunk_starts, chunk_windows, result, counter, C, step, batch_size,
-                    complete_chunks, progress_bar, source_indices
+                    model,
+                    mix_device,
+                    chunk_starts,
+                    chunk_windows,
+                    result,
+                    counter,
+                    C,
+                    step,
+                    batch_size,
+                    complete_chunks,
+                    progress,
+                    source_indices,
                 )
+                progress.emit(mix.shape[1])
 
 
-            if progress_bar:
-                progress_bar.close()
+            progress.close()
 
             estimated_sources = _finalize_overlap(result, counter, length_init, border)
 
     return _sources_to_dict(config, estimated_sources, source_indices)
 
 
-def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=None):
+def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=None, progress_callback=None):
     if _can_demix_mlx_full(model, device):
-        return demix_track_mlx_full(config, model, mix.cpu().numpy(), device, pbar=pbar, source_indices=source_indices)
+        return demix_track_mlx_full(config, model, mix.cpu().numpy(), device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
 
     source_indices = _normalize_source_indices(config, source_indices)
     source_names = _source_names(config)
@@ -543,7 +622,7 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
             i = 0
             batch_data = []
             batch_locations = []
-            progress_bar = tqdm(total=mix.shape[1], desc="Processing audio chunks", leave=False) if pbar else None
+            progress = _ProgressContext(pbar, mix.shape[1], progress_callback)
 
             while i < mix.shape[1]:
                 part = mix[:, i:i + C].to(device)
@@ -563,11 +642,12 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
                         counter[..., start:start+l] += 1.
                     batch_data, batch_locations = [], []
 
-                if progress_bar:
-                    progress_bar.update(step)
+                if progress.bar:
+                    progress.bar.update(step)
+                progress.emit(min(i, mix.shape[1]))
 
-            if progress_bar:
-                progress_bar.close()
+            progress.close()
+            progress.emit(mix.shape[1])
 
             estimated_sources = (result / counter).cpu().numpy()
             np.nan_to_num(estimated_sources, copy=False, nan=0.0)
@@ -576,13 +656,15 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
         return estimated_sources
     return _sources_to_dict(config, estimated_sources, source_indices)
 
-def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None, source_indices=None) -> Dict[str, NDArray]:
+def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None, source_indices=None, progress_callback=None) -> Dict[str, NDArray]:
     if _can_demix_mlx_full(model, device):
-        return demix_track_mlx_full(config, model, mix, device, pbar=pbar, source_indices=source_indices)
+        return demix_track_mlx_full(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
     mix = torch.tensor(mix, dtype=torch.float32)
     if model_type in {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}:
         from .modules.legacy_demucs import apply_legacy_model
 
+        progress = _ProgressContext(callback=progress_callback)
+        progress.emit(0)
         with _autocast(device, config.training.get('use_amp', True)):
             with torch.inference_mode():
                 estimates = apply_legacy_model(
@@ -593,7 +675,8 @@ def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = Non
                     overlap=float(config.inference.get('overlap', 0.25)),
                     progress=pbar,
                 ).cpu().numpy()
+        progress.emit(1)
         return dict(zip(config.training.instruments, estimates))
     if model_type == 'htdemucs':
-        return demix_track_demucs(config, model, mix, device, pbar=pbar, source_indices=source_indices)
-    return demix_track(config, model, mix, device, pbar=pbar, source_indices=source_indices)
+        return demix_track_demucs(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
+    return demix_track(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
