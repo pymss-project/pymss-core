@@ -10,6 +10,20 @@ LOG_DIR = ".logs"
 LOG_ENV_NAME = "PYMSS_LOG_FILE"
 
 
+def _safe_relpath(pathname):
+    if not pathname:
+        return pathname
+
+    normalized = os.path.normpath(pathname)
+    if os.name == "nt" and normalized.startswith("\\\\?\\"):
+        normalized = normalized[4:]
+
+    try:
+        return os.path.relpath(normalized)
+    except ValueError:
+        return normalized
+
+
 class ColorFormatter(logging.Formatter):
     COLORS = {
         "DBG": "\033[1;36m",
@@ -42,7 +56,7 @@ class ColorFormatter(logging.Formatter):
         self.enable_color = enable_color
 
     def format(self, record):
-        record.pathname = os.path.relpath(record.pathname)
+        record.pathname = _safe_relpath(record.pathname)
         original_levelname = record.levelname
         original_msg = record.msg
 
@@ -73,7 +87,7 @@ class FileFormatter(logging.Formatter):
         )
 
     def format(self, record):
-        record.pathname = os.path.relpath(record.pathname)
+        record.pathname = _safe_relpath(record.pathname)
         original_levelname = record.levelname
         record.levelname = self.LEVEL_MAP.get(record.levelname, record.levelname[:3])
         try:
