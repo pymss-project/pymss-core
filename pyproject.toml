@@ -45,6 +45,12 @@ dependencies = [
     "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",

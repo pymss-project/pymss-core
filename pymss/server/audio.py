@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+import base64
+import io
+import json
+import os
+import re
+import tempfile
+import time
+import uuid
+import zipfile
+
+import numpy as np
+
+from ..audio_io import save_audio
+from .errors import APIError
+
+
+PCM_FORMATS = {
+    "pcm_f32le": (np.dtype("<f4"), 4),
+    "pcm_s16le": (np.dtype("<i2"), 2),
+}
+OUTPUT_FORMATS = {"pcm_f32le", "wav", "flac"}
+RESPONSE_FORMATS = {"json", "zip"}
+
+
+def parse_int(value, param, code="invalid_request"):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise APIError(400, code, f"Invalid integer for {param}.", param=param)
+
+
+def normalize_stems(value, valid_instruments):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        raw_stems = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        raw_stems = value
+    else:
+        raise APIError(400, "invalid_stem", "stems must be a string or array.", param="stems")
+
+    lower_map = {stem.lower(): stem for stem in valid_instruments}
+    selected = []
+    seen = set()
+    for raw in raw_stems:
+        stem = str(raw).strip()
+        if not stem:
+            continue
+        canonical = lower_map.get(stem.lower())
+        if canonical is None:
+            raise APIError(400, "invalid_stem", f"Invalid stem {stem!r}. Valid stems: {list(valid_instruments)}", param="stems")
+        if canonical.lower() in seen:
+            continue
+        seen.add(canonical.lower())
+        selected.append(canonical)
+    return selected or None
+
+
+def validate_common_options(response_format, output_audio_format):
+    if response_format not in RESPONSE_FORMATS:
+        raise APIError(
+            400,
+            "invalid_response_format",
+            f"Unsupported response_format {response_format!r}.",
+            param="response_format",
+        )
+    if output_audio_format not in OUTPUT_FORMATS:
+        raise APIError(
+            400,
+            "invalid_output_audio_format",
+            f"Unsupported output_audio_format {output_audio_format!r}.",
+            param="output_audio_format",
+        )
+    if response_format == "json" and output_audio_format != "pcm_f32le":
+        raise APIError(
+            400,
+            "invalid_output_audio_format",
+            "response_format='json' only supports output_audio_format='pcm_f32le'.",
+            param="output_audio_format",
+        )
+
+
+def decode_pcm(raw, audio_format, sample_rate, channels, expected_sample_rate, max_audio_seconds):
+    if audio_format not in PCM_FORMATS:
+        raise APIError(400, "invalid_audio_format", f"Unsupported audio format {audio_format!r}.", param="format")
+    if channels not in (1, 2):
+        raise APIError(400, "invalid_channel_count", "channels must be 1 or 2.", param="channels")
+    if sample_rate != expected_sample_rate:
+        raise APIError(
+            400,
+            "invalid_sample_rate",
+            f"sample_rate must be {expected_sample_rate}.",
+            param="sample_rate",
+        )
+    if not raw:
+        raise APIError(400, "empty_audio", "Decoded PCM audio is empty.", param="input.data")
+
+    dtype, sample_width = PCM_FORMATS[audio_format]
+    frame_width = channels * sample_width
+    if len(raw) % frame_width:
+        raise APIError(
+            400,
+            "invalid_audio_length",
+            "PCM bytes length is not aligned to format and channels.",
+            param="input.data",
+        )
+
+    frames = len(raw) // frame_width
+    seconds = frames / float(sample_rate)
+    if max_audio_seconds and seconds > max_audio_seconds:
+        raise APIError(413, "request_too_large", f"Audio duration exceeds {max_audio_seconds} seconds.")
+
+    data = np.frombuffer(raw, dtype=dtype)
+    if audio_format == "pcm_f32le":
+        if not np.isfinite(data).all():
+            raise APIError(400, "invalid_audio_data", "pcm_f32le audio contains NaN or Inf.", param="input.data")
+        float_data = data.astype(np.float32, copy=False)
+    else:
+        float_data = data.astype(np.float32) / 32768.0
+
+    frame_data = float_data.reshape(-1, channels)
+    mix = frame_data[:, 0] if channels == 1 else frame_data.T
+    return np.ascontiguousarray(mix), seconds
+
+
+def audio_to_interleaved_f32(audio):
+    array = np.asarray(audio, dtype=np.float32)
+    if array.ndim == 1:
+        normalized = np.ascontiguousarray(array)
+        return normalized, 1
+    if array.ndim != 2:
+        raise ValueError(f"Expected mono or stereo audio, got shape {array.shape}")
+    if array.shape[1] in (1, 2):
+        normalized = np.ascontiguousarray(array)
+        return normalized, int(array.shape[1])
+    if array.shape[0] in (1, 2):
+        normalized = np.ascontiguousarray(array.T)
+        return normalized, int(array.shape[0])
+    raise ValueError(f"Expected mono or stereo audio, got shape {array.shape}")
+
+
+def f32le_bytes(audio):
+    array, channels = audio_to_interleaved_f32(audio)
+    return np.asarray(array, dtype="<f4").tobytes(), channels
+
+
+def _safe_slug(value):
+    slug = re.sub(r"[^a-z0-9_-]+", "-", str(value).lower()).strip("-._")
+    return slug or "stem"
+
+
+def _filename(index, stem, output_audio_format):
+    extension = "f32le" if output_audio_format == "pcm_f32le" else output_audio_format
+    return f"{index:04d}-{_safe_slug(stem)}.{extension}"
+
+
+def _encode_container(audio, sample_rate, output_format, audio_params):
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, f"audio.{output_format}")
+        save_audio(path, audio, sample_rate, output_format, audio_params)
+        with open(path, "rb") as f:
+            return f.read()
+
+
+def ordered_results(results, stems, instruments):
+    order = stems or list(instruments)
+    missing = [stem for stem in order if stem not in results]
+    if missing:
+        raise APIError(
+            500,
+            "separation_failed",
+            f"Separation did not return stem(s): {missing}",
+            error_type="server_error",
+        )
+    return [(stem, results[stem]) for stem in order]
+
+
+def json_response(state, model, results, stems, input_seconds):
+    outputs = []
+    for stem, audio in ordered_results(results, stems, state.instruments):
+        raw, channels = f32le_bytes(audio)
+        outputs.append(
+            {
+                "stem": stem,
+                "audio": {
+                    "format": "pcm_f32le",
+                    "sample_rate": state.sample_rate,
+                    "channels": channels,
+                    "data": base64.b64encode(raw).decode("ascii"),
+                },
+            }
+        )
+    created = int(time.time())
+    return {
+        "id": "sep_" + uuid.uuid4().hex,
+        "object": "audio.separation",
+        "created": created,
+        "model": model,
+        "outputs": outputs,
+        "metadata": {
+            "input_seconds": input_seconds,
+            "output_stems": [item["stem"] for item in outputs],
+            "device": state.device,
+        },
+        "usage": {
+            "type": "duration",
+            "seconds": input_seconds,
+        },
+    }
+
+
+def zip_response(state, model, results, stems, input_seconds, output_audio_format):
+    output_items = []
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for index, (stem, audio) in enumerate(ordered_results(results, stems, state.instruments), start=1):
+            filename = _filename(index, stem, output_audio_format)
+            if output_audio_format == "pcm_f32le":
+                content, channels = f32le_bytes(audio)
+                format_name = "pcm_f32le"
+            else:
+                content = _encode_container(
+                    audio,
+                    state.sample_rate,
+                    output_audio_format,
+                    getattr(state.separator, "audio_params", {}),
+                )
+                _, channels = audio_to_interleaved_f32(audio)
+                format_name = output_audio_format
+            zf.writestr(filename, content)
+            output_items.append(
+                {
+                    "stem": stem,
+                    "filename": filename,
+                    "format": format_name,
+                    "sample_rate": state.sample_rate,
+                    "channels": channels,
+                }
+            )
+
+        manifest = {
+            "id": "sep_" + uuid.uuid4().hex,
+            "object": "audio.separation",
+            "model": model,
+            "outputs": output_items,
+            "usage": {
+                "type": "duration",
+                "seconds": input_seconds,
+            },
+        }
+        zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+    return archive.getvalue()
