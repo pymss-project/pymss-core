@@ -3,11 +3,10 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ServerConfig:
-    model: str
+    model: str | None = None
     model_dir: str | None = None
     source: str = "modelscope"
     endpoint: str | None = None
-    served_model_names: list[str] = field(default_factory=list)
     device: str = "auto"
     device_ids: list[int] = field(default_factory=lambda: [0])
     api_key: str | None = None
@@ -19,4 +18,3 @@ class ServerConfig:
     max_request_bytes: int = 536870912
     max_queue_size: int = 8
     request_timeout_seconds: float = 0.0
-

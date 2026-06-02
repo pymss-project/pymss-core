@@ -177,16 +177,16 @@ def ordered_results(results, stems, instruments):
     return [(stem, results[stem]) for stem in order]
 
 
-def json_response(state, model, results, stems, input_seconds):
+def json_response(loaded, model, results, stems, input_seconds):
     outputs = []
-    for stem, audio in ordered_results(results, stems, state.instruments):
+    for stem, audio in ordered_results(results, stems, loaded.instruments):
         raw, channels = f32le_bytes(audio)
         outputs.append(
             {
                 "stem": stem,
                 "audio": {
                     "format": "pcm_f32le",
-                    "sample_rate": state.sample_rate,
+                    "sample_rate": loaded.sample_rate,
                     "channels": channels,
                     "data": base64.b64encode(raw).decode("ascii"),
                 },
@@ -202,7 +202,7 @@ def json_response(state, model, results, stems, input_seconds):
         "metadata": {
             "input_seconds": input_seconds,
             "output_stems": [item["stem"] for item in outputs],
-            "device": state.device,
+            "device": loaded.device,
         },
         "usage": {
             "type": "duration",
@@ -211,11 +211,11 @@ def json_response(state, model, results, stems, input_seconds):
     }
 
 
-def zip_response(state, model, results, stems, input_seconds, output_audio_format):
+def zip_response(loaded, model, results, stems, input_seconds, output_audio_format):
     output_items = []
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for index, (stem, audio) in enumerate(ordered_results(results, stems, state.instruments), start=1):
+        for index, (stem, audio) in enumerate(ordered_results(results, stems, loaded.instruments), start=1):
             filename = _filename(index, stem, output_audio_format)
             if output_audio_format == "pcm_f32le":
                 content, channels = f32le_bytes(audio)
@@ -223,9 +223,9 @@ def zip_response(state, model, results, stems, input_seconds, output_audio_forma
             else:
                 content = _encode_container(
                     audio,
-                    state.sample_rate,
+                    loaded.sample_rate,
                     output_audio_format,
-                    getattr(state.separator, "audio_params", {}),
+                    loaded.audio_params,
                 )
                 _, channels = audio_to_interleaved_f32(audio)
                 format_name = output_audio_format
@@ -235,7 +235,7 @@ def zip_response(state, model, results, stems, input_seconds, output_audio_forma
                     "stem": stem,
                     "filename": filename,
                     "format": format_name,
-                    "sample_rate": state.sample_rate,
+                    "sample_rate": loaded.sample_rate,
                     "channels": channels,
                 }
             )
