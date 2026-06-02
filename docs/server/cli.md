@@ -1,6 +1,6 @@
 # pymss Server CLI
 
-server 通过 `pymss serve MODEL` 启动，行为类似 vLLM，当前不支持运行时热切换。
+server 通过 `pymss serve [MODEL]` 启动，行为类似 vLLM。可以不指定模型空载启动，再通过 API 加载或切换模型。
 
 ## 安装可选依赖
 
@@ -30,13 +30,15 @@ uv run --extra server pymss serve bs_roformer_voc_hyperacev2 \
 
 当前实现的启动顺序：
 
-1. 调用 `resolve_model(MODEL, require_supported=True, require_exists=True)` 检查 catalog 和本地文件。
+1. 如果提供 `MODEL`，调用 `resolve_model(MODEL, require_supported=True, require_exists=True)` 检查 catalog 和本地文件。
 2. 如果本地文件缺失且错误是 `FileNotFoundError`，调用 `download_model()` 下载模型、配置和辅助文件。
 3. 下载后再次 `resolve_model(..., require_exists=True)`。
 4. 创建唯一的 `MSSeparator` 实例。
 5. 模型加载成功后才开始监听 HTTP 端口。
 
 下载失败或模型加载失败时，server 启动失败，不监听端口。
+
+如果没有提供 `MODEL`，server 不加载模型并直接监听端口。此时 `/health` 返回 `model_loaded=false`，`/v1/models` 返回空列表，推理请求返回 `503 model_not_loaded`。之后可通过 `POST /v1/models/load` 加载模型。
 
 ## CLI 参数
 
@@ -50,10 +52,9 @@ uv run --extra server pymss serve bs_roformer_voc_hyperacev2 \
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| `MODEL` | 必填 | catalog 模型名或 alias |
+| `MODEL` | 空 | catalog 模型名或 alias；省略时空载启动 |
 | `--source` | `modelscope` | 下载源：`modelscope`、`huggingface`、`hf-mirror` |
 | `--endpoint` | 空 | 自定义下载 endpoint |
-| `--served-model-name` | `MODEL` | API 暴露名，可重复；多个名称都指向同一个加载模型 |
 | `--device` | `auto` | `auto`、`cpu`、`cuda`、`mps`、`mlx` |
 | `--device-id` | `0` | CUDA device id，可重复 |
 | `--host` | `127.0.0.1` | 监听地址 |
@@ -72,14 +73,13 @@ uv run --extra server pymss serve bs_roformer_voc_hyperacev2 \
 
 | 环境变量 | 默认值 | 说明 |
 |---|---:|---|
-| `MODEL` | `bs_roformer_voc_hyperacev2` | 启动模型 |
+| `MODEL` | `bs_roformer_voc_hyperacev2` | 启动模型；设置为显式空值 `MODEL=` 时空载启动 |
 | `HOST` | `127.0.0.1` | 监听地址 |
 | `PORT` | `8000` | 监听端口 |
 | `DEVICE` | `auto` | 推理设备 |
 | `SOURCE` | `modelscope` | 下载源 |
 | `MODEL_DIR` | 空 | 模型缓存目录 |
 | `ENDPOINT` | 空 | 自定义下载 endpoint |
-| `SERVED_MODEL_NAME` | 空 | API 暴露名 |
 | `API_KEY` | 空 | Bearer token |
 
 示例：

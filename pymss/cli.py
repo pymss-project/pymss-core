@@ -144,7 +144,6 @@ def cmd_serve(args):
         model_dir=args.model_dir,
         source=args.source,
         endpoint=args.endpoint,
-        served_model_names=args.served_model_names or [],
         device=args.device,
         device_ids=args.device_ids or [0],
         api_key=args.api_key,
@@ -200,15 +199,9 @@ def build_parser():
     infer_parser.set_defaults(func=cmd_infer)
 
     serve_parser = subparsers.add_parser("serve", help="Start an OpenAI-style HTTP inference server.")
-    serve_parser.add_argument("model")
+    serve_parser.add_argument("model", nargs="?")
     serve_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     serve_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
-    serve_parser.add_argument(
-        "--served-model-name",
-        action="append",
-        dest="served_model_names",
-        help="Model name exposed by the API. Can be repeated.",
-    )
     serve_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
     serve_parser.add_argument(
         "--device-id",
