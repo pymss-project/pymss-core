@@ -40,6 +40,8 @@ uv run --extra server pymss serve bs_roformer_voc_hyperacev2 \
 
 如果没有提供 `MODEL`，server 不加载模型并直接监听端口。此时 `/health` 返回 `model_loaded=false`，`/v1/models` 返回空列表，推理请求返回 `503 model_not_loaded`。之后可通过 `POST /v1/models/load` 加载模型。
 
+运行中的 server 可以通过 `POST /v1/download-source` 热切换默认下载源。该设置只影响后续 `POST /v1/models/download`，以及 `/v1/models/load` 在本地缺少文件时触发的自动下载；不会卸载、重载或迁移当前已加载模型。
+
 ## CLI 参数
 
 全局参数：

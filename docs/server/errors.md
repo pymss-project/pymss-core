@@ -46,11 +46,14 @@ server 返回错误对象格式：
 | 401 | `invalid_api_key` | `invalid_request_error` | Bearer token 缺失或不匹配 |
 | 429 | `server_overloaded` | `invalid_request_error` | 推理队列已满 |
 | 409 | `model_operation_in_progress` | `invalid_request_error` | 模型加载、卸载或切换正在进行 |
+| 409 | `model_download_in_progress` | `invalid_request_error` | 模型下载正在进行 |
 | 503 | `model_not_loaded` | `invalid_request_error` | 当前没有已加载模型 |
 | 400 | `invalid_inference_parameter` | `invalid_request_error` | 运行时加载参数未知、格式非法，或当前模型配置不支持 |
+| 400 | `invalid_download_source` | `invalid_request_error` | 下载源或下载 endpoint 非法 |
 | 504 | `separation_timeout` | `invalid_request_error` | 推理超过 `--request-timeout-seconds` |
 | 500 | `model_unload_failed` | `server_error` | 卸载当前模型失败 |
 | 500 | `model_load_failed` | `server_error` | 加载请求模型失败 |
+| 500 | `model_download_failed` | `server_error` | 下载模型失败 |
 | 500 | `separation_failed` | `server_error` | 推理或响应编码过程失败 |
 
 ## 资源限制相关错误
@@ -61,6 +64,8 @@ server 返回错误对象格式：
 推理并发由单模型锁串行执行。`--max-queue-size` 限制正在处理和等待处理的请求数量，超过时返回 `429 server_overloaded`。
 
 模型加载/切换期间，server 会先从公开状态 detach 当前模型。`/health` 仍快速返回并显示 `model_loading=true`；推理请求返回 `409 model_operation_in_progress`。
+
+模型下载期间，另一个下载请求返回 `409 model_download_in_progress`。模型下载和模型加载/切换首版互斥，因此下载期间加载模型会返回 `409 model_download_in_progress`，加载/切换期间下载模型会返回 `409 model_operation_in_progress`。
 
 ## 鉴权错误
 

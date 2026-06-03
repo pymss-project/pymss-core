@@ -7,11 +7,16 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+from pymss.model_download import DownloadError
+from pymss.model_registry import ModelEntry
 
 
 class FakeEntry:
@@ -55,6 +60,40 @@ class FakeSeparator:
         self.closed = True
 
 
+def _catalog_entry(name, *, supported=True, category="vocal", secondary="test", aux=()):
+    stem = Path(name).stem
+    return ModelEntry(
+        name=name,
+        aliases=(name, stem, f"{stem}-alias"),
+        model_type="fake",
+        architecture="fake_arch",
+        supported=supported,
+        unsupported_reason="" if supported else "not supported",
+        relpath=f"{category}/{secondary}/{name}",
+        config_relpath=f"{category}/{secondary}/{stem}.yaml",
+        auxiliary_relpaths=tuple(aux),
+        size_bytes=123,
+        sha256="",
+        primary_category=category,
+        primary_category_cn="",
+        secondary_category=secondary,
+        secondary_category_cn="",
+        target_stem="vocals",
+        config_instruments="vocals|instrument",
+        config_target_instrument="vocals",
+        classification_confidence="test",
+        classification_basis="test",
+    )
+
+
+def _write_catalog_entry_files(model_dir, entry):
+    relpaths = [entry.relpath, entry.config_relpath, *entry.auxiliary_relpaths]
+    for relpath in relpaths:
+        path = Path(model_dir) / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake")
+
+
 class ASGIResponse:
     def __init__(self, status_code, headers, body):
         self.status_code = status_code
@@ -96,6 +135,9 @@ class ASGIClient:
             self.loop._default_executor = None
 
     async def _request(self, method, path, body=b"", headers=None):
+        parsed = urllib.parse.urlsplit(path)
+        request_path = parsed.path or "/"
+        query_string = parsed.query.encode("ascii")
         raw_headers = [
             (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
             for key, value in (headers or {}).items()
@@ -106,9 +148,9 @@ class ASGIClient:
             "http_version": "1.1",
             "method": method,
             "scheme": "http",
-            "path": path,
-            "raw_path": path.encode("ascii"),
-            "query_string": b"",
+            "path": request_path,
+            "raw_path": request_path.encode("ascii"),
+            "query_string": query_string,
             "headers": raw_headers,
             "client": ("testclient", 50000),
             "server": ("testserver", 80),
@@ -305,6 +347,103 @@ def fake_loader(monkeypatch):
     def install(*, fail_model=None):
         _install_fake_loader(monkeypatch, loaded, fail_model=fail_model)
         return loaded
+
+    return install
+
+
+@pytest.fixture
+def catalog_entry_factory():
+    return _catalog_entry
+
+
+@pytest.fixture
+def write_catalog_entry_files():
+    return _write_catalog_entry_files
+
+
+@pytest.fixture
+def install_model_catalog(monkeypatch):
+    def install(entries):
+        def matches(entry, model):
+            key = str(model).strip().lower()
+            names = {entry.name.lower(), entry.stem.lower(), *(alias.lower() for alias in entry.aliases)}
+            return key in names
+
+        def fake_get_model_entry(model):
+            for entry in entries:
+                if matches(entry, model):
+                    return entry
+            raise KeyError(f"Unknown pymss model: {model}")
+
+        def fake_list_models(category=None, supported=None):
+            rows = list(entries)
+            if category:
+                category_key = category.lower()
+                rows = [
+                    entry
+                    for entry in rows
+                    if entry.primary_category.lower() == category_key
+                    or entry.secondary_category.lower() == category_key
+                    or entry.category_path.lower() == category_key
+                ]
+            if supported is not None:
+                rows = [entry for entry in rows if entry.supported is bool(supported)]
+            return rows
+
+        monkeypatch.setattr("pymss.server.models.get_model_entry", fake_get_model_entry)
+        monkeypatch.setattr("pymss.server.models.list_models", fake_list_models)
+        return fake_get_model_entry
+
+    return install
+
+
+@pytest.fixture
+def install_fake_model_download(monkeypatch):
+    def install(lookup, model_dir):
+        calls = []
+
+        def fake_download_model(
+            model,
+            model_dir=None,
+            source="modelscope",
+            endpoint=None,
+            verify=True,
+            force=False,
+            timeout=30,
+        ):
+            if model == "broken":
+                raise DownloadError("download failed")
+            entry = lookup(model)
+            downloaded = []
+            skipped = []
+            for relpath in [entry.relpath, entry.config_relpath, *entry.auxiliary_relpaths]:
+                path = Path(model_dir) / relpath
+                if not force and path.is_file():
+                    skipped.append(str(path))
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fake")
+                downloaded.append(str(path))
+            calls.append(
+                {
+                    "model": model,
+                    "model_dir": model_dir,
+                    "source": source,
+                    "endpoint": endpoint,
+                    "verify": verify,
+                    "force": force,
+                    "timeout": timeout,
+                }
+            )
+            return {
+                "entry": entry,
+                "downloaded": downloaded,
+                "skipped": skipped,
+                "model_dir": str(model_dir),
+            }
+
+        monkeypatch.setattr("pymss.server.app.download_model", fake_download_model)
+        return calls
 
     return install
 
