@@ -2,7 +2,10 @@ import asyncio
 import base64
 import binascii
 import json
+from pathlib import Path
 
+from ..model_download import DownloadError, download_model
+from ..model_registry import model_root
 from .audio import (
     decode_pcm,
     json_response,
@@ -13,7 +16,15 @@ from .audio import (
 )
 from .config import ServerConfig
 from .errors import APIError
-from .state import InferenceParameterError, close_loaded_model, load_model, load_state, model_card
+from .models import (
+    catalog_model_card,
+    catalog_model_detail,
+    filter_catalog_models,
+    parse_include_files,
+    parse_local_filter,
+    parse_supported_filter,
+)
+from .state import DEFAULT_ENDPOINT, InferenceParameterError, close_loaded_model, load_model, load_state, model_card
 
 
 try:
@@ -84,6 +95,44 @@ def _require_model_id(loaded, model):
     if not loaded.is_model_id(model):
         raise APIError(404, "model_not_found", f"Model {model!r} is not loaded by this process.", param="model")
     return model
+
+
+def _validate_download_source(source, endpoint, *, source_required=False):
+    if source_required and not source:
+        raise APIError(400, "invalid_download_source", "The 'source' field is required.", param="source")
+    if source is not None and source not in {"modelscope", "huggingface", "hf-mirror"}:
+        raise APIError(
+            400,
+            "invalid_download_source",
+            "source must be one of: modelscope, huggingface, hf-mirror.",
+            param="source",
+        )
+    if endpoint is not DEFAULT_ENDPOINT and endpoint is not None and not isinstance(endpoint, str):
+        raise APIError(400, "invalid_download_source", "endpoint must be a string or null.", param="endpoint")
+
+
+def _effective_download_source(state, source, endpoint):
+    effective_source = source or state.config.source
+    effective_endpoint = state.config.endpoint if endpoint is DEFAULT_ENDPOINT else endpoint
+    return effective_source, effective_endpoint
+
+
+def _query_endpoint(query_params):
+    return query_params["endpoint"] if "endpoint" in query_params else DEFAULT_ENDPOINT
+
+
+def _parse_bool_field(value, default, param):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    raise APIError(400, "invalid_request", f"{param} must be a boolean.", param=param)
 
 
 async def _parse_json_request(request, state, loaded):
@@ -202,23 +251,24 @@ def _parse_load_payload(payload):
     elif not isinstance(inference_params, dict):
         raise APIError(400, "invalid_inference_parameter", "inference_params must be an object.", param="inference_params")
     source = payload.get("source")
-    endpoint = payload.get("endpoint")
-    if source is not None and source not in {"modelscope", "huggingface", "hf-mirror"}:
-        raise APIError(400, "invalid_request", "source must be one of: modelscope, huggingface, hf-mirror.", param="source")
-    if endpoint is not None and not isinstance(endpoint, str):
-        raise APIError(400, "invalid_request", "endpoint must be a string or null.", param="endpoint")
+    endpoint = payload["endpoint"] if "endpoint" in payload else DEFAULT_ENDPOINT
+    _validate_download_source(source, endpoint)
     return str(model), source, endpoint, inference_params
 
 
 async def _load_or_switch_model(state, model, source, endpoint, inference_params):
-    if state.model_lock.locked():
-        raise APIError(409, "model_operation_in_progress", "A model load or switch operation is in progress.")
-    await state.model_lock.acquire()
+    async with state.operation_lock:
+        if state.model_lock.locked():
+            raise APIError(409, "model_operation_in_progress", "A model load or switch operation is in progress.")
+        if state.download_lock.locked():
+            raise APIError(409, "model_download_in_progress", "A model download operation is in progress.")
+        await state.model_lock.acquire()
     previous_loaded = state.loaded is not None
     old_loaded = state.loaded
     state.loaded = None
     state.model_loading = True
     state.model_loading_target = model
+    effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
     try:
         if old_loaded is not None:
             async with state.inference_lock:
@@ -228,7 +278,14 @@ async def _load_or_switch_model(state, model, source, endpoint, inference_params
                     state.logger.exception("Model unload failed")
                     raise APIError(500, "model_unload_failed", str(exc), error_type="server_error")
         try:
-            loaded = await asyncio.to_thread(load_model, state.config, model, source, endpoint, inference_params)
+            loaded = await asyncio.to_thread(
+                load_model,
+                state.config,
+                model,
+                effective_source,
+                effective_endpoint,
+                inference_params,
+            )
         except InferenceParameterError as exc:
             raise APIError(400, "invalid_inference_parameter", str(exc), param="inference_params")
         except ValueError as exc:
@@ -244,6 +301,115 @@ async def _load_or_switch_model(state, model, source, endpoint, inference_params
         state.model_loading = False
         state.model_loading_target = None
         state.model_lock.release()
+
+
+def _parse_download_payload(payload):
+    if not isinstance(payload, dict):
+        raise APIError(400, "invalid_request", "JSON request body must be an object.")
+    model = payload.get("model")
+    if not model:
+        raise APIError(400, "invalid_model", "The 'model' field is required.", param="model")
+    source = payload.get("source")
+    endpoint = payload["endpoint"] if "endpoint" in payload else DEFAULT_ENDPOINT
+    _validate_download_source(source, endpoint)
+    force = _parse_bool_field(payload.get("force"), False, "force")
+    verify = _parse_bool_field(payload.get("verify"), True, "verify")
+    timeout = payload.get("timeout_seconds", 30)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        raise APIError(400, "invalid_request", "timeout_seconds must be a number.", param="timeout_seconds")
+    if timeout <= 0:
+        raise APIError(400, "invalid_request", "timeout_seconds must be greater than 0.", param="timeout_seconds")
+    return str(model), source, endpoint, force, verify, timeout
+
+
+def _download_result_relpaths(paths, model_dir):
+    root = model_root(model_dir).resolve()
+    relpaths = []
+    for path in paths:
+        try:
+            relpaths.append(Path(path).resolve().relative_to(root).as_posix())
+        except (OSError, ValueError):
+            relpaths.append(str(path))
+    return relpaths
+
+
+async def _download_model_to_local(state, model, source, endpoint, force, verify, timeout):
+    async with state.operation_lock:
+        if state.model_lock.locked():
+            raise APIError(409, "model_operation_in_progress", "A model load or switch operation is in progress.")
+        if state.download_lock.locked():
+            raise APIError(409, "model_download_in_progress", "A model download operation is in progress.")
+        await state.download_lock.acquire()
+    state.model_downloading = True
+    state.model_downloading_target = model
+    effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
+    try:
+        try:
+            result = await asyncio.to_thread(
+                download_model,
+                model,
+                model_dir=state.config.model_dir,
+                source=effective_source,
+                endpoint=effective_endpoint,
+                verify=verify,
+                force=force,
+                timeout=timeout,
+            )
+        except KeyError as exc:
+            raise APIError(404, "model_not_found", str(exc), param="model")
+        except (DownloadError, OSError) as exc:
+            state.logger.exception("Model download failed")
+            raise APIError(500, "model_download_failed", str(exc), error_type="server_error")
+        except Exception as exc:
+            state.logger.exception("Model download failed")
+            raise APIError(500, "model_download_failed", str(exc), error_type="server_error")
+        entry = result["entry"]
+        return {
+            "object": "model.download",
+            "model": catalog_model_card(
+                entry,
+                model_dir=state.config.model_dir,
+                source=effective_source,
+                endpoint=effective_endpoint,
+                include_files=False,
+            ),
+            "source": effective_source,
+            "endpoint": effective_endpoint,
+            "downloaded": _download_result_relpaths(result.get("downloaded", []), state.config.model_dir),
+            "skipped": _download_result_relpaths(result.get("skipped", []), state.config.model_dir),
+        }
+    finally:
+        state.model_downloading = False
+        state.model_downloading_target = None
+        state.download_lock.release()
+
+
+def _download_source_response(state):
+    return {
+        "object": "download.source",
+        "source": state.config.source,
+        "endpoint": state.config.endpoint,
+        "model_dir": str(model_root(state.config.model_dir)),
+    }
+
+
+async def _update_download_source(state, source, endpoint):
+    _validate_download_source(source, endpoint, source_required=True)
+    async with state.operation_lock:
+        if state.model_lock.locked():
+            raise APIError(409, "model_operation_in_progress", "A model load or switch operation is in progress.")
+        if state.download_lock.locked():
+            raise APIError(409, "model_download_in_progress", "A model download operation is in progress.")
+        await state.download_lock.acquire()
+    try:
+        state.config.source = source
+        if endpoint is not DEFAULT_ENDPOINT:
+            state.config.endpoint = endpoint
+        return _download_source_response(state)
+    finally:
+        state.download_lock.release()
 
 
 def create_app(config):
@@ -283,6 +449,62 @@ def create_app(config):
             raise APIError(404, "model_not_found", f"Model {model!r} is not loaded by this process.", param="model")
         return model_card(loaded)
 
+    @app.get("/v1/catalog/models")
+    async def list_catalog_models(request: Request):
+        _check_auth(request, state)
+        try:
+            supported = parse_supported_filter(request.query_params.get("supported"))
+            local = parse_local_filter(request.query_params.get("local"))
+            include_files = parse_include_files(request.query_params.get("include_files"))
+        except ValueError as exc:
+            raise APIError(400, "invalid_request", str(exc))
+        source, endpoint = _effective_download_source(
+            state,
+            request.query_params.get("source"),
+            _query_endpoint(request.query_params),
+        )
+        _validate_download_source(source, endpoint)
+        entries = filter_catalog_models(
+            category=request.query_params.get("category"),
+            supported=supported,
+            local=local,
+            q=request.query_params.get("q"),
+            model_dir=state.config.model_dir,
+        )
+        return {
+            "object": "list",
+            "data": [
+                catalog_model_card(
+                    entry,
+                    model_dir=state.config.model_dir,
+                    source=source,
+                    endpoint=endpoint,
+                    include_files=include_files,
+                )
+                for entry in entries
+            ],
+            "pymss": {
+                "model_dir": str(model_root(state.config.model_dir)),
+                "source": source,
+                "endpoint": endpoint,
+                "total": len(entries),
+            },
+        }
+
+    @app.get("/v1/catalog/models/{model}")
+    async def get_catalog_model(model: str, request: Request):
+        _check_auth(request, state)
+        source, endpoint = _effective_download_source(
+            state,
+            request.query_params.get("source"),
+            _query_endpoint(request.query_params),
+        )
+        _validate_download_source(source, endpoint)
+        try:
+            return catalog_model_detail(model, model_dir=state.config.model_dir, source=source, endpoint=endpoint)
+        except KeyError as exc:
+            raise APIError(404, "model_not_found", str(exc), param="model")
+
     @app.post("/v1/models/load")
     async def load_model_endpoint(request: Request):
         _check_auth(request, state)
@@ -299,6 +521,35 @@ def create_app(config):
             "model_loaded": True,
             "model": model_card(loaded),
         }
+
+    @app.post("/v1/models/download")
+    async def download_model_endpoint(request: Request):
+        _check_auth(request, state)
+        body = await _read_body(request, state)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise APIError(400, "invalid_request", "Request body must be valid JSON.")
+        model, source, endpoint, force, verify, timeout = _parse_download_payload(payload)
+        return await _download_model_to_local(state, model, source, endpoint, force, verify, timeout)
+
+    @app.get("/v1/download-source")
+    async def get_download_source(request: Request):
+        _check_auth(request, state)
+        return _download_source_response(state)
+
+    @app.post("/v1/download-source")
+    async def update_download_source(request: Request):
+        _check_auth(request, state)
+        body = await _read_body(request, state)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise APIError(400, "invalid_request", "Request body must be valid JSON.")
+        if not isinstance(payload, dict):
+            raise APIError(400, "invalid_request", "JSON request body must be an object.")
+        endpoint = payload["endpoint"] if "endpoint" in payload else DEFAULT_ENDPOINT
+        return await _update_download_source(state, payload.get("source"), endpoint)
 
     @app.post("/v1/audio/separations")
     async def separate_audio(request: Request):

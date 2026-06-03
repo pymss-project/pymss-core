@@ -11,6 +11,9 @@ from ..separator import INFERENCE_PARAM_TARGETS
 from .config import ServerConfig
 
 
+DEFAULT_ENDPOINT = object()
+
+
 VR_SUPPORTED_PARAMETERS = {
     "aggression",
     "batch_size",
@@ -72,12 +75,16 @@ class LoadedModel:
 class ServerState:
     config: ServerConfig
     logger: object
+    operation_lock: asyncio.Lock
     limiter: RequestLimiter
     model_lock: asyncio.Lock
     inference_lock: asyncio.Lock
+    download_lock: asyncio.Lock
     loaded: LoadedModel | None = None
     model_loading: bool = False
     model_loading_target: str | None = None
+    model_downloading: bool = False
+    model_downloading_target: str | None = None
 
     def is_loaded_model(self, model):
         return self.loaded is not None and self.loaded.is_model_id(model)
@@ -139,9 +146,9 @@ def _resolve_existing_or_download(model, model_dir, source, endpoint):
         return resolve_model(model, model_dir=model_dir, require_supported=True, require_exists=True)
 
 
-def load_model(config, model, source=None, endpoint=None, inference_params=None):
+def load_model(config, model, source=None, endpoint=DEFAULT_ENDPOINT, inference_params=None):
     source = source or config.source
-    endpoint = config.endpoint if endpoint is None else endpoint
+    endpoint = config.endpoint if endpoint is DEFAULT_ENDPOINT else endpoint
     params = dict(config.inference_params or {})
     if inference_params is not None:
         params.update(inference_params)
@@ -194,9 +201,11 @@ def load_state(config):
     state = ServerState(
         config=config,
         logger=logger,
+        operation_lock=asyncio.Lock(),
         limiter=RequestLimiter(config.max_queue_size),
         model_lock=asyncio.Lock(),
         inference_lock=asyncio.Lock(),
+        download_lock=asyncio.Lock(),
     )
     if config.model:
         state.loaded = load_model(config, config.model)
