@@ -1,5 +1,7 @@
 <script lang="ts">
   import { AlertTriangle, CheckCircle2 } from "@lucide/svelte";
+  import { Alert, AlertAction, AlertDescription } from "$lib/components/ui/alert/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
 
   export let errorMessage: string;
   export let noticeMessage: string;
@@ -8,17 +10,21 @@
 </script>
 
 {#if errorMessage}
-  <div class="alert border border-error bg-base-100 text-error">
+  <Alert variant="destructive" class="items-center">
     <AlertTriangle class="size-5" />
-    <span>{errorMessage}</span>
-    <button class="btn btn-ghost btn-xs rounded-full" type="button" on:click={onDismissError}>Dismiss</button>
-  </div>
+    <AlertDescription>{errorMessage}</AlertDescription>
+    <AlertAction>
+      <Button variant="ghost" size="xs" type="button" onclick={onDismissError}>Dismiss</Button>
+    </AlertAction>
+  </Alert>
 {/if}
 
 {#if noticeMessage}
-  <div class="alert border border-base-300 bg-base-100">
+  <Alert class="items-center">
     <CheckCircle2 class="size-5" />
-    <span>{noticeMessage}</span>
-    <button class="btn btn-ghost btn-xs rounded-full" type="button" on:click={onDismissNotice}>Dismiss</button>
-  </div>
+    <AlertDescription>{noticeMessage}</AlertDescription>
+    <AlertAction>
+      <Button variant="ghost" size="xs" type="button" onclick={onDismissNotice}>Dismiss</Button>
+    </AlertAction>
+  </Alert>
 {/if}

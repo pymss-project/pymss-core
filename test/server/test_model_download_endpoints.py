@@ -28,6 +28,7 @@ def test_download_model_uses_default_source_and_returns_local_status(
     assert body["object"] == "model.download"
     assert body["model"]["id"] == "model-a.ckpt"
     assert body["model"]["pymss"]["local"]["complete"] is True
+    assert "model_dir" not in body["model"]["pymss"]["local"]
     assert body["source"] == "huggingface"
     assert body["endpoint"] == "https://default.example"
     assert body["downloaded"] == ["vocal/test/model-a.ckpt", "vocal/test/model-a.yaml"]

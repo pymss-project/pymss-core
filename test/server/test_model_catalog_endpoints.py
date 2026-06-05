@@ -19,6 +19,8 @@ def test_catalog_models_list_filters_local_and_supported(
 
     default = response_client.get("/v1/catalog/models").json()
     assert [item["id"] for item in default["data"]] == ["model-a.ckpt", "model-b.ckpt"]
+    assert "model_dir" not in default["pymss"]
+    assert all("model_dir" not in item["pymss"]["local"] for item in default["data"])
 
     all_models = response_client.get("/v1/catalog/models?supported=all").json()
     assert [item["id"] for item in all_models["data"]] == ["model-a.ckpt", "model-b.ckpt", "unsupported.ckpt"]
@@ -51,10 +53,12 @@ def test_catalog_model_detail_resolves_alias_and_omits_local_path(
     body = response.json()
     assert body["id"] == "model-a.ckpt"
     assert body["pymss"]["local"]["complete"] is True
+    assert "model_dir" not in body["pymss"]["local"]
     assert body["pymss"]["remote"]["endpoint"] == "https://default.example/models"
     files = body["pymss"]["files"]
     assert [item["role"] for item in files] == ["model", "config", "auxiliary"]
     assert "local_path" not in files[0]
+    assert "model_dir" not in files[0]
     assert files[0]["remote_url"].startswith("https://default.example/models/")
 
 

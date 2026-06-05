@@ -393,7 +393,6 @@ def _download_source_response(state):
         "object": "download.source",
         "source": state.config.source,
         "endpoint": state.config.endpoint,
-        "model_dir": str(model_root(state.config.model_dir)),
     }
 
 
@@ -417,7 +416,6 @@ def _server_info_response(state):
             "source": state.config.source,
             "endpoint": state.config.endpoint,
         },
-        "model_dir": str(model_root(state.config.model_dir)),
     }
 
 
@@ -512,7 +510,6 @@ def create_app(config):
                 for entry in entries
             ],
             "pymss": {
-                "model_dir": str(model_root(state.config.model_dir)),
                 "source": source,
                 "endpoint": endpoint,
                 "total": len(entries),

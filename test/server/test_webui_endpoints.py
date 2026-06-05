@@ -56,6 +56,7 @@ def test_webui_routes_do_not_bypass_v1_auth(asgi_client_factory, monkeypatch, tm
     assert body["auth"] == {"api_key_required": True}
     assert body["limits"]["max_audio_seconds"] == 600.0
     assert body["download_source"]["source"] == "modelscope"
+    assert "model_dir" not in body
 
 
 def test_serve_parser_accepts_webui_flag():
