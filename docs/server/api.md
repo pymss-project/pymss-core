@@ -104,7 +104,6 @@ Authorization: Bearer <api-key>
     "source": "modelscope",
     "endpoint": null
   },
-  "model_dir": "/home/user/.cache/pymss/models"
 }
 ```
 
@@ -118,7 +117,7 @@ Authorization: Bearer <api-key>
 
 ## GET /v1/catalog/models
 
-列出 pymss 包内 catalog 模型，并显示模型文件在当前 `model_dir` 下是否完整。该 endpoint 不表示当前进程已加载模型；当前 loaded model 仍只由 `/v1/models` 表示。
+列出 pymss 包内 catalog 模型，并显示模型文件在 server 配置的 model dir 下是否完整。该 endpoint 不返回 server 本地绝对路径；当前 loaded model 仍只由 `/v1/models` 表示。
 
 查询参数：
 
@@ -156,8 +155,7 @@ Authorization: Bearer <api-key>
         "size_bytes": 123456789,
         "local": {
           "complete": false,
-          "missing_count": 1,
-          "model_dir": "/home/user/.cache/pymss/models"
+          "missing_count": 1
         },
         "remote": {
           "available": true,
@@ -168,7 +166,6 @@ Authorization: Bearer <api-key>
     }
   ],
   "pymss": {
-    "model_dir": "/home/user/.cache/pymss/models",
     "source": "modelscope",
     "endpoint": null,
     "total": 1
@@ -203,7 +200,7 @@ Authorization: Bearer <api-key>
 ]
 ```
 
-首版不返回绝对 `local_path`。客户端可使用 `pymss.local.model_dir` 和 `files[].relpath` 理解本地位置。
+首版不返回绝对 `local_path` 或 `model_dir`。`files[].relpath` 是相对于 server 配置 model dir 的 catalog 相对路径。
 
 找不到 catalog 模型时返回 `404 model_not_found`。
 
@@ -237,7 +234,7 @@ Authorization: Bearer <api-key>
 
 ## POST /v1/models/download
 
-下载单个 catalog 模型需要的全部文件到当前 `model_dir`。该 endpoint 只下载文件，不加载模型、不创建 `MSSeparator`、不影响当前 loaded model。
+下载单个 catalog 模型需要的全部文件到 server 配置的 model dir。该 endpoint 只下载文件，不加载模型、不创建 `MSSeparator`、不影响当前 loaded model。
 
 请求示例：
 
@@ -274,8 +271,7 @@ Authorization: Bearer <api-key>
     "pymss": {
       "local": {
         "complete": true,
-        "missing_count": 0,
-        "model_dir": "/home/user/.cache/pymss/models"
+        "missing_count": 0
       }
     }
   },
@@ -286,7 +282,7 @@ Authorization: Bearer <api-key>
 }
 ```
 
-`downloaded` 和 `skipped` 是当前 `model_dir` 下的相对路径。如果模型已完整下载且 `force=false`，返回 `200`，`downloaded=[]`，已有文件进入 `skipped`。
+`downloaded` 和 `skipped` 是相对于 server 配置 model dir 的 catalog 相对路径。如果模型已完整下载且 `force=false`，返回 `200`，`downloaded=[]`，已有文件进入 `skipped`。
 
 下载 unsupported catalog model 是允许的；后续 `/v1/models/load` 仍会拒绝 unsupported model。
 
@@ -310,8 +306,7 @@ Authorization: Bearer <api-key>
 {
   "object": "download.source",
   "source": "modelscope",
-  "endpoint": null,
-  "model_dir": "/home/user/.cache/pymss/models"
+  "endpoint": null
 }
 ```
 

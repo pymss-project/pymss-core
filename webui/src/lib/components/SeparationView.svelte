@@ -1,5 +1,12 @@
 <script lang="ts">
   import { Download, Loader2, Play, UploadCloud } from "@lucide/svelte";
+  import { Alert, AlertDescription } from "$lib/components/ui/alert/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
+  import { Card, CardContent, CardHeader, CardTitle } from "$lib/components/ui/card/index.js";
+  import { Checkbox } from "$lib/components/ui/checkbox/index.js";
+  import { Input } from "$lib/components/ui/input/index.js";
+  import { Label } from "$lib/components/ui/label/index.js";
+  import SelectField from "./SelectField.svelte";
   import type { LoadedModel, OutputAudioFormat, SeparationJsonResult, SeparationResponseFormat } from "../types";
 
   export let loadedModel: LoadedModel | null;
@@ -14,97 +21,113 @@
   export let onToggleStem: (stem: string, checked: boolean) => void;
   export let onSeparate: () => void;
   export let onDownloadJsonOutput: (output: SeparationJsonResult["outputs"][number]) => void;
+
+  const responseOptions = [
+    { value: "zip", label: "zip" },
+    { value: "json", label: "json" },
+  ];
+
+  const outputOptions = [
+    { value: "wav", label: "wav" },
+    { value: "flac", label: "flac" },
+    { value: "pcm_f32le", label: "pcm_f32le" },
+  ];
 </script>
 
 <section class="grid gap-8 xl:grid-cols-[minmax(0,1fr)_22rem]">
   <div class="space-y-5">
     <div>
       <h1 class="text-[30px] font-medium leading-tight tracking-normal">Separate audio</h1>
-      <p class="mt-2 text-sm text-base-content/60">
+      <p class="mt-2 text-sm text-muted-foreground">
         {loadedModel ? `Using ${loadedModel.id}` : "Load a model before running separation."}
       </p>
     </div>
 
-    <section class="rounded-box border border-base-300 bg-base-100 p-5">
+    <Card>
+      <CardContent>
       <form class="space-y-5" on:submit|preventDefault={onSeparate}>
-        <label class="field">
-          <span class="field-label">Audio file</span>
-          <input
-            class="file-field"
+        <div class="grid gap-1.5">
+          <Label for="audio-file">Audio file</Label>
+          <Input
+            id="audio-file"
             type="file"
             accept="audio/*"
-            on:change={(event) => (audioFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
+            onchange={(event) => (audioFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null)}
           />
-        </label>
+        </div>
 
         <div>
           <div class="mb-2 text-sm font-medium">Stems</div>
           <div class="flex flex-wrap gap-2">
             {#each loadedModel?.pymss.instruments ?? [] as stem}
-              <label class="btn btn-outline btn-sm rounded-full">
-                <input
-                  class="check-field"
-                  type="checkbox"
+              <div class="flex h-8 items-center gap-2 border border-input px-2.5">
+                <Checkbox
+                  id={`stem-${stem}`}
                   checked={selectedStems.includes(stem)}
-                  on:change={(event) => onToggleStem(stem, (event.currentTarget as HTMLInputElement).checked)}
+                  onCheckedChange={(checked) => onToggleStem(stem, checked)}
                 />
-                {stem}
-              </label>
+                <Label for={`stem-${stem}`} class="text-sm">{stem}</Label>
+              </div>
             {/each}
           </div>
         </div>
 
         <div class="grid gap-3 md:grid-cols-2">
-          <label class="field">
-            <span class="field-label">Response</span>
-            <select class="select-field" bind:value={responseFormat}>
-              <option value="zip">zip</option>
-              <option value="json">json</option>
-            </select>
-          </label>
-          <label class="field">
-            <span class="field-label">Output</span>
-            <select class="select-field" bind:value={outputAudioFormat} disabled={responseFormat === "json"}>
-              <option value="wav">wav</option>
-              <option value="flac">flac</option>
-              <option value="pcm_f32le">pcm_f32le</option>
-            </select>
-          </label>
+          <SelectField
+            id="response-format"
+            label="Response"
+            value={responseFormat}
+            options={responseOptions}
+            onValueChange={(value) => (responseFormat = value as SeparationResponseFormat)}
+          />
+          <SelectField
+            id="output-format"
+            label="Output"
+            value={outputAudioFormat}
+            options={outputOptions}
+            disabled={responseFormat === "json"}
+            onValueChange={(value) => (outputAudioFormat = value as OutputAudioFormat)}
+          />
         </div>
 
-        <button class="btn btn-primary rounded-full" type="submit" disabled={busyAction !== null || !loadedModel}>
+        <Button type="submit" disabled={busyAction !== null || !loadedModel}>
           {#if busyAction === "separate"}
             <Loader2 class="size-4 animate-spin" />
           {:else}
             <Play class="size-4" />
           {/if}
           Separate
-        </button>
+        </Button>
       </form>
-    </section>
+      </CardContent>
+    </Card>
   </div>
 
-  <section class="rounded-box border border-base-300 bg-base-100 p-5">
-    <h2 class="mb-4 text-xl font-medium">Result</h2>
+  <Card>
+    <CardHeader>
+      <CardTitle>Result</CardTitle>
+    </CardHeader>
+    <CardContent>
     {#if resultUrl}
-      <a class="btn btn-primary w-full rounded-full" href={resultUrl} download={resultName}>
+      <Button class="w-full" href={resultUrl} download={resultName}>
         <Download class="size-4" /> Download ZIP
-      </a>
+      </Button>
     {:else if jsonResult}
       <div class="space-y-3">
-        <div class="text-sm text-base-content/60">{jsonResult.metadata.input_seconds.toFixed(1)} seconds · {jsonResult.outputs.length} output(s)</div>
+        <div class="text-sm text-muted-foreground">{jsonResult.metadata.input_seconds.toFixed(1)} seconds · {jsonResult.outputs.length} output(s)</div>
         {#each jsonResult.outputs as output}
-          <button class="btn btn-outline btn-sm w-full justify-between rounded-full" type="button" on:click={() => onDownloadJsonOutput(output)}>
+          <Button variant="outline" size="sm" class="w-full justify-between" type="button" onclick={() => onDownloadJsonOutput(output)}>
             <span>{output.stem}</span>
             <Download class="size-4" />
-          </button>
+          </Button>
         {/each}
       </div>
     {:else}
-      <div class="alert border border-base-300 bg-base-200">
+      <Alert>
         <UploadCloud class="size-5" />
-        <span>No result yet.</span>
-      </div>
+        <AlertDescription>No result yet.</AlertDescription>
+      </Alert>
     {/if}
-  </section>
+    </CardContent>
+  </Card>
 </section>

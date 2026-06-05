@@ -15,7 +15,7 @@
   <title>pymss WebUI</title>
 </svelte:head>
 
-<main class="min-h-screen bg-base-100 text-base-content">
+<main class="min-h-screen bg-background text-foreground">
   <TopBar
     health={app.health}
     busyAction={app.busyAction}

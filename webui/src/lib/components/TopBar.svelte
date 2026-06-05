@@ -1,5 +1,7 @@
 <script lang="ts">
   import { KeyRound, Loader2, Moon, RefreshCw, Sun } from "@lucide/svelte";
+  import { Badge } from "$lib/components/ui/badge/index.js";
+  import { Button } from "$lib/components/ui/button/index.js";
   import type { HealthResponse } from "../types";
 
   export let health: HealthResponse | null;
@@ -12,26 +14,27 @@
   $: online = health?.status === "ok";
 </script>
 
-<header class="navbar min-h-14 border-b border-base-300 bg-base-100 px-4">
-  <div class="navbar-start min-w-0">
+<header class="flex min-h-14 items-center border-b border-border bg-background px-4">
+  <div class="min-w-0 flex-1">
     <div class="flex items-baseline gap-3">
       <div class="text-[18px] font-medium leading-none tracking-normal">pymss</div>
-      <span class="hidden text-sm text-base-content/50 sm:inline">server</span>
+      <span class="hidden text-sm text-muted-foreground sm:inline">server</span>
     </div>
   </div>
 
-  <div class="navbar-center hidden md:flex">
-    <span class="badge badge-outline gap-2 rounded-full px-3 py-3 font-mono text-xs font-normal">
-      <span class="size-1.5 rounded-full {online ? 'bg-primary' : 'bg-base-content/30'}"></span>
+  <div class="hidden flex-1 justify-center md:flex">
+    <Badge variant="outline" class="h-7 gap-2 px-3 font-mono font-normal">
+      <span class="size-1.5 rounded-full {online ? 'bg-primary' : 'bg-muted-foreground/40'}"></span>
       {online ? "server ok" : "server offline"}
-    </span>
+    </Badge>
   </div>
 
-  <div class="navbar-end gap-2">
-    <button
-      class="btn btn-ghost btn-circle btn-sm"
+  <div class="flex flex-1 justify-end gap-2">
+    <Button
+      variant="ghost"
+      size="icon-sm"
       type="button"
-      on:click={onRefresh}
+      onclick={onRefresh}
       aria-label="Refresh"
     >
       {#if busyAction === "refresh"}
@@ -39,11 +42,12 @@
       {:else}
         <RefreshCw class="size-4" />
       {/if}
-    </button>
-    <button
-      class="btn btn-ghost btn-circle btn-sm"
+    </Button>
+    <Button
+      variant="ghost"
+      size="icon-sm"
       type="button"
-      on:click={onToggleTheme}
+      onclick={onToggleTheme}
       aria-label="Toggle theme"
     >
       {#if theme === "dark"}
@@ -51,10 +55,10 @@
       {:else}
         <Moon class="size-4" />
       {/if}
-    </button>
-    <button class="btn btn-outline btn-sm rounded-full" type="button" on:click={onOpenToken}>
+    </Button>
+    <Button variant="outline" size="sm" type="button" onclick={onOpenToken}>
       <KeyRound class="size-4" />
       <span class="hidden sm:inline">Token</span>
-    </button>
+    </Button>
   </div>
 </header>

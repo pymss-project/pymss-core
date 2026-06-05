@@ -118,7 +118,7 @@ export class AppController {
     });
 
     $effect(() => {
-      document.documentElement.dataset.theme = this.theme;
+      document.documentElement.classList.toggle("dark", this.theme === "dark");
     });
   }
 

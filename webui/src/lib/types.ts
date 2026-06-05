@@ -40,14 +40,12 @@ export interface ServerInfo {
     source: DownloadSourceName;
     endpoint: string | null;
   };
-  model_dir: string;
 }
 
 export interface DownloadSource {
   object: "download.source";
   source: DownloadSourceName;
   endpoint: string | null;
-  model_dir: string;
 }
 
 export interface CatalogModel {
@@ -69,7 +67,6 @@ export interface CatalogModel {
     local: {
       complete: boolean;
       missing_count: number;
-      model_dir: string;
     };
     remote: {
       available: boolean;
@@ -92,7 +89,6 @@ export interface CatalogListResponse {
   object: "list";
   data: CatalogModel[];
   pymss: {
-    model_dir: string;
     source: DownloadSourceName;
     endpoint: string | null;
     total: number;

@@ -66,7 +66,6 @@ def local_file_status(entry, model_dir=None):
     return {
         "complete": not missing,
         "missing_count": len(missing),
-        "model_dir": str(model_root(model_dir)),
     }
 
 

@@ -11,14 +11,17 @@ def test_download_source_get_update_and_validation(asgi_client_factory, tmp_path
     initial = response_client.get("/v1/download-source").json()
     assert initial["source"] == "modelscope"
     assert initial["endpoint"] == "https://old.example"
+    assert "model_dir" not in initial
 
     updated = response_client.post("/v1/download-source", json={"source": "huggingface"}).json()
     assert updated["source"] == "huggingface"
     assert updated["endpoint"] == "https://old.example"
+    assert "model_dir" not in updated
 
     cleared = response_client.post("/v1/download-source", json={"source": "hf-mirror", "endpoint": None}).json()
     assert cleared["source"] == "hf-mirror"
     assert cleared["endpoint"] is None
+    assert "model_dir" not in cleared
 
     invalid = response_client.post("/v1/download-source", json={"source": "bad-source"})
     assert invalid.status_code == 400
