@@ -55,6 +55,7 @@ server 返回错误对象格式：
 | 500 | `model_load_failed` | `server_error` | 加载请求模型失败 |
 | 500 | `model_download_failed` | `server_error` | 下载模型失败 |
 | 500 | `separation_failed` | `server_error` | 推理或响应编码过程失败 |
+| 500 | `webui_assets_missing` | `server_error` | 启用了 `--webui`，但构建后的 WebUI 静态资源缺失 |
 
 ## 资源限制相关错误
 

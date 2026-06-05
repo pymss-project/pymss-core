@@ -68,6 +68,31 @@ uv run --extra server pymss serve bs_roformer_voc_hyperacev2 \
 | `--max-request-bytes` | `536870912` | HTTP body 大小上限，默认 512 MiB |
 | `--max-queue-size` | `8` | 正在处理和等待处理的请求数量上限 |
 | `--request-timeout-seconds` | `0.0` | 单请求推理超时；`0` 表示不限制 |
+| `--webui` | `false` | 启用浏览器 WebUI，固定路径为 `/ui/` |
+
+## WebUI
+
+`--webui` 会在当前 server 上启用同源浏览器操作台：
+
+```bash
+uv run --extra server pymss serve --webui --host 127.0.0.1 --port 8000
+```
+
+启动成功后，uvicorn 日志会额外输出 WebUI 地址：
+
+```text
+INFO:     WebUI available at http://127.0.0.1:8000/ui/
+```
+
+也可以手动访问：
+
+```text
+http://127.0.0.1:8000/ui/
+```
+
+如果监听地址是 `0.0.0.0` 或 `::`，日志中的 WebUI 地址会显示为 `127.0.0.1`，方便在本机浏览器直接打开。
+
+WebUI 只调用现有 HTTP API。用户音频由浏览器读取和解码后发送 PCM bytes；server 不接收本地文件路径、不浏览用户目录、不保存上传音频。设置了 `--api-key` 时，WebUI 页面仍可打开，但 `/v1/*` 请求需要在页面里输入 Bearer token。
 
 ## 测试脚本环境变量
 

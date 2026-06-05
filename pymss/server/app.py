@@ -2,6 +2,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 from pathlib import Path
 
 from ..model_download import DownloadError, download_model
@@ -25,6 +26,7 @@ from .models import (
     parse_supported_filter,
 )
 from .state import DEFAULT_ENDPOINT, InferenceParameterError, close_loaded_model, load_model, load_state, model_card
+from .webui import register_webui_routes
 
 
 try:
@@ -395,6 +397,30 @@ def _download_source_response(state):
     }
 
 
+def _server_info_response(state):
+    return {
+        "object": "server.info",
+        "webui": {
+            "enabled": bool(state.config.webui),
+            "path": "/ui/" if state.config.webui else None,
+        },
+        "auth": {
+            "api_key_required": bool(state.config.api_key),
+        },
+        "limits": {
+            "max_audio_seconds": state.config.max_audio_seconds,
+            "max_request_bytes": state.config.max_request_bytes,
+            "max_queue_size": state.config.max_queue_size,
+            "request_timeout_seconds": state.config.request_timeout_seconds,
+        },
+        "download_source": {
+            "source": state.config.source,
+            "endpoint": state.config.endpoint,
+        },
+        "model_dir": str(model_root(state.config.model_dir)),
+    }
+
+
 async def _update_download_source(state, source, endpoint):
     _validate_download_source(source, endpoint, source_required=True)
     async with state.operation_lock:
@@ -416,6 +442,8 @@ def create_app(config):
     state = load_state(config)
     app = FastAPI(title="pymss server", version="1")
     app.state.pymss_state = state
+    if config.webui:
+        register_webui_routes(app)
 
     @app.exception_handler(APIError)
     async def handle_api_error(_request, exc):
@@ -551,6 +579,11 @@ def create_app(config):
         endpoint = payload["endpoint"] if "endpoint" in payload else DEFAULT_ENDPOINT
         return await _update_download_source(state, payload.get("source"), endpoint)
 
+    @app.get("/v1/server/info")
+    async def get_server_info(request: Request):
+        _check_auth(request, state)
+        return _server_info_response(state)
+
     @app.post("/v1/audio/separations")
     async def separate_audio(request: Request):
         _check_auth(request, state)
@@ -580,6 +613,35 @@ def create_app(config):
     return app
 
 
+def _server_display_host(host):
+    if host in {"0.0.0.0", "::"}:
+        return "127.0.0.1"
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
+def _server_url(config, path="/"):
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    return f"http://{_server_display_host(config.host)}:{config.port}{normalized_path}"
+
+
+def _log_webui_url(config):
+    if not config.webui:
+        return
+    logging.getLogger("uvicorn.error").info("WebUI available at %s", _server_url(config, "/ui/"))
+
+
+def _create_uvicorn_server(uvicorn, app, config):
+    class PymssUvicornServer(uvicorn.Server):
+        def _log_started_message(self, listeners):
+            super()._log_started_message(listeners)
+            _log_webui_url(config)
+
+    uvicorn_config = uvicorn.Config(app, host=config.host, port=config.port)
+    return PymssUvicornServer(uvicorn_config)
+
+
 def run_server(config):
     try:
         import uvicorn
@@ -587,4 +649,4 @@ def run_server(config):
         raise RuntimeError("Install server dependencies with `pip install pymss[server]` or `uv sync --extra server`.") from exc
 
     app = create_app(config)
-    uvicorn.run(app, host=config.host, port=config.port)
+    _create_uvicorn_server(uvicorn, app, config).run()

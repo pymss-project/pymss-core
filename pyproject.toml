@@ -71,6 +71,8 @@ include = ["pymss*"]
 pymss = [
     "resources/model_catalog.json",
     "resources/vr_modelparams/*.json",
+    "server/webui_static/index.html",
+    "server/webui_static/assets/*",
 ]
 
 [tool.uv]
