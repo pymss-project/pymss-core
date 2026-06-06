@@ -51,6 +51,17 @@ pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
 
 如果是在源码目录里未安装运行，可以用 `python -m pymss.cli` 代替 `pymss`。
 
+### Server 和 WebUI
+
+安装可选 server 依赖后，可以启动 HTTP server，支持动态加载模型、浏览 catalog、下载模型文件，以及可选的浏览器 WebUI：
+
+```sh
+pip install "pymss[server]"
+pymss serve --webui
+```
+
+详细用法见 [server CLI 文档](./docs/server/cli.md)、[server API 文档](./docs/server/api.md) 和 [server 错误文档](./docs/server/errors.md)。
+
 ### Python API
 
 直接用 catalog 里的模型名即可，不需要传 `model_type`、`model_path`、`config_path`。
