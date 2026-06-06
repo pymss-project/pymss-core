@@ -7,11 +7,12 @@ from ..config import load_config
 from ..logger import get_separation_logger
 from ..model_download import download_model
 from ..model_registry import create_separator, resolve_model
-from ..separator import INFERENCE_PARAM_TARGETS
+from ..separator import INFERENCE_PARAM_TARGETS, PASSTHROUGH_INFERENCE_PARAMS
 from .config import ServerConfig
 
 
 DEFAULT_ENDPOINT = object()
+FLOAT_INFERENCE_PARAMS = frozenset({"post_process_threshold", "overlap"})
 
 
 VR_SUPPORTED_PARAMETERS = {
@@ -122,12 +123,18 @@ def supported_parameters(config, model_type):
 
 
 def validate_inference_params(params, config, model_type):
-    for key in params:
+    for key, value in params.items():
         section_name = INFERENCE_PARAM_TARGETS.get(key)
         if section_name is None:
             raise InferenceParameterError(f"Unknown inference parameter: {key}")
         if not _is_parameter_supported(config, model_type, key, section_name):
             raise InferenceParameterError(f"Inference parameter {key!r} is not supported by this model")
+        if key in PASSTHROUGH_INFERENCE_PARAMS:
+            continue
+        try:
+            float(value) if key in FLOAT_INFERENCE_PARAMS else int(value)
+        except (TypeError, ValueError):
+            raise InferenceParameterError(f"Inference parameter {key!r} must be numeric")
 
 
 def _preload_config(resolved):

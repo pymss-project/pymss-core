@@ -32,6 +32,22 @@ def test_unloaded_separation_returns_model_not_loaded(asgi_client_factory):
     assert response.json()["error"]["code"] == "model_not_loaded"
 
 
+def test_streamed_request_without_content_length_is_limited(asgi_client_factory, fake_loader):
+    fake_loader()
+    response_client = asgi_client_factory(create_app(ServerConfig()))
+    response_client.post("/v1/models/load", json={"model": "model-a"})
+    response_client.app.state.pymss_state.config.max_request_bytes = 8
+
+    response = response_client.post(
+        "/v1/audio/separations?model=model-a.ckpt&format=pcm_f32le&sample_rate=44100&channels=1",
+        body_chunks=[b"1234", b"56789"],
+        headers={"Content-Type": "application/octet-stream"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "request_too_large"
+
+
 def test_load_model_uses_catalog_name(asgi_client_factory, fake_loader):
     loaded = fake_loader()
     response_client = asgi_client_factory(create_app(ServerConfig()))
@@ -121,6 +137,18 @@ def test_load_rejects_unsupported_inference_parameter(asgi_client_factory, fake_
     response = asgi_client_factory(create_app(ServerConfig())).post(
         "/v1/models/load",
         json={"model": "model-a", "inference_params": {"window_size": 512}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_inference_parameter"
+    assert loaded == []
+
+
+def test_load_rejects_invalid_inference_parameter_value(asgi_client_factory, fake_loader):
+    loaded = fake_loader()
+    response = asgi_client_factory(create_app(ServerConfig())).post(
+        "/v1/models/load",
+        json={"model": "model-a", "inference_params": {"batch_size": "abc"}},
     )
 
     assert response.status_code == 400

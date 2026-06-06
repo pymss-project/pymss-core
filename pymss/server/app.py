@@ -63,18 +63,26 @@ def _content_type(request):
 
 
 async def _read_body(request, state):
+    max_request_bytes = state.config.max_request_bytes
     content_length = request.headers.get("content-length")
     if content_length is not None:
         try:
-            if int(content_length) > state.config.max_request_bytes:
-                raise APIError(413, "request_too_large", "Request body is too large.")
+            declared_length = int(content_length)
         except ValueError:
             raise APIError(400, "invalid_request", "Invalid Content-Length header.")
+        if declared_length < 0:
+            raise APIError(400, "invalid_request", "Invalid Content-Length header.")
+        if declared_length > max_request_bytes:
+            raise APIError(413, "request_too_large", "Request body is too large.")
 
-    body = await request.body()
-    if len(body) > state.config.max_request_bytes:
-        raise APIError(413, "request_too_large", "Request body is too large.")
-    return body
+    chunks = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_request_bytes:
+            raise APIError(413, "request_too_large", "Request body is too large.")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _require_request_model(model):
@@ -137,8 +145,7 @@ def _parse_bool_field(value, default, param):
     raise APIError(400, "invalid_request", f"{param} must be a boolean.", param=param)
 
 
-async def _parse_json_request(request, state, loaded):
-    body = await _read_body(request, state)
+def _parse_json_request_body(body, loaded, state):
     try:
         payload = json.loads(body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -177,7 +184,7 @@ async def _parse_json_request(request, state, loaded):
     return model, mix, stems, response_format, output_audio_format, seconds
 
 
-async def _parse_binary_request(request, state, loaded):
+def _parse_binary_request_body(request, body, loaded, state):
     params = request.query_params
     model = _require_model_id(loaded, params.get("model"))
     audio_format = str(params.get("format", "")).lower()
@@ -189,9 +196,8 @@ async def _parse_binary_request(request, state, loaded):
     response_format = str(params.get("response_format", "json")).lower()
     output_audio_format = str(params.get("output_audio_format", "pcm_f32le")).lower()
     validate_common_options(response_format, output_audio_format)
-    raw = await _read_body(request, state)
     mix, seconds = decode_pcm(
-        raw,
+        body,
         audio_format,
         sample_rate,
         channels,
@@ -201,12 +207,14 @@ async def _parse_binary_request(request, state, loaded):
     return model, mix, stems, response_format, output_audio_format, seconds
 
 
-async def _parse_request(request, state, loaded):
+async def _parse_request(request, state, loaded, body=None):
+    if body is None:
+        body = await _read_body(request, state)
     content_type = _content_type(request)
     if content_type == "application/json":
-        return await _parse_json_request(request, state, loaded)
+        return _parse_json_request_body(body, loaded, state)
     if content_type == "application/octet-stream":
-        return await _parse_binary_request(request, state, loaded)
+        return _parse_binary_request_body(request, body, loaded, state)
     raise APIError(415, "unsupported_content_type", "Content-Type must be application/json or application/octet-stream.")
 
 
@@ -265,13 +273,13 @@ async def _load_or_switch_model(state, model, source, endpoint, inference_params
         if state.download_lock.locked():
             raise APIError(409, "model_download_in_progress", "A model download operation is in progress.")
         await state.model_lock.acquire()
-    previous_loaded = state.loaded is not None
-    old_loaded = state.loaded
-    state.loaded = None
-    state.model_loading = True
-    state.model_loading_target = model
-    effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
     try:
+        previous_loaded = state.loaded is not None
+        old_loaded = state.loaded
+        state.loaded = None
+        state.model_loading = True
+        state.model_loading_target = model
+        effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
         if old_loaded is not None:
             async with state.inference_lock:
                 try:
@@ -333,7 +341,7 @@ def _download_result_relpaths(paths, model_dir):
         try:
             relpaths.append(Path(path).resolve().relative_to(root).as_posix())
         except (OSError, ValueError):
-            relpaths.append(str(path))
+            relpaths.append("<path_resolve_error>")
     return relpaths
 
 
@@ -344,10 +352,10 @@ async def _download_model_to_local(state, model, source, endpoint, force, verify
         if state.download_lock.locked():
             raise APIError(409, "model_download_in_progress", "A model download operation is in progress.")
         await state.download_lock.acquire()
-    state.model_downloading = True
-    state.model_downloading_target = model
-    effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
     try:
+        state.model_downloading = True
+        state.model_downloading_target = model
+        effective_source, effective_endpoint = _effective_download_source(state, source, endpoint)
         try:
             result = await asyncio.to_thread(
                 download_model,
@@ -584,9 +592,14 @@ def create_app(config):
     @app.post("/v1/audio/separations")
     async def separate_audio(request: Request):
         _check_auth(request, state)
-        await _read_body(request, state)
+        body = await _read_body(request, state)
         loaded = _require_loaded_for_inference(state)
-        model, mix, stems, response_format, output_audio_format, input_seconds = await _parse_request(request, state, loaded)
+        model, mix, stems, response_format, output_audio_format, input_seconds = await _parse_request(
+            request,
+            state,
+            loaded,
+            body,
+        )
         try:
             results = await _run_separation(state, loaded, model, mix, stems)
         except APIError:

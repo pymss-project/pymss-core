@@ -112,12 +112,14 @@ class ASGIClient:
     def get(self, path, headers=None):
         return self._run(self._request("GET", path, headers=headers))
 
-    def post(self, path, json=None, content=None, headers=None):
+    def post(self, path, json=None, content=None, headers=None, body_chunks=None):
+        if body_chunks is not None and (json is not None or content is not None):
+            raise ValueError("body_chunks and json/content are mutually exclusive")
         headers = dict(headers or {})
         if json is not None:
             content = json_module.dumps(json).encode("utf-8")
             headers.setdefault("Content-Type", "application/json")
-        return self._run(self._request("POST", path, body=content or b"", headers=headers))
+        return self._run(self._request("POST", path, body=content or b"", body_chunks=body_chunks, headers=headers))
 
     def close(self):
         self._shutdown_executor()
@@ -134,7 +136,7 @@ class ASGIClient:
             executor.shutdown(wait=False)
             self.loop._default_executor = None
 
-    async def _request(self, method, path, body=b"", headers=None):
+    async def _request(self, method, path, body=b"", body_chunks=None, headers=None):
         parsed = urllib.parse.urlsplit(path)
         request_path = parsed.path or "/"
         query_string = parsed.query.encode("ascii")
@@ -156,13 +158,15 @@ class ASGIClient:
             "server": ("testserver", 80),
         }
         messages = []
-        sent_body = False
+        chunks = list(body_chunks) if body_chunks is not None else [body]
+        message_index = 0
 
         async def receive():
-            nonlocal sent_body
-            if not sent_body:
-                sent_body = True
-                return {"type": "http.request", "body": body, "more_body": False}
+            nonlocal message_index
+            if message_index < len(chunks):
+                chunk = chunks[message_index]
+                message_index += 1
+                return {"type": "http.request", "body": chunk, "more_body": message_index < len(chunks)}
             return {"type": "http.disconnect"}
 
         async def send(message):
