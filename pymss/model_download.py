@@ -152,7 +152,7 @@ def download_model(model_name, model_dir=None, source="modelscope", endpoint=Non
         _download_file(url, dest, expected_size, expected_sha256, timeout=timeout)
         downloaded.append(str(dest))
 
-    return {"entry": entry, "downloaded": downloaded, "skipped": skipped, "model_dir": str(model_root(model_dir))}
+    return {"entry": entry, "downloaded": downloaded, "skipped": skipped}
 
 
 def download_all(model_dir=None, source="modelscope", endpoint=None, supported_only=False, force=False, timeout=30):

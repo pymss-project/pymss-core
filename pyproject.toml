@@ -45,6 +45,12 @@ dependencies = [
     "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
+[project.optional-dependencies]
+server = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -65,6 +71,8 @@ include = ["pymss*"]
 pymss = [
     "resources/model_catalog.json",
     "resources/vr_modelparams/*.json",
+    "server/webui_static/index.html",
+    "server/webui_static/assets/*",
 ]
 
 [tool.uv]

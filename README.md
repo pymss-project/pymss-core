@@ -56,6 +56,17 @@ pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
 
 When running from a source checkout without installation, use `python -m pymss.cli` instead of `pymss`.
 
+### Server and WebUI
+
+Install the optional server dependencies to run a HTTP server with dynamic model loading, catalog browsing, model downloads, and an optional browser WebUI:
+
+```sh
+pip install "pymss[server]"
+pymss serve --webui
+```
+
+See [server CLI docs](./docs/server/cli.md), [server API docs](./docs/server/api.md), and [server error docs](./docs/server/errors.md) for details.
+
 ### Python API
 
 Use a catalog model name directly. You do not need to pass `model_type`, `model_path`, or `config_path`.
