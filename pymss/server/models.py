@@ -73,12 +73,17 @@ def catalog_model_files(entry, model_dir=None, source="modelscope", endpoint=Non
     files = []
     for role, relpath, path in _entry_file_specs(entry, model_dir):
         exists = path.is_file()
+        try:
+            size_bytes = path.stat().st_size if exists else 0
+        except OSError:
+            exists = False
+            size_bytes = 0
         files.append(
             {
                 "role": role,
                 "relpath": relpath,
                 "exists": exists,
-                "size_bytes": path.stat().st_size if exists else 0,
+                "size_bytes": size_bytes,
                 "remote_url": remote_url(relpath, source=source, endpoint=endpoint),
             }
         )

@@ -69,6 +69,27 @@ def test_download_model_skips_complete_local_model_without_force(
     assert body["skipped"] == ["vocal/test/model-a.ckpt", "vocal/test/model-a.yaml"]
 
 
+def test_download_result_does_not_expose_paths_outside_model_dir(
+    asgi_client_factory,
+    monkeypatch,
+    catalog_entry_factory,
+    tmp_path,
+):
+    entry = catalog_entry_factory("model-a.ckpt")
+    outside_path = tmp_path.parent / "outside.ckpt"
+
+    def fake_download_model(*_args, **_kwargs):
+        return {"entry": entry, "downloaded": [outside_path], "skipped": []}
+
+    monkeypatch.setattr("pymss.server.app.download_model", fake_download_model)
+    response_client = asgi_client_factory(create_app(ServerConfig(model_dir=str(tmp_path))))
+
+    response = response_client.post("/v1/models/download", json={"model": "model-a"})
+
+    assert response.status_code == 200
+    assert response.json()["downloaded"] == ["<path_resolve_error>"]
+
+
 def test_download_model_errors_and_conflicts(
     asgi_client_factory,
     catalog_entry_factory,

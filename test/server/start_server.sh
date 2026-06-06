@@ -11,7 +11,15 @@ SOURCE="${SOURCE:-modelscope}"
 
 args=(
   --extra server
-  pymss serve
+  pymss
+)
+
+if [[ -n "${MODEL_DIR:-}" ]]; then
+  args+=(--model-dir "$MODEL_DIR")
+fi
+
+args+=(
+  serve
   --host "$HOST"
   --port "$PORT"
   --device "$DEVICE"
@@ -20,10 +28,6 @@ args=(
 
 if [[ -n "$MODEL" ]]; then
   args+=("$MODEL")
-fi
-
-if [[ -n "${MODEL_DIR:-}" ]]; then
-  args+=(--model-dir "$MODEL_DIR")
 fi
 
 if [[ -n "${ENDPOINT:-}" ]]; then
