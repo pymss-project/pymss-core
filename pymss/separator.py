@@ -772,6 +772,30 @@ class MSSeparator:
         file = os.path.join(store_dir, f"{file_name}.{output_format}")
         save_audio(file, audio, sr, output_format, self.audio_params)
 
+    def close(self):
+        self.logger.debug("Closing separator and releasing model references...")
+        model = getattr(self, "model", None)
+        try:
+            if self.model_type == "vr" and model is not None:
+                model_run = getattr(model, "model_run", None)
+                if model_run is not None and hasattr(model_run, "to"):
+                    try:
+                        model_run.to("cpu")
+                    except Exception as exc:
+                        self.logger.debug(f"Could not move VR model to CPU during close: {exc}")
+                if hasattr(model, "model_run"):
+                    model.model_run = None
+            elif model is not None and hasattr(model, "to"):
+                try:
+                    model.to("cpu")
+                except Exception as exc:
+                    self.logger.debug(f"Could not move model to CPU during close: {exc}")
+        finally:
+            self.model = None
+            self.config = None
+            self.store_dirs = {}
+            self.del_cache()
+
     def del_cache(self):
         self.logger.debug("Running garbage collection...")
         gc.collect()

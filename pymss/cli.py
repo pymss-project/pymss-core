@@ -136,6 +136,31 @@ def cmd_infer(args):
     return 0
 
 
+def cmd_serve(args):
+    from .server import ServerConfig, run_server
+
+    config = ServerConfig(
+        model=args.model,
+        model_dir=args.model_dir,
+        source=args.source,
+        endpoint=args.endpoint,
+        device=args.device,
+        device_ids=args.device_ids or [0],
+        api_key=args.api_key,
+        host=args.host,
+        port=args.port,
+        debug=args.debug,
+        inference_params=_parse_key_value(args.param),
+        max_audio_seconds=args.max_audio_seconds,
+        max_request_bytes=args.max_request_bytes,
+        max_queue_size=args.max_queue_size,
+        request_timeout_seconds=args.request_timeout_seconds,
+        webui=args.webui,
+    )
+    run_server(config)
+    return 0
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog="pymss", description="pymss model downloader and inference CLI.")
     parser.add_argument(
@@ -173,6 +198,35 @@ def build_parser():
     infer_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
     _add_common_runtime_args(infer_parser)
     infer_parser.set_defaults(func=cmd_infer)
+
+    serve_parser = subparsers.add_parser("serve", help="Start an OpenAI-style HTTP inference server.")
+    serve_parser.add_argument("model", nargs="?")
+    serve_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
+    serve_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
+    serve_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
+    serve_parser.add_argument(
+        "--device-id",
+        action="append",
+        type=int,
+        dest="device_ids",
+        help="CUDA device id. Can be repeated.",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1")
+    serve_parser.add_argument("--port", default=8000, type=int)
+    serve_parser.add_argument("--api-key", help="Optional bearer token required for /v1/* endpoints.")
+    serve_parser.add_argument("--debug", action="store_true")
+    serve_parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="Inference override as key=value, for example --param batch_size=2.",
+    )
+    serve_parser.add_argument("--max-audio-seconds", default=600.0, type=float)
+    serve_parser.add_argument("--max-request-bytes", default=536870912, type=int)
+    serve_parser.add_argument("--max-queue-size", default=8, type=int)
+    serve_parser.add_argument("--request-timeout-seconds", default=0.0, type=float)
+    serve_parser.add_argument("--webui", action="store_true", help="Serve the optional browser WebUI at /ui/.")
+    serve_parser.set_defaults(func=cmd_serve)
 
     return parser
 
