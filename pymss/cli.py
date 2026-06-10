@@ -163,24 +163,40 @@ def cmd_serve(args):
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(prog="pymss", description="pymss model downloader and inference CLI.")
+    parser = argparse.ArgumentParser(
+        prog="pymss",
+        description="Command-line interface for the pymss music source separation package.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     parser.add_argument(
         "--model-dir",
         help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    list_parser = subparsers.add_parser("list", help="List known models.")
+    list_parser = subparsers.add_parser(
+        "list",
+        help="List known models.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     list_parser.add_argument("--category", help="Filter by primary or secondary category.")
     list_parser.add_argument("--all", action="store_true", help="Include models that are not supported for inference yet.")
     list_parser.add_argument("--json", action="store_true")
     list_parser.set_defaults(func=cmd_list)
 
-    info_parser = subparsers.add_parser("info", help="Show model metadata.")
+    info_parser = subparsers.add_parser(
+        "info",
+        help="Show model metadata.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     info_parser.add_argument("model")
     info_parser.set_defaults(func=cmd_info)
 
-    download_parser = subparsers.add_parser("download", help="Download a model by name, or use 'all'.")
+    download_parser = subparsers.add_parser(
+        "download",
+        help="Download a model by name, or use 'all'.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     download_parser.add_argument("model")
     download_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     download_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
@@ -188,7 +204,11 @@ def build_parser():
     download_parser.add_argument("--supported-only", action="store_true", help="Only used with model='all'.")
     download_parser.set_defaults(func=cmd_download)
 
-    infer_parser = subparsers.add_parser("infer", help="Run inference by model name.")
+    infer_parser = subparsers.add_parser(
+        "infer",
+        help="Run inference by model name.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     infer_parser.add_argument("model")
     infer_parser.add_argument(
         "--download",
@@ -200,7 +220,11 @@ def build_parser():
     _add_common_runtime_args(infer_parser)
     infer_parser.set_defaults(func=cmd_infer)
 
-    ensemble_parser = subparsers.add_parser("ensemble", help="Combine multiple audio files with an ensemble algorithm.")
+    ensemble_parser = subparsers.add_parser(
+        "ensemble",
+        help="Combine multiple audio files with an ensemble algorithm.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     ensemble_parser.add_argument("files", nargs="+", help="Input audio files. At least two files are required.")
     ensemble_parser.add_argument(
         "-a",
@@ -226,7 +250,11 @@ def build_parser():
     ensemble_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
     ensemble_parser.set_defaults(func=audio_ensemble)
 
-    serve_parser = subparsers.add_parser("serve", help="Start an OpenAI-style HTTP inference server.")
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start an OpenAI-style HTTP inference server.",
+        formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
+    )
     serve_parser.add_argument("model", nargs="?")
     serve_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     serve_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
