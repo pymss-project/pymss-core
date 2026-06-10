@@ -5,28 +5,62 @@ Python package for music source separation. <br>
 
 ## Install
 
-Example of using pip to install `pymss` package：
+If you want the CUDA build of PyTorch, install it first:
+
+```sh
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+```
+
+For CLI and Python API usage, install:
 
 ```sh
 pip install pymss
 ```
 
-When installing from a source checkout, `uv` can use the indexes configured in `pyproject.toml`. On Linux and Windows, the project maps `torch` to the PyTorch CUDA 12.8 wheel index:
+If you need API or WebUI, install this instead:
 
 ```sh
-uv sync
+pip install "pymss[server]"
 ```
 
-The equivalent pip install needs the PyTorch index to be passed explicitly:
+## Develop
+
+Development requires Git, Python 3.10 or later, and [uv](https://docs.astral.sh/uv/). WebUI development also requires Node.js and npm.
+
+Clone the Python package repository and install development dependencies:
 
 ```sh
-pip install . --extra-index-url https://download.pytorch.org/whl/cu128
-```
-
-For development tools, install the `dev` dependency group:
-
-```sh
+git clone https://github.com/pymss-project/pymss
+cd pymss
 uv sync --group dev
+```
+
+If you need to develop or locally serve the WebUI, the WebUI source lives in a separate repository and must be built with Node.js:
+
+```sh
+git clone https://github.com/pymss-project/pymss-webui
+cd pymss-webui
+npm ci
+npm run build
+```
+
+Copy the built WebUI assets into the Python package checkout:
+
+```sh
+cp -R dist/. ../pymss/server/webui_static/
+```
+
+Build source and wheel distributions from the Python package checkout:
+
+```sh
+cd ..
+uv build
+```
+
+The test suite uses `pytest`. The migrated integration tests live in `test/` and are parameterized through `test/test_all.py`. They require local model weights, configs, and input audio; missing assets are skipped automatically.
+
+```sh
+uv run pytest test -q
 ```
 
 ## Usage
@@ -275,27 +309,3 @@ VR models were measured with `batch_size=2`, `window_size=512`, `aggression=5`, 
 | 9_HP2-UVR | 58.48x | 61.6s |
 | 8_HP2-UVR | 57.23x | 62.9s |
 | 7_HP2-UVR | 56.10x | 64.2s |
-
-## Contributing
-Contributions are welcome!
-
-This project uses `pyproject.toml` for packaging metadata and build settings. Build source and wheel distributions with:
-
-```sh
-uv build
-```
-
-The WebUI source is not stored in this repository. To refresh the vendored WebUI assets, build [pymss-project/pymss-webui](https://github.com/pymss-project/pymss-webui) and copy its `dist/` contents into `pymss/server/webui_static/` before building the Python package. Release CI checks out both repositories, builds the WebUI project, vendors the generated static files, and then builds the Python distributions.
-
-The test suite uses `pytest`. The migrated integration tests live in `test/` and are parameterized through `test/test_all.py`. They require local model weights, configs, and input audio; missing assets are skipped automatically.
-
-```sh
-uv run pytest test -q
-```
-
-If you prefer a standard pip environment, install the package with test dependencies first:
-
-```sh
-pip install -e . pytest --extra-index-url https://download.pytorch.org/whl/cu128
-pytest test -q
-```

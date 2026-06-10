@@ -14,7 +14,7 @@ def _missing_assets_response():
         status_code=500,
         content={
             "error": {
-                "message": "WebUI assets are not built. Run `npm run build` in the webui directory.",
+                "message": "WebUI static assets are not built. Build the WebUI according to https://github.com/pymss-project/pymss/blob/main/README.md, then start the server again.",
                 "type": "server_error",
                 "param": None,
                 "code": "webui_assets_missing",
