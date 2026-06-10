@@ -13,7 +13,7 @@ from time import time
 from tqdm import tqdm
 
 from .audio_io import load_audio, save_audio
-from .utils import demix, get_model_from_config
+from .utils import clear_mlx_cache, demix, get_model_from_config
 from .logger import get_separation_logger, set_log_level
 from .config import AttrDict
 
@@ -802,6 +802,7 @@ class MSSeparator:
         if "mps" in self.device:
             self.logger.debug("Clearing MPS cache...")
             torch.mps.empty_cache()
+            clear_mlx_cache()
         if "cuda" in self.device:
             self.logger.debug("Clearing CUDA cache...")
             torch.cuda.empty_cache()

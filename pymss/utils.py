@@ -86,6 +86,20 @@ def get_model_from_config(model_type, config_path, model_kwargs_override=None):
         raise ValueError("VR models are loaded directly by MSSeparator and do not use YAML config loading")
     raise ValueError(f"Model type {model_type} not supported")
 
+
+def clear_mlx_cache():
+    try:
+        import mlx.core as mx
+    except Exception:
+        return
+
+    clear_cache = getattr(mx, "clear_cache", None)
+    if clear_cache is None:
+        clear_cache = getattr(getattr(mx, "metal", None), "clear_cache", None)
+    if clear_cache is not None:
+        clear_cache()
+
+
 def _getWindowingArray(window_size, fade_size):
     if fade_size <= 0:
         return torch.ones(window_size)
@@ -529,16 +543,23 @@ def demix_track_mlx_full(config, model, mix, device, pbar=False, source_indices=
     for batch_start in range(0, len(starts), batch_size):
         batch_indices = range(batch_start, min(batch_start + batch_size, len(starts)))
         batch = [(_mlx_extract_chunk(mix, starts[idx], C), idx) for idx in batch_indices]
+        batch_count = len(batch)
         chunks = _mlx_run_model_chunk(model, mx.stack([chunk for (chunk, _), _ in batch], axis=0), C)
         chunks = _mlx_select_sources(chunks, source_indices)
         for j, ((_, length), idx) in enumerate(batch):
             result, counter = _mlx_add_weighted_chunk(result, counter, chunks[j], windows[idx], starts[idx], length)
         mx.eval(result, counter)
-        progress.update(step * len(batch))
+        del chunks, batch
+        clear_mlx_cache()
+        progress.update(step * batch_count)
 
     progress.close()
     progress.emit(mix.shape[1])
-    return _sources_to_dict(config, _mlx_finalize_overlap(result, counter, length_init, border), source_indices)
+    estimated_sources = _mlx_finalize_overlap(result, counter, length_init, border)
+    sources = _sources_to_dict(config, estimated_sources, source_indices)
+    del result, counter, mix
+    clear_mlx_cache()
+    return sources
 
 
 demix_track_mlx_roformer = demix_track_mlx_full
