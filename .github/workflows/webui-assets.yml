@@ -3,14 +3,12 @@ name: WebUI Assets
 on:
   pull_request:
     paths:
-      - "webui/**"
       - "pymss/server/webui_static/**"
       - ".github/workflows/webui-assets.yml"
   push:
     branches:
       - "**"
     paths:
-      - "webui/**"
       - "pymss/server/webui_static/**"
       - ".github/workflows/webui-assets.yml"
   workflow_dispatch:
@@ -26,25 +24,40 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          path: pymss
+
+      - name: Check out WebUI repository
+        uses: actions/checkout@v4
+        with:
+          repository: pymss-project/pymss-webui
+          path: pymss-webui
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: webui/package-lock.json
+          cache-dependency-path: pymss-webui/package-lock.json
 
       - name: Install WebUI dependencies
         run: npm ci
-        working-directory: webui
+        working-directory: pymss-webui
 
       - name: Build WebUI static assets
         run: npm run build
-        working-directory: webui
+        working-directory: pymss-webui
+
+      - name: Vendor WebUI static assets
+        run: |
+          rm -rf pymss/pymss/server/webui_static
+          mkdir -p pymss/pymss/server/webui_static
+          cp -R pymss-webui/dist/. pymss/pymss/server/webui_static/
 
       - name: Check generated assets are committed
+        working-directory: pymss
         run: |
           if ! git diff --exit-code -- pymss/server/webui_static; then
-            echo "::error::WebUI static assets are out of date. Run 'npm ci && npm run build' in webui and commit pymss/server/webui_static/."
+            echo "::error::WebUI static assets are out of date. Build pymss-project/pymss-webui and commit pymss/server/webui_static/."
             exit 1
           fi
