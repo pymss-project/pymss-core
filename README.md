@@ -56,6 +56,17 @@ pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
 
 When running from a source checkout without installation, use `python -m pymss.cli` instead of `pymss`.
 
+### CLI ensemble
+
+```sh
+pymss ensemble path/to/model_a_vocals.wav path/to/model_b_vocals.wav \
+  --algorithm avg_wave \
+  --weights 1 0.8 \
+  -o results/ensemble_vocals.wav
+```
+
+Available algorithms are `avg_wave`, `median_wave`, `min_wave`, `max_wave`, `avg_fft`, `median_fft`, `min_fft`, and `max_fft`. Input files must use the same sample rate and channel count. Files with different lengths are truncated to the shortest input. If `--weights` is omitted, every input uses weight `1`.
+
 ### Server and WebUI
 
 Install the optional server dependencies to run a HTTP server with dynamic model loading, catalog browsing, model downloads, and an optional browser WebUI:
