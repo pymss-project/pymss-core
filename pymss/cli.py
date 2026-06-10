@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 
+from .ensemble import ENSEMBLE_ALGORITHMS, audio_ensemble
 from .logger import get_separation_logger
 from .model_download import download_all, download_model
 from .model_registry import create_separator, list_models, resolve_model
@@ -198,6 +199,32 @@ def build_parser():
     infer_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
     _add_common_runtime_args(infer_parser)
     infer_parser.set_defaults(func=cmd_infer)
+
+    ensemble_parser = subparsers.add_parser("ensemble", help="Combine multiple audio files with an ensemble algorithm.")
+    ensemble_parser.add_argument("files", nargs="+", help="Input audio files. At least two files are required.")
+    ensemble_parser.add_argument(
+        "-a",
+        "--algorithm",
+        default="avg_wave",
+        choices=ENSEMBLE_ALGORITHMS,
+        help="Ensemble algorithm.",
+    )
+    ensemble_parser.add_argument(
+        "-w",
+        "--weights",
+        nargs="+",
+        type=float,
+        help="Input weights, for example --weights 1 0.8 1.2. Defaults to all 1.",
+    )
+    ensemble_parser.add_argument("-o", "--output", required=True, help="Output audio file.")
+    ensemble_parser.add_argument("--format", choices=["wav", "flac", "mp3", "m4a"], dest="output_format")
+    ensemble_parser.add_argument("--wav-bit-depth", default="FLOAT", choices=["FLOAT", "PCM_16", "PCM_24"])
+    ensemble_parser.add_argument("--flac-bit-depth", default="PCM_16", choices=["PCM_16", "PCM_24"])
+    ensemble_parser.add_argument("--mp3-bit-rate", default="320k")
+    ensemble_parser.add_argument("--m4a-bit-rate", default="192k")
+    ensemble_parser.add_argument("--m4a-codec", default="aac_at")
+    ensemble_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
+    ensemble_parser.set_defaults(func=audio_ensemble)
 
     serve_parser = subparsers.add_parser("serve", help="Start an OpenAI-style HTTP inference server.")
     serve_parser.add_argument("model", nargs="?")

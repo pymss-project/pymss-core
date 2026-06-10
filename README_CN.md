@@ -51,6 +51,17 @@ pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
 
 如果是在源码目录里未安装运行，可以用 `python -m pymss.cli` 代替 `pymss`。
 
+### CLI Ensemble
+
+```sh
+pymss ensemble path/to/model_a_vocals.wav path/to/model_b_vocals.wav \
+  --algorithm avg_wave \
+  --weights 1 0.8 \
+  -o results/ensemble_vocals.wav
+```
+
+可用算法包括 `avg_wave`、`median_wave`、`min_wave`、`max_wave`、`avg_fft`、`median_fft`、`min_fft` 和 `max_fft`。输入文件需要使用相同采样率和声道数；如果长度不同，会裁剪到最短输入长度。不传 `--weights` 时，每个输入默认权重都是 `1`。
+
 ### Server 和 WebUI
 
 安装可选 server 依赖后，可以启动 HTTP server，支持动态加载模型、浏览 catalog、下载模型文件，以及可选的浏览器 WebUI：
