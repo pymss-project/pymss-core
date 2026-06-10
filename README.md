@@ -285,6 +285,8 @@ This project uses `pyproject.toml` for packaging metadata and build settings. Bu
 uv build
 ```
 
+The WebUI source is not stored in this repository. To refresh the vendored WebUI assets, build [pymss-project/pymss-webui](https://github.com/pymss-project/pymss-webui) and copy its `dist/` contents into `pymss/server/webui_static/` before building the Python package. Release CI checks out both repositories, builds the WebUI project, vendors the generated static files, and then builds the Python distributions.
+
 The test suite uses `pytest`. The migrated integration tests live in `test/` and are parameterized through `test/test_all.py`. They require local model weights, configs, and input audio; missing assets are skipped automatically.
 
 ```sh

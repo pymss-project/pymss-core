@@ -51,11 +51,6 @@ coverage.xml
 .pytest_cache/
 cover/
 
-# Node / frontend
-webui/node_modules/
-!webui/src/lib/
-!webui/src/lib/**
-
 # Translations
 *.mo
 *.pot
