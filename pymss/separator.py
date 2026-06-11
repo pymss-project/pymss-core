@@ -22,7 +22,8 @@ INFERENCE_PARAM_TARGETS = {
     'batch_size': 'inference',
     'overlap_size': 'inference',
     'chunk_size': 'audio',
-    'normalize': 'inference',
+    'standardize': 'inference', # legacy input standardization, will be mapped to inference.normalize
+    'normalize': 'inference', # output peak normalization, takes precedence over standardize if both are present
     'mask_mode': 'inference',
     'window_size': 'inference',
     'aggression': 'inference',
@@ -44,6 +45,7 @@ INFERENCE_PARAM_TARGETS = {
     'stem_batch_size': 'inference',
 }
 PASSTHROUGH_INFERENCE_PARAMS = frozenset({
+    'standardize',
     'normalize',
     'mask_mode',
     'enable_tta',
@@ -60,6 +62,8 @@ PASSTHROUGH_INFERENCE_PARAMS = frozenset({
 })
 FAST_INIT_MODEL_TYPES = {'bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'}
 LEGACY_DEMUCS_MODEL_TYPES = {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}
+OUTPUT_NORMALIZE_TARGET_DBFS = -0.01
+OUTPUT_NORMALIZE_PEAK = 10 ** (OUTPUT_NORMALIZE_TARGET_DBFS / 20)
 
 
 def _resolve_public_device(device, inference_params, logger):
@@ -259,18 +263,38 @@ def _prepare_mix_channels(mix, is_stereo, logger):
     return mix
 
 
-def _normalize_mix(mix, enabled, logger):
+def _standardize_mix(mix, enabled, logger):
     if not enabled:
         return mix, None
 
     mono = mix.mean(0)
     mean = mono.mean()
     std = mono.std()
-    logger.debug(f"Normalize mix with mean: {mean}, std: {std}")
+    logger.debug(f"Standardize mix with mean: {mean}, std: {std}")
     return (mix - mean) / std, (mean, std)
 
 
-def _denormalize(estimates, stats):
+def _normalize_outputs(results, enabled, logger, target_peak=OUTPUT_NORMALIZE_PEAK):
+    if not enabled:
+        return results
+
+    peak = max(
+        (float(np.max(np.abs(np.asarray(audio)))) for audio in results.values() if np.asarray(audio).size),
+        default=0.0,
+    )
+    if peak <= 0.0 or not np.isfinite(peak):
+        logger.debug("Skipping output normalize because peak is zero or not finite.")
+        return results
+
+    gain = target_peak / peak
+    logger.debug(f"Normalize output stems with peak: {peak}, target_peak: {target_peak}, gain: {gain}")
+    return {
+        stem: np.asarray(audio) * gain
+        for stem, audio in results.items()
+    }
+
+
+def _destandardize(estimates, stats):
     return estimates if stats is None else estimates * stats[1] + stats[0]
 
 
@@ -293,24 +317,24 @@ def _merge_tta_results(results):
     return waveforms
 
 
-def _build_results(waveforms, instruments, mix_orig, config, norm_stats, logger):
+def _build_results(waveforms, instruments, mix_orig, config, standardize_stats, logger):
     target_instrument = config.training.target_instrument
     if target_instrument is None:
         return {
-            instr: _denormalize(waveforms[instr].T, norm_stats)
+            instr: _destandardize(waveforms[instr].T, standardize_stats)
             for instr in instruments
         }
 
     results = {}
+    target_audio = _destandardize(waveforms[target_instrument].T, standardize_stats)
     if target_instrument in instruments:
-        results[target_instrument] = _denormalize(waveforms[target_instrument].T, norm_stats)
+        results[target_instrument] = target_audio
     other_instruments = [instr for instr in config.training.instruments if instr != target_instrument]
     logger.debug(f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}")
     if other_instruments:
         secondary = other_instruments[0]
         if secondary in instruments:
-            waveforms[secondary] = mix_orig - waveforms[target_instrument]
-            results[secondary] = _denormalize(waveforms[secondary].T, norm_stats)
+            results[secondary] = mix_orig.T - target_audio
     return results
 
 
@@ -367,7 +391,8 @@ class MSSeparator:
                 "batch_size": None,
                 "overlap_size": None,
                 "chunk_size": None,
-                "normalize": None,
+                "standardize": None,
+                "normalize": False,
                 "mask_mode": None,
             }
     ):
@@ -393,6 +418,7 @@ class MSSeparator:
         self.debug = debug
         self.progress_callback = progress_callback
         self.inference_params = inference_params
+        self.output_normalize = self.inference_params.get("normalize", False)
 
         if self.debug:
             set_log_level(self.logger, logging.DEBUG)
@@ -411,7 +437,7 @@ class MSSeparator:
 
         self.model, self.config = self.load_model()
 
-        if type(self.store_dirs) == str:
+        if isinstance(self.store_dirs, str):
             self.store_dirs = {k: self.store_dirs for k in self.config.training.instruments}
 
         valid_instruments = {instr.lower() for instr in self.config.training.instruments}
@@ -485,6 +511,7 @@ class MSSeparator:
                     "use_amp": True,
                     "fuse_conv_bn": False,
                     "use_channels_last": False,
+                    "standardize": False,
                     "normalize": False,
                 },
             })
@@ -503,9 +530,7 @@ class MSSeparator:
             }
             model = VRSeparator(common_config, config.inference)
             model.load_model()
-            self.logger.info(f"Separator params: model_type: vr, model_path: {self.model_path}, output_folder: {self.store_dirs}")
-            self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
-            self.logger.info(f"Model params: instruments: {config.training.instruments}, target_instrument: None")
+            self._log_model_config("vr", config, include_config_path=False)
             self.logger.debug(f"Loading VR model completed, duration: {time() - start_time:.2f} seconds")
             return model, config
 
@@ -519,10 +544,7 @@ class MSSeparator:
             model = model.to(self.device)
             model.eval()
 
-            self.logger.info(f"Separator params: model_type: {self.model_type}, model_path: {self.model_path}, config_path: {config_path}, output_folder: {self.store_dirs}")
-            self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
-            self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-            self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
+            self._log_model_config(self.model_type, config, config_path=config_path)
             self.logger.debug(f"Loading legacy Demucs/TasNet model completed, duration: {time() - start_time:.2f} seconds")
             return model, config
 
@@ -541,10 +563,7 @@ class MSSeparator:
         self.update_inference_params(config, self.inference_params)
         self.apply_model_inference_config(model, config)
 
-        self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}, config_path: {self.config_path}, output_folder: {self.store_dirs}")
-        self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
-        self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, normalize: {config.inference.get('normalize', None)}, use_tta: {self.use_tta}")
+        self._log_model_config(model_type, config, config_path=self.config_path)
 
         try:
             model.load_state_dict(state_dict, assign=True)
@@ -561,6 +580,13 @@ class MSSeparator:
 
         self.logger.debug(f"Loading model completed, duration: {time() - start_time:.2f} seconds")
         return model, config
+
+    def _log_model_config(self, model_type, config, config_path=None, include_config_path=True):
+        config_path_part = f", config_path: {config_path}" if include_config_path else ""
+        self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}{config_path_part}, output_folder: {self.store_dirs}")
+        self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
+        self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
+        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}")
 
     def apply_model_inference_config(self, model, config):
         if hasattr(model, 'set_mask_mode'):
@@ -584,7 +610,19 @@ class MSSeparator:
                     module.set_mps_attention_backend(backend, min_tokens)
 
     def update_inference_params(self, config, params):
+        # Keep this mapping explicit:
+        # public/API/CLI "standardize" controls legacy input standardization performed by _standardize_mix().
+        # existing MSS YAML files still store that switch as inference.normalize, and those YAML files cannot be renamed in place without breaking compatibility.
+        # public/API/CLI "normalize" is a separate output peak normalization option stored in self.output_normalize, so it must not overwrite config.inference["normalize"] here.
+        if 'normalize' not in config.inference:
+            config.inference['normalize'] = False
+        standardize = params.get('standardize')
+        if standardize is not None:
+            config.inference['normalize'] = standardize
+
         for key, section in INFERENCE_PARAM_TARGETS.items():
+            if key in {'standardize', 'normalize'}:
+                continue
             value = params.get(key)
             if value is None:
                 continue
@@ -634,6 +672,8 @@ class MSSeparator:
         stems = self._stems_to_save()
         if stems is None:
             return [None]
+        if self.output_normalize:
+            return [stems] # we need to normalize across all stems together
         batch_size = int(self.config.inference.get('stem_batch_size', 0))
         if batch_size <= 0 or len(stems) <= batch_size:
             return [stems]
@@ -677,7 +717,6 @@ class MSSeparator:
         self.logger.info(f"{input_label}: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
 
         success_files, pending_saves = [], deque()
-        max_pending_saves = 12
 
         progress = tqdm(all_mixtures_path, desc="Total progress") if not self.debug else None
         try:
@@ -688,6 +727,7 @@ class MSSeparator:
                 load_future = self._submit_load(load_executor, all_mixtures_path, 0, sample_rate)
 
                 for index, path in enumerate(all_mixtures_path):
+                    mix = None
                     if progress is not None:
                         progress.set_postfix({'track': os.path.basename(path)})
 
@@ -715,7 +755,8 @@ class MSSeparator:
                         save_ok = self._wait_pending_saves(track_saves) and save_ok
                     except Exception as e:
                         self.logger.warning(f'Cannot separate track: {path}, error: {str(e)}')
-                        del mix
+                        if mix is not None:
+                            del mix
                         continue
 
                     self.logger.debug(f"Separation audio_file: {path} completed. Starting to save results.")
@@ -724,7 +765,8 @@ class MSSeparator:
                         if progress is not None:
                             progress.update(1)
 
-                    del mix
+                    if mix is not None:
+                        del mix
 
                 self._drain_save_queue(pending_saves, success_files, progress)
         finally:
@@ -738,14 +780,15 @@ class MSSeparator:
     def _separate(self, mix, pbar, stems=None):
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
         if self.model_type == 'vr':
-            return self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
+            results = self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
+            return _normalize_outputs(results, self.output_normalize, self.logger)
 
         instruments, source_indices = _resolve_instruments(self.config, stems)
         if self.config.training.target_instrument is not None:
             self.logger.debug("Target instrument is not null, set primary_stem to target_instrument, secondary_stem will be calculated by mix - target_instrument")
 
         mix_orig = mix.copy()
-        mix, norm_stats = _normalize_mix(mix, self.config.inference.get('normalize', False), self.logger)
+        mix, standardize_stats = _standardize_mix(mix, self.config.inference.get('normalize', False), self.logger)
         full_result = [
             demix(
                 self.config,
@@ -763,7 +806,8 @@ class MSSeparator:
         self.logger.debug("Finished demixing tracks.")
         waveforms = _merge_tta_results(full_result)
         self.logger.debug(f"Starting to extract waveforms for instruments: {instruments}")
-        results = _build_results(waveforms, instruments, mix_orig, self.config, norm_stats, self.logger)
+        results = _build_results(waveforms, instruments, mix_orig, self.config, standardize_stats, self.logger)
+        results = _normalize_outputs(results, self.output_normalize, self.logger)
         self.logger.debug("Separation process completed.")
         return results
 

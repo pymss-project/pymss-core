@@ -158,7 +158,8 @@ separator = MSSeparator(
         "batch_size": 4,
         "overlap_size": 512,
         "chunk_size": 1024,
-        "normalize": True
+        "standardize": True,
+        "normalize": False
     } # Can be omitted
 )
 
@@ -167,6 +168,8 @@ separator.process_folder('path/to/input_folder')
 ```
 
 ### Manual Constructor Parameters
+
+For a detailed explanation of every `MSSeparator` argument, see the [MSSeparator parameter guide](./docs/msseparator.md).
 
 - model_type: The type of model, e.g., 'htdemucs'. Must be one of 
     ['bs_roformer', 
@@ -188,7 +191,7 @@ separator.process_folder('path/to/input_folder')
 - audio_params: Audio parameters including wav_bit_depth, flac_bit_depth, mp3_bit_rate, m4a_bit_rate, and m4a_aac_at_quality. Default is {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}.
 - logger: Logger instance. Default is pymss.get_separation_logger()
 - debug: Whether to enable debug mode, default is False.
-- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, normalize, and `cuda_attention_backend`. Default is all None (means all params are depended on the config file). For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, and `high_end_process`.
+- inference_params: Inference parameters including batch_size, overlap_size, chunk_size, standardize, normalize, and `cuda_attention_backend`. `standardize` controls model input standardization and defaults to the model config's `inference.normalize` value, or `False` when missing. `normalize` controls linked output peak normalization for all returned stems. For `model_type='vr'`, supported keys are `batch_size`, `window_size`, `aggression`, `enable_tta`, `enable_post_process`, `post_process_threshold`, `high_end_process`, and output `normalize`.
 
 ### CUDA Attention Backend
 
