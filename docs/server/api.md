@@ -76,7 +76,7 @@ Authorization: Bearer <api-key>
         "instruments": ["vocals", "instrument"],
         "instruments_source": "separator.config.training.instruments",
         "supported_parameters": {
-          "inference": ["batch_size", "normalize"],
+          "inference": ["batch_size", "standardize", "normalize"],
           "audio": ["chunk_size"]
         }
       }
@@ -286,7 +286,7 @@ catalog 中不存在该模型时，server 返回 `404 model_not_found`。
       "instruments": ["vocals", "instrument"],
       "instruments_source": "separator.config.training.instruments",
       "supported_parameters": {
-        "inference": ["batch_size", "normalize"]
+        "inference": ["batch_size", "standardize", "normalize"]
       }
     }
   }

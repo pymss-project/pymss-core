@@ -110,7 +110,10 @@ def _contains(section, key):
 def _is_parameter_supported(config, model_type, key, section_name):
     if model_type == "vr" and key in VR_SUPPORTED_PARAMETERS:
         return True
-    return _contains(_section(config, section_name), key)
+    # standardize is legacy input standardization backed by MSS YAML inference.normalize.
+    # normalize is output peak normalization owned by runtime inference params.
+    config_key = "normalize" if key == "standardize" else key
+    return _contains(_section(config, section_name), config_key)
 
 
 def supported_parameters(config, model_type):

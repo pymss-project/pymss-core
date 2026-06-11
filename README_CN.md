@@ -156,13 +156,17 @@ separator = MSSeparator(
         "batch_size": 4,
         "overlap_size": 512,
         "chunk_size": 1024,
-        "normalize": True
+        "standardize": True,
+        "normalize": False
     } # 可以省略
 )
 # 处理文件夹中的所有音频文件
 separator.process_folder('path/to/input_folder')
 ```
 ### 手动构造参数
+
+每个 `MSSeparator` 参数的详细说明见 [MSSeparator 参数文档](./docs/msseparator_cn.md)。
+
 - model_type: 模型类型，例如 'htdemucs'。 必须是以下之一
     ['bs_roformer',
     'mel_band_roformer',
@@ -183,7 +187,7 @@ separator.process_folder('path/to/input_folder')
 - audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth、mp3_bit_rate、m4a_bit_rate 和 m4a_aac_at_quality。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}。
 - logger: Logger 实例。 默认为 pymss.get_separation_logger()
 - debug: 是否启用调试模式，默认为 False。
-- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size、normalize 和 `cuda_attention_backend`。 默认值均为 None（意味着所有参数都取决于配置文件）。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold` 和 `high_end_process`。
+- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size、standardize、normalize 和 `cuda_attention_backend`。`standardize` 控制模型输入标准化，默认使用模型配置里的 `inference.normalize`，如果配置文件没有该项则为 `False`。`normalize` 控制所有输出音轨联动的峰值归一化。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold`、`high_end_process` 和输出 `normalize`。
 
 ### CUDA Attention 后端
 
