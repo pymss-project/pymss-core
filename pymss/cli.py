@@ -28,17 +28,6 @@ def _parse_key_value(values):
     return result
 
 
-def _add_common_runtime_args(parser):
-    parser.add_argument("-i", "--input", required=True, help="Input audio file or folder.")
-    parser.add_argument("-o", "--output", default="results", help="Output folder.")
-    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
-    parser.add_argument("--device-id", action="append", type=int, dest="device_ids", help="CUDA device id. Can be repeated.")
-    parser.add_argument("--format", default="wav", choices=["wav", "flac", "mp3", "m4a"], dest="output_format")
-    parser.add_argument("--tta", action="store_true", help="Enable test time augmentation.")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--param", action="append", default=[], help="Inference override as key=value, for example --param batch_size=2.")
-
-
 def cmd_list(args):
     rows = list_models(category=args.category, supported=None if args.all else True)
     if args.json:
@@ -168,12 +157,11 @@ def build_parser():
         description="Command-line interface for the pymss music source separation package.",
         formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
     )
-    parser.add_argument(
-        "--model-dir",
-        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models.",
-    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    # ==========================
+    # List models
+    # ==========================
     list_parser = subparsers.add_parser(
         "list",
         help="List known models.",
@@ -184,26 +172,43 @@ def build_parser():
     list_parser.add_argument("--json", action="store_true")
     list_parser.set_defaults(func=cmd_list)
 
+    # ==========================
+    # Show model info
+    # ==========================
     info_parser = subparsers.add_parser(
         "info",
         help="Show model metadata.",
         formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
     )
     info_parser.add_argument("model")
+    info_parser.add_argument(
+        "--model-dir",
+        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models."
+    )
     info_parser.set_defaults(func=cmd_info)
 
+    # ==========================
+    # Download models
+    # ==========================
     download_parser = subparsers.add_parser(
         "download",
         help="Download a model by name, or use 'all'.",
         formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
     )
     download_parser.add_argument("model")
+    download_parser.add_argument(
+        "--model-dir",
+        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models."
+    )
     download_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     download_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
     download_parser.add_argument("--force", action="store_true")
     download_parser.add_argument("--supported-only", action="store_true", help="Only used with model='all'.")
     download_parser.set_defaults(func=cmd_download)
 
+    # ==========================
+    # Inference
+    # ==========================
     infer_parser = subparsers.add_parser(
         "infer",
         help="Run inference by model name.",
@@ -211,15 +216,29 @@ def build_parser():
     )
     infer_parser.add_argument("model")
     infer_parser.add_argument(
+        "--model-dir",
+        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models."
+    )
+    infer_parser.add_argument(
         "--download",
         action="store_true",
         help="Check/download the model before inference. Missing model files are downloaded automatically.",
     )
     infer_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     infer_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
-    _add_common_runtime_args(infer_parser)
+    infer_parser.add_argument("-i", "--input", required=True, help="Input audio file or folder.")
+    infer_parser.add_argument("-o", "--output", default="results", help="Output folder.")
+    infer_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
+    infer_parser.add_argument("--device-id", action="append", type=int, dest="device_ids", help="CUDA device id. Can be repeated.")
+    infer_parser.add_argument("--format", default="wav", choices=["wav", "flac", "mp3", "m4a"], dest="output_format")
+    infer_parser.add_argument("--tta", action="store_true", help="Enable test time augmentation.")
+    infer_parser.add_argument("--debug", action="store_true")
+    infer_parser.add_argument("--param", action="append", default=[], help="Inference override as key=value, for example --param batch_size=2.")
     infer_parser.set_defaults(func=cmd_infer)
 
+    # ==========================
+    # Ensemble
+    # ==========================
     ensemble_parser = subparsers.add_parser(
         "ensemble",
         help="Combine multiple audio files with an ensemble algorithm.",
@@ -250,12 +269,19 @@ def build_parser():
     ensemble_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
     ensemble_parser.set_defaults(func=audio_ensemble)
 
+    # ==========================
+    # Server
+    # ==========================
     serve_parser = subparsers.add_parser(
         "serve",
         help="Start an OpenAI-style HTTP inference server.",
         formatter_class=lambda prog: argparse.RawTextHelpFormatter(prog, max_help_position=60),
     )
     serve_parser.add_argument("model", nargs="?")
+    serve_parser.add_argument(
+        "--model-dir",
+        help="Local model cache directory. Defaults to PYMSS_MODEL_DIR, repository all_models if present, or ~/.cache/pymss/models."
+    )
     serve_parser.add_argument("--source", default="modelscope", choices=["modelscope", "huggingface", "hf-mirror"])
     serve_parser.add_argument("--endpoint", help="Custom resolve endpoint. It must serve files by relative path.")
     serve_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
