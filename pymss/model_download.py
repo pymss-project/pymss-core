@@ -1,6 +1,8 @@
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -14,7 +16,6 @@ from .model_registry import (
     config_path_for,
     get_model_entry,
     model_path_for,
-    model_root,
 )
 
 
@@ -24,9 +25,14 @@ HF_BASE_URL = f"https://huggingface.co/{HF_REPO}/resolve/main"
 MS_BASE_URL = f"https://www.modelscope.cn/models/{MS_REPO}/resolve/master"
 MS_FILES_API = f"https://www.modelscope.cn/api/v1/models/{MS_REPO}/repo/files?Revision=master&Recursive=true"
 MODEL_FILE_SUFFIXES = {".ckpt", ".th", ".pth", ".chpt", ".safetensors", ".pt", ".yaml", ".yml", ".json"}
+ARIA2C_PATH = shutil.which("aria2c")
 
 
 class DownloadError(RuntimeError):
+    pass
+
+
+class DownloadValidationError(DownloadError):
     pass
 
 
@@ -91,6 +97,69 @@ def _already_valid(path, expected_size=None, expected_sha256=""):
     return True
 
 
+def _cleanup_partial_download(tmp):
+    for path in (tmp, Path(str(tmp) + ".aria2")):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _validate_downloaded_file(path, dest, expected_size=None, expected_sha256=""):
+    if expected_size is not None and path.stat().st_size != expected_size:
+        raise DownloadValidationError(f"size mismatch for {dest.name}: expected {expected_size}, got {path.stat().st_size}")
+    if expected_sha256:
+        actual = _sha256(path)
+        if actual != expected_sha256:
+            raise DownloadValidationError(f"sha256 mismatch for {dest.name}: expected {expected_sha256}, got {actual}")
+
+
+def _download_file_urllib(url, tmp, dest, expected_size=None, expected_sha256="", timeout=30):
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        total = int(response.headers.get("content-length") or expected_size or 0)
+        with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, desc=dest.name) as progress:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+                progress.update(len(chunk))
+    _validate_downloaded_file(tmp, dest, expected_size, expected_sha256)
+    os.replace(tmp, dest)
+    return dest
+
+
+def _download_file_aria2(url, tmp, dest, expected_size=None, expected_sha256="", timeout=30):
+    cmd = [
+        ARIA2C_PATH,
+        "--allow-overwrite=true",
+        "--auto-file-renaming=false",
+        "--continue=true",
+        "--console-log-level=warn",
+        "--summary-interval=1",
+        "--max-connection-per-server=16",
+        "--split=16",
+        "--min-split-size=1M",
+        "--max-tries=3",
+        f"--connect-timeout={timeout}",
+        f"--timeout={timeout}",
+        "--dir",
+        str(tmp.parent),
+        "--out",
+        tmp.name,
+        url,
+    ]
+    result = subprocess.run(cmd, check=False)
+    if result.returncode != 0:
+        raise DownloadError(f"aria2c failed with exit code {result.returncode}")
+    if not tmp.is_file():
+        raise DownloadError("aria2c did not create the expected output file")
+
+    _validate_downloaded_file(tmp, dest, expected_size, expected_sha256)
+    os.replace(tmp, dest)
+    return dest
+
+
 def _download_file(url, dest, expected_size=None, expected_sha256="", timeout=30, retries=2):
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -99,29 +168,14 @@ def _download_file(url, dest, expected_size=None, expected_sha256="", timeout=30
 
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                total = int(response.headers.get("content-length") or expected_size or 0)
-                with open(tmp, "wb") as f, tqdm(total=total, unit="B", unit_scale=True, desc=dest.name) as progress:
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        progress.update(len(chunk))
-            if expected_size is not None and tmp.stat().st_size != expected_size:
-                raise DownloadError(f"size mismatch for {dest.name}: expected {expected_size}, got {tmp.stat().st_size}")
-            if expected_sha256:
-                actual = _sha256(tmp)
-                if actual != expected_sha256:
-                    raise DownloadError(f"sha256 mismatch for {dest.name}: expected {expected_sha256}, got {actual}")
-            os.replace(tmp, dest)
-            return dest
+            if ARIA2C_PATH:
+                return _download_file_aria2(url, tmp, dest, expected_size, expected_sha256, timeout=timeout)
+            return _download_file_urllib(url, tmp, dest, expected_size, expected_sha256, timeout=timeout)
         except (OSError, urllib.error.URLError, urllib.error.HTTPError, DownloadError) as exc:
             last_error = exc
-            try:
-                tmp.unlink()
-            except FileNotFoundError:
-                pass
+            # don't rm temp file if aria2c is being used
+            if not ARIA2C_PATH or isinstance(exc, DownloadValidationError): 
+                _cleanup_partial_download(tmp)
             if attempt < retries:
                 time.sleep(1.0 + attempt)
     raise DownloadError(f"failed to download {url}: {last_error}")
