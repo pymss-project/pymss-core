@@ -114,6 +114,13 @@ def cmd_infer(args):
         device=args.device,
         device_ids=args.device_ids or [0],
         output_format=args.output_format,
+        audio_params = {
+            "wav_bit_depth": args.wav_bit_depth,
+            "flac_bit_depth": args.flac_bit_depth,
+            "mp3_bit_rate": args.mp3_bit_rate,
+            "m4a_bit_rate": args.m4a_bit_rate,
+            "m4a_aac_at_quality": args.m4a_aac_at_quality
+        },
         use_tta=args.tta,
         store_dirs=args.output,
         logger=logger,
@@ -231,6 +238,12 @@ def build_parser():
     infer_parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps", "mlx"])
     infer_parser.add_argument("--device-id", action="append", type=int, dest="device_ids", help="CUDA device id. Can be repeated.")
     infer_parser.add_argument("--format", default="wav", choices=["wav", "flac", "mp3", "m4a"], dest="output_format")
+    infer_parser.add_argument("--wav-bit-depth", default="FLOAT", choices=["FLOAT", "PCM_16", "PCM_24"])
+    infer_parser.add_argument("--flac-bit-depth", default="PCM_16", choices=["PCM_16", "PCM_24"])
+    infer_parser.add_argument("--mp3-bit-rate", default="320k")
+    infer_parser.add_argument("--m4a-bit-rate", default="512k")
+    infer_parser.add_argument("--m4a-codec", default="aac")
+    infer_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
     infer_parser.add_argument("--tta", action="store_true", help="Enable test time augmentation.")
     infer_parser.add_argument("--debug", action="store_true")
     infer_parser.add_argument("--param", action="append", default=[], help="Inference override as key=value, for example --param batch_size=2.")
@@ -264,8 +277,8 @@ def build_parser():
     ensemble_parser.add_argument("--wav-bit-depth", default="FLOAT", choices=["FLOAT", "PCM_16", "PCM_24"])
     ensemble_parser.add_argument("--flac-bit-depth", default="PCM_16", choices=["PCM_16", "PCM_24"])
     ensemble_parser.add_argument("--mp3-bit-rate", default="320k")
-    ensemble_parser.add_argument("--m4a-bit-rate", default="192k")
-    ensemble_parser.add_argument("--m4a-codec", default="aac_at")
+    ensemble_parser.add_argument("--m4a-bit-rate", default="512k")
+    ensemble_parser.add_argument("--m4a-codec", default="aac")
     ensemble_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
     ensemble_parser.set_defaults(func=audio_ensemble)
 

@@ -52,6 +52,7 @@ separator = MSSeparator(
         "flac_bit_depth": "PCM_24",
         "mp3_bit_rate": "320k",
         "m4a_bit_rate": "192k",
+        "m4a_codec": "aac",
         "m4a_aac_at_quality": 2,
     },
     logger=None,
@@ -118,8 +119,8 @@ When `inference_params["normalize"]` is enabled, pymss separates all stems that 
 | `flac_bit_depth` | `"PCM_24"` | `flac` | FLAC encoding depth. `PCM_24` writes 24-bit style samples; other values fall back to 16-bit behavior. |
 | `mp3_bit_rate` | `"320k"` | `mp3` | MP3 bitrate passed to the encoder. |
 | `m4a_bit_rate` | `"192k"` | `m4a` | M4A bitrate passed to the encoder. |
-| `m4a_codec` | `"aac_at"` | `m4a` | M4A codec. If omitted, pymss uses `aac_at`. |
-| `m4a_aac_at_quality` | `2` | `m4a` with `aac_at` | Apple AAC encoder quality option. |
+| `m4a_codec` | `"aac"` | `m4a` | M4A codec. If omitted, pymss uses FFmpeg's built-in `aac` encoder. `aac_at` is still accepted when available and falls back to `aac` when the local FFmpeg/PyAV build does not expose it. |
+| `m4a_aac_at_quality` | `2` | `m4a` with `aac_at` | Apple AAC encoder quality option. Ignored when the selected encoder is `aac`. |
 
 ## `inference_params`
 
