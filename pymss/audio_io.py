@@ -47,15 +47,11 @@ def _bitrate_to_int(value):
     return int(float(value[:-1]) * 1000) if value.endswith("k") else int(value)
 
 
-def _format_audio(audio, sample_format):
+def _format_audio(audio):
     audio = np.asarray(audio)
     audio = np.ascontiguousarray(audio[:, None] if audio.ndim == 1 else audio)
-    if sample_format == "s16":
-        return np.ascontiguousarray((np.clip(audio, -1, 1) * 32767).astype(np.int16).reshape(1, -1))
-    if sample_format == "s16p":
-        return np.ascontiguousarray((np.clip(audio, -1, 1) * 32767).astype(np.int16).T)
-    if sample_format == "s32p":
-        return np.ascontiguousarray((np.clip(audio, -1, 1) * (2 ** 31 - 1)).astype(np.int32).T)
+    # We can use "fltp" container for all output formats, while the final result is determined by the codec.
+    # Using the fltp sample format can also help avoid some clipping distortion that occurs with integer formats. 
     return np.ascontiguousarray(audio.astype(np.float32).T)
 
 
@@ -65,19 +61,18 @@ def save_audio(path, audio, sr, output_format, audio_params):
     layout = "stereo" if audio_array.ndim > 1 and audio_array.shape[1] == 2 else "mono"
 
     if output_format == "mp3":
-        codec, sample_format = "libmp3lame", "s16p"
+        codec  = "libmp3lame"
     elif output_format == "m4a":
-        codec = audio_params.get("m4a_codec", "aac_at")
-        sample_format = "s16" if codec == "aac_at" else "fltp"
+        codec = audio_params.get("m4a_codec", "aac")
     elif output_format == "flac":
-        codec, sample_format = "flac", "s32p" if audio_params.get("flac_bit_depth") == "PCM_24" else "s16p"
+        # PyAV's FLAC encoder only exposes a single "flac" codec in the current version.
+        # In the current version, without access to bits_per_raw_sample in PyAV, PCM_24 may still be encoded as 16-bit.
+        # Use a dedicated FLAC writer if strict 24-bit FLAC is required.
+        flac_codecs = {"PCM_16": "flac", "PCM_24": "flac"}
+        codec = flac_codecs.get(audio_params.get("flac_bit_depth", "PCM_24"), flac_codecs["PCM_24"])
     else:
-        wav_codecs = {
-            "PCM_16": ("pcm_s16le", "s16p"),
-            "PCM_24": ("pcm_s24le", "s32p"),
-            "FLOAT": ("pcm_f32le", "fltp"),
-        }
-        codec, sample_format = wav_codecs.get(audio_params.get("wav_bit_depth", "FLOAT"), wav_codecs["FLOAT"])
+        wav_codecs = {"PCM_16": "pcm_s16le", "PCM_24": "pcm_s24le", "FLOAT": "pcm_f32le"}
+        codec = wav_codecs.get(audio_params.get("wav_bit_depth", "FLOAT"), wav_codecs["FLOAT"])
 
     with av.open(path, "w") as container:
         stream = container.add_stream(codec, rate=int(sr))
@@ -85,11 +80,11 @@ def save_audio(path, audio, sr, output_format, audio_params):
         if output_format == "mp3":
             stream.bit_rate = _bitrate_to_int(audio_params.get("mp3_bit_rate", "320k"))
         elif output_format == "m4a":
-            stream.bit_rate = _bitrate_to_int(audio_params.get("m4a_bit_rate", "192k"))
+            stream.bit_rate = _bitrate_to_int(audio_params.get("m4a_bit_rate", "512k"))
             if codec == "aac_at":
                 stream.codec_context.options = {"aac_at_quality": str(audio_params.get("m4a_aac_at_quality", 2))}
 
-        frame = av.AudioFrame.from_ndarray(_format_audio(audio_array, sample_format), format=sample_format, layout=layout)
+        frame = av.AudioFrame.from_ndarray(_format_audio(audio_array), format="fltp", layout=layout)
         frame.sample_rate = int(sr)
         for packet in stream.encode(frame):
             container.mux(packet)

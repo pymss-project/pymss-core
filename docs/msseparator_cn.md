@@ -52,6 +52,7 @@ separator = MSSeparator(
         "flac_bit_depth": "PCM_24",
         "mp3_bit_rate": "320k",
         "m4a_bit_rate": "192k",
+        "m4a_codec": "aac",
         "m4a_aac_at_quality": 2,
     },
     logger=None,
@@ -118,8 +119,8 @@ store_dirs = {
 | `flac_bit_depth` | `"PCM_24"` | `flac` | FLAC 编码位深。`PCM_24` 会按 24-bit 风格写入；其他值会回退到 16-bit 行为。 |
 | `mp3_bit_rate` | `"320k"` | `mp3` | 传给编码器的 MP3 码率。 |
 | `m4a_bit_rate` | `"192k"` | `m4a` | 传给编码器的 M4A 码率。 |
-| `m4a_codec` | `"aac_at"` | `m4a` | M4A 编码器。不传时使用 `aac_at`。 |
-| `m4a_aac_at_quality` | `2` | 使用 `aac_at` 的 `m4a` | Apple AAC 编码器质量参数。 |
+| `m4a_codec` | `"aac"` | `m4a` | M4A 编码器。不传时使用 FFmpeg 内置的 `aac`。`aac_at` 在本地可用时仍可使用；如果当前 FFmpeg/PyAV 没有暴露 `aac_at`，会回退到 `aac`。 |
+| `m4a_aac_at_quality` | `2` | 使用 `aac_at` 的 `m4a` | Apple AAC 编码器质量参数。选择 `aac` 时会被忽略。 |
 
 ## `inference_params`
 
