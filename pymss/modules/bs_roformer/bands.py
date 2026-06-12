@@ -137,13 +137,14 @@ class MaskEstimator(Module):
         self._layer_group_cache = {}
         self._index_cache = {}
         self._packed_layer_group_cache = {}
-        self._groupable_layers_cache = {}
         self._band_layers_cache = None
         self._band_signatures_cache = None
         self._layer_group_plan = None
         self._layer_group_plan_ready = False
         self._can_group_mlp_cache = None
         self.use_grouped_forward = True
+        # _groupable_layers_cache intentionally removed: id()-keyed caching is
+        # unsafe under DataParallel replica recycling (see _groupable_layers).
         dim_hidden = dim * mlp_expansion_factor
         self.to_freqs = ModuleList([
             nn.Sequential(
@@ -154,16 +155,15 @@ class MaskEstimator(Module):
         ])
 
     def _groupable_layers(self, mlp_with_glu):
-        cache_key = id(mlp_with_glu)
-        if cache_key in self._groupable_layers_cache:
-            return self._groupable_layers_cache[cache_key]
-
+        # NOTE: Do not cache by id(mlp_with_glu). Under torch.nn.DataParallel the
+        # module is re-replicated on every forward, so band submodules are short
+        # lived and Python recycles their id() values. A shared id-keyed cache
+        # then returns another band's parsed layers, corrupting per-band output
+        # widths. The per-replica memo in _band_groupable_layers is enough.
         if not isinstance(mlp_with_glu, nn.Sequential) or len(mlp_with_glu) != 2:
-            self._groupable_layers_cache[cache_key] = None
             return None
         mlp, glu = mlp_with_glu
         if not isinstance(glu, nn.GLU) or not isinstance(mlp, nn.Sequential):
-            self._groupable_layers_cache[cache_key] = None
             return None
 
         layers = []
@@ -173,13 +173,10 @@ class MaskEstimator(Module):
             elif isinstance(layer, nn.Tanh):
                 layers.append(('tanh', None))
             else:
-                self._groupable_layers_cache[cache_key] = None
                 return None
         if not layers or layers[-1][0] != 'linear':
-            self._groupable_layers_cache[cache_key] = None
             return None
-        self._groupable_layers_cache[cache_key] = layers = tuple(layers)
-        return layers
+        return tuple(layers)
 
     def _band_groupable_layers(self):
         if self._band_layers_cache is None:
@@ -258,7 +255,7 @@ class MaskEstimator(Module):
 
         signatures = self._band_layer_signatures()
         self._can_group_mlp_cache = signatures is not None and all(signature == signatures[0] for signature in signatures)
-        return True
+        return self._can_group_mlp_cache
 
     def _indices_tensor(self, indices, device):
         key = (indices, device.type, device.index)
