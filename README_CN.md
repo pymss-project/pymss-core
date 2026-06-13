@@ -1,324 +1,90 @@
-# pymss
-用于音乐源分离的 Python 包。
-[English](./README.md)  [简体中文]
+# pymss-core
+
+[English](README.md)
+
+`pymss-core` 是面向音乐源分离的底层模型、配置与 checkpoint 包。它会作为上层项目的共享基础层，例如：
+
+- `pymss`：面向用户的推理包
+- `pymsst`：面向训练的训练包
+
+这个包只保留模型推理和训练都需要复用的核心能力：模型定义、配置加载、
+checkpoint 兼容处理。它不包含推理 DSP pipeline、分块 demix、音频文件读写、
+模型下载、模型 catalog、CLI、HTTP server、WebUI、dataset、loss 或训练循环。
 
 ## 安装
 
-如果想安装 CUDA 版 PyTorch，推荐先运行：
-
-```sh
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+```bash
+pip install pymss-core
 ```
 
-如果只需要 CLI 和 Python API，安装：
+本地开发：
 
-```sh
-pip install pymss
+```bash
+uv sync --dev
 ```
 
-如果需要使用 API 或者 WebUI，则改为安装：
+Apple Silicon 上可选安装 MLX backend：
 
-```sh
-pip install "pymss[server]"
+```bash
+pip install "pymss-core[mlx]"
 ```
 
-## 开发
-
-开发需要 Git、Python 3.10 或更高版本，以及 [uv](https://docs.astral.sh/uv/)。WebUI 开发还需要 Node.js 和 npm。
-
-克隆 Python 包仓库，并安装开发依赖：
-
-```sh
-git clone https://github.com/pymss-project/pymss
-cd pymss
-uv sync --group dev
-```
-
-如果需要开发或本地运行 WebUI, WebUI 源码位于单独仓库，需要使用 Node.js 构建：
-
-```sh
-git clone https://github.com/pymss-project/pymss-webui
-cd pymss-webui
-npm ci
-npm run build
-```
-
-把构建后的 WebUI 静态资源复制到 Python 包目录：
-
-```sh
-cp -R dist/. ../pymss/server/webui_static/
-```
-
-回到 Python 包目录，构建源码包和 wheel：
-
-```sh
-cd ..
-uv build
-```
-
-测试使用 `pytest`。迁移后的集成测试位于 `test/`，统一通过 `test/test_all.py` 参数化运行。这些测试依赖本地模型权重、配置文件和输入音频；缺少资源时会自动跳过。
-
-```sh
-uv run pytest test -q
-```
-
-## 用法
-
-### CLI 推理
-
-可以直接用 catalog 里的模型名推理。如果本地缺少模型、配置或辅助文件，CLI 会在推理前自动下载。
-
-```sh
-pymss infer bs_roformer_voc_hyperacev2 \
-  -i path/to/input_file_or_folder \
-  -o results \
-  --device auto \
-  --format wav
-```
-
-`--device auto` 在有 NVIDIA GPU 时优先使用 CUDA；Apple Silicon Mac 默认使用 MLX 后端。可以用 `--device mlx` 强制 MLX，或用 `--device mps` 强制 PyTorch MPS。
-
-默认下载源是 ModelScope。也可以指定下载源或模型目录：
-
-```sh
-pymss --model-dir /path/to/models infer bs_roformer_voc_hyperacev2 \
-  --source hf-mirror \
-  -i path/to/input_file_or_folder \
-  -o results
-```
-
-如果是在源码目录里未安装运行，可以用 `python -m pymss.cli` 代替 `pymss`。
-
-### CLI Ensemble
-
-```sh
-pymss ensemble path/to/model_a_vocals.wav path/to/model_b_vocals.wav \
-  --algorithm avg_wave \
-  --weights 1 0.8 \
-  -o results/ensemble_vocals.wav
-```
-
-可用算法包括 `avg_wave`、`median_wave`、`min_wave`、`max_wave`、`avg_fft`、`median_fft`、`min_fft` 和 `max_fft`。输入文件需要使用相同采样率和声道数；如果长度不同，会裁剪到最短输入长度。不传 `--weights` 时，每个输入默认权重都是 `1`。
-
-### Server 和 WebUI
-
-安装可选 server 依赖后，可以启动 HTTP server，支持动态加载模型、浏览 catalog、下载模型文件，以及可选的浏览器 WebUI：
-
-```sh
-pip install "pymss[server]"
-pymss serve --webui
-```
-
-详细用法见 [server CLI 文档](./docs/server/cli.md)、[server API 文档](./docs/server/api.md) 和 [server 错误文档](./docs/server/errors.md)。
-
-### Python API
-
-直接用 catalog 里的模型名即可，不需要传 `model_type`、`model_path`、`config_path`。
+## 公共 API
 
 ```python
-from pymss import MSSeparator
-
-separator = MSSeparator.from_model_name(
-    "bs_roformer_voc_hyperacev2",
-    download=True,
-    device="auto",
-    output_format="wav",
-    store_dirs="results",
+from pymss_core import (
+    get_model_from_config,
+    load_config,
+    load_model_weights,
 )
-separator.process_folder("path/to/input_file_or_folder")
+
+model, config = get_model_from_config("bs_roformer", "config.yaml")
+load_model_weights(model, "model.ckpt", model_type="bs_roformer", strict=True)
+
+model.eval()
 ```
 
-`download=True` 会在加载前下载缺失的模型文件；如果只想使用本地已有模型，可以省略它。
+## 包边界
 
-`MSSeparator` 也可以作为上下文管理器使用。退出 `with` 代码块时会自动调用 `separator.close()`，尽量释放模型引用并清理后端缓存。
+包含：
 
-```python
-from pymss import MSSeparator
+- YAML 配置加载与 `AttrDict`
+- `pymss_core.modules` 下的 PyTorch 模型定义
+- 支持部分模型 forward 路径的可选 MLX backend 实现
+- 模型工厂：`get_model_from_config(model_type, config_path)`
+- 常见 MSS checkpoint 容器的加载与 state dict 解析
+- 构造模型结构所需的少量内部 DSP 数学函数
+- VR 网络结构和 `resources/vr_modelparams/*.json`
 
-with MSSeparator.from_model_name(
-    "bs_roformer_voc_hyperacev2",
-    download=True,
-    device="auto",
-    output_format="wav",
-    store_dirs="results",
-) as separator:
-    separator.process_folder("path/to/input_file_or_folder")
+不包含：
+
+- 音频文件解码/编码
+- 重采样、预处理和完整推理 DSP pipeline
+- tensor 级别的分块 demix runtime
+- 模型 catalog、别名、下载和缓存管理
+- CLI、server、WebUI 和接口 schema
+- dataset、augmentation、loss、metric 和 trainer 代码
+- 默认安装不会引入 MLX、Librosa、tqdm、Lightning、FastAPI、Uvicorn、
+  PyAV、WandB 等训练或产品层依赖
+
+## 关于 VR JSON
+
+`pymss_core/resources/vr_modelparams/*.json` 不是新增的下载数据，而是从旧路径
+`pymss/resources/vr_modelparams/*.json` 移动过来的 VR/UVR 模型结构参数。它们是
+VR 网络结构的一部分，因此保留在 core 中。
+
+已删除的 `model_catalog.json` 属于模型下载和 catalog 管理层，不属于 core。
+完整的 `VRSeparator`、重采样、STFT/ISTFT pipeline 属于上层推理包。
+
+## 仓库分工
+
+```text
+pymss-core
+  共享的模型、配置、checkpoint 层
+
+pymss
+  基于 pymss-core 的用户推理包，包含音频 IO 和 demix
+
+pymsst
+  基于 pymss-core 的训练包，包含训练数据、loss 和 runtime
 ```
-
-### 手动模型路径
-
-自定义权重不在模型 catalog 中时，可以使用完整构造方式。
-
-```python
-from pymss import MSSeparator, get_separation_logger
-# 初始化
-separator = MSSeparator(
-    model_type='htdemucs',
-    model_path='path/to/model',
-    config_path='path/to/config',
-    device='cuda',
-    device_ids=[0],
-    output_format='wav',
-    use_tta=True,
-    store_dirs={
-        "vocals": "./output/vocals",
-        "other": None # None 或缺少此音轨将导致不输出此音轨的文件。 此示例将在 ./output/vocals 中输出人声音轨，并忽略其他（乐器）音轨。 确保键与配置文件匹配。
-    },
-    audio_params={"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}, # 可以省略
-    logger=get_separation_logger(), # 可以省略
-    debug=False, # 可以省略
-    inference_params={
-        "batch_size": 4,
-        "overlap_size": 512,
-        "chunk_size": 1024,
-        "standardize": True,
-        "normalize": False
-    } # 可以省略
-)
-# 处理文件夹中的所有音频文件
-separator.process_folder('path/to/input_folder')
-```
-### 手动构造参数
-
-每个 `MSSeparator` 参数的详细说明见 [MSSeparator 参数文档](./docs/msseparator_cn.md)。
-
-- model_type: 模型类型，例如 'htdemucs'。 必须是以下之一
-    ['bs_roformer',
-    'mel_band_roformer',
-    'htdemucs',
-    'mdx23c',
-    'bandit',
-    'bandit_v2',
-    'scnet',
-    'apollo',
-    'vr']
-- model_path: 模型文件路径。
-- config_path: 配置文件路径。
-- device: 设备类型，默认为 'auto'。 必须是以下之一 ['auto', 'cuda', 'mps', 'cpu']
-- device_ids: 设备 ID 列表，默认为 [0]。
-- output_format: 输出音频格式，默认为 'wav'。 必须是以下之一 ['wav', 'flac', 'mp3', 'm4a']
-- use_tta: 是否使用 TTA（测试时增强），默认为 False。 使用 TTA 会使处理时间增加三倍，但质量会略有提高。
-- store_dirs: 存储目录，可以是单个文件夹路径或带有乐器键的字典。
-- audio_params: 音频参数，包括 wav_bit_depth、flac_bit_depth、mp3_bit_rate、m4a_bit_rate 和 m4a_aac_at_quality。 默认为 {"wav_bit_depth": "FLOAT", "flac_bit_depth": "PCM_24", "mp3_bit_rate": "320k", "m4a_bit_rate": "192k", "m4a_aac_at_quality": 2}。
-- logger: Logger 实例。 默认为 pymss.get_separation_logger()
-- debug: 是否启用调试模式，默认为 False。
-- inference_params: 推理参数，包括 batch_size、overlap_size、chunk_size、standardize、normalize 和 `cuda_attention_backend`。`standardize` 控制模型输入标准化，默认使用模型配置里的 `inference.normalize`，如果配置文件没有该项则为 `False`。`normalize` 控制所有输出音轨联动的峰值归一化。`model_type='vr'` 支持 `batch_size`、`window_size`、`aggression`、`enable_tta`、`enable_post_process`、`post_process_threshold`、`high_end_process` 和输出 `normalize`。
-
-### CUDA Attention 后端
-
-RoFormer 系列模型在已安装 PyTorch 暴露 cuDNN attention 时默认使用 cuDNN attention，否则使用 PyTorch 默认 SDPA 路径。需要探测式回退时可通过 `inference_params={"cuda_attention_backend": "auto"}` 覆盖。可选值为 `auto`、`default`、`flash`、`cudnn`、`efficient`、`math` 和 `xformers`。`auto` 会优先尝试 cuDNN attention，然后回退到 PyTorch memory-efficient SDPA，再回退到 PyTorch 默认 SDPA。`xformers` 是本地可选安装项，不作为必需依赖。
-
-### Apple Silicon MLX 后端
-
-使用 `device='mlx'` 可以启用 Apple Silicon MLX 后端：
-
-```python
-separator = MSSeparator.from_model_name(
-    "bs_roformer_voc_hyperacev2",
-    download=True,
-    device="mlx",
-    output_format="wav",
-    store_dirs="results",
-)
-```
-
-在 Apple Silicon 上，`pyproject.toml` 会为该后端安装 `mlx>=0.31.0`。缺少 MLX 或 backend 运行失败时，非 VR 模型会记录 `_pymss_mlx_full_backend_error` 并回退到 Torch MPS。高级用户仍然可以通过 `inference_params` 覆盖 `mps_model_backend` 和 `mps_model_compute_dtype`。
-
-### 模型兼容性
-
-配置为 `model: htdemucs` 且 `htdemucs.cac: true` 的 HTDemucs checkpoint 通过 `model_type='htdemucs'` 支持。
-
-旧 Demucs/TasNet `.th` 权重可以使用 `model_type='legacy_demucs'` 或 `model_type='legacy_tasnet'`，不需要 MSST YAML 配置。当前无外部依赖 legacy loader 支持 classic Demucs、v3 time-domain Demucs、ConvTasNet、CaC HDemucs、package 形式 HTDemucs、multi-frequency CaC HDemucs 和简单 Demucs bag YAML。DiffQ 量化 checkpoint 和 non-CaC/Wiener HDemucs 仍需要专门的旧模型加载器。
-
-UVR VR 支持已适配的 UVR/VR 系列 `.pth` 权重。和其他模型一样，直接用 catalog 里的模型名走 CLI 或 Python API。输出 stem 名称来自内置 VR 模型列表，例如 `Vocals`、`Instrumental`、`No Echo` 或 `Echo`。
-
-```sh
-pymss infer 1_HP-UVR \
-  -i path/to/input_folder \
-  -o results \
-  --device auto \
-  --param batch_size=2 \
-  --param window_size=512 \
-  --param aggression=5
-```
-
-```python
-separator = MSSeparator.from_model_name(
-    "1_HP-UVR",
-    download=True,
-    device="auto",
-    output_format="wav",
-    store_dirs="results",
-    inference_params={
-        "batch_size": 2,
-        "window_size": 512,
-        "aggression": 5,
-    },
-)
-separator.process_folder("path/to/input_folder")
-```
-
-### Hugging Face 配置提醒
-一些从 Hugging Face 或 MSST-WebUI 下载的模型配置使用 `inference.num_overlap`。当前优化后的 pymss 路径使用 `inference.overlap_size`。如果配置里只有 `num_overlap`，请手动添加 `overlap_size`，或通过 `inference_params` 传入；否则 pymss 会回退到 50% overlap，推理会慢很多。
-
-推荐快速设置：
-
-```yaml
-audio:
-  chunk_size: 480000
-inference:
-  batch_size: 2
-  overlap_size: 24000  # chunk_size 的 5%
-```
-
-### RTX 5090 实测
-
-测试环境为 NVIDIA GeForce RTX 5090、PyTorch 2.9.1+cu128、CUDA 12.8，关闭 TTA，预热 1 次，正式运行 3 次。
-
-| 模型 | 类型 | RTFx | 1 小时音频 |
-|---|---|---:|---:|
-| BS-Roformer-HyperACE_v2_voc | bs_roformer | 231.83x | 15.5s |
-| model_bs_roformer_ep_368_sdr_12.9628 | bs_roformer | 109.06x | 33.0s |
-| logic_bs_roformer | bs_roformer | 159.71x | 22.5s |
-| mel-band-roformer-deux | mel_band_roformer | 169.93x | 21.2s |
-| Mel-Band-Roformer-big | mel_band_roformer | 194.05x | 18.6s |
-| model_vocals_mdx23c_sdr_10.17 | mdx23c | 209.41x | 17.2s |
-| HTDemucs4 | htdemucs | 200.52x | 18.0s |
-| scnet_checkpoint_musdb18 | scnet | 356.85x | 10.1s |
-| model_bandit_plus_dnr_sdr_11.47 | bandit | 122.76x | 29.3s |
-| checkpoint-multi_state_dict | bandit_v2 | 112.33x | 32.0s |
-| Apollo_LQ_MP3_restoration | apollo | 100.62x | 35.8s |
-
-VR 模型测试参数为 `batch_size=2`、`window_size=512`、`aggression=5`，关闭 TTA 和后处理。
-
-| VR 模型 | RTFx | 1 小时音频 |
-|---|---:|---:|
-| UVR-DeNoise-Lite | 243.62x | 14.8s |
-| Harmonic_Noise_Separation_yxlllc | 221.22x | 16.3s |
-| MGM_HIGHEND_v4 | 217.39x | 16.6s |
-| MGM_LOWEND_A_v4 | 133.67x | 26.9s |
-| MGM_MAIN_v4 | 118.56x | 30.4s |
-| 11_SP-UVR-2B-32000-2 | 109.73x | 32.8s |
-| 10_SP-UVR-2B-32000-1 | 109.03x | 33.0s |
-| 12_SP-UVR-3B-44100 | 104.67x | 34.4s |
-| MGM_LOWEND_B_v4 | 100.64x | 35.8s |
-| 15_SP-UVR-MID-44100-1 | 99.00x | 36.4s |
-| 16_SP-UVR-MID-44100-2 | 98.76x | 36.5s |
-| 13_SP-UVR-4B-44100-1 | 97.78x | 36.8s |
-| 14_SP-UVR-4B-44100-2 | 94.97x | 37.9s |
-| 5_HP-Karaoke-UVR | 94.72x | 38.0s |
-| 2_HP-UVR | 93.94x | 38.3s |
-| UVR-De-Echo-Aggressive | 90.99x | 39.6s |
-| UVR-DeNoise | 90.39x | 39.8s |
-| UVR-De-Echo-Normal | 87.25x | 41.3s |
-| UVR-DeReverb-aufr33-jarredou_4band_v4_ms_fullband | 86.70x | 41.5s |
-| UVR-DeEcho-DeReverb | 86.58x | 41.6s |
-| 3_HP-Vocal-UVR | 85.15x | 42.3s |
-| 4_HP-Vocal-UVR | 84.23x | 42.7s |
-| 1_HP-UVR | 84.06x | 42.8s |
-| 17_HP-Wind_Inst-UVR | 82.92x | 43.4s |
-| 6_HP-Karaoke-UVR | 81.81x | 44.0s |
-| UVR-BVE-4B_SN-44100-1 | 81.54x | 44.2s |
-| 9_HP2-UVR | 58.48x | 61.6s |
-| 8_HP2-UVR | 57.23x | 62.9s |
-| 7_HP2-UVR | 56.10x | 64.2s |
