@@ -80,7 +80,9 @@ def load_audio(path, sr=None, mono=False, offset=0.0, duration=None):
     start = int(round(offset * out_rate))
     stop = None if duration is None else start + int(round(duration * out_rate))
     channels = 1 if mono else 0
-    audio = np.ascontiguousarray((np.concatenate(chunks, axis=-1) if chunks else np.empty((channels, 0), dtype=np.float32))[..., start:stop])
+    audio = np.ascontiguousarray(
+        (np.concatenate(chunks, axis=-1) if chunks else np.empty((channels, 0), dtype=np.float32))[..., start:stop]
+    )
     return (audio[0] if mono or audio.shape[0] == 1 else audio), out_rate
 
 
@@ -111,7 +113,7 @@ def _format_audio(audio):
     audio = np.asarray(audio)
     audio = np.ascontiguousarray(audio[:, None] if audio.ndim == 1 else audio)
     # We can use "fltp" container for all output formats, while the final result is determined by the codec.
-    # Using the fltp sample format can also help avoid some clipping distortion that occurs with integer formats. 
+    # Using the fltp sample format can also help avoid some clipping distortion that occurs with integer formats.
     return np.ascontiguousarray(audio.astype(np.float32).T)
 
 
@@ -161,7 +163,7 @@ def save_audio(path, audio, sr, output_format, audio_params):
     layout = "stereo" if audio_array.ndim > 1 and audio_array.shape[1] == 2 else "mono"
 
     if output_format == "mp3":
-        codec  = "libmp3lame"
+        codec = "libmp3lame"
     elif output_format == "m4a":
         codec = audio_params.get("m4a_codec", "aac")
     elif output_format == "flac":
@@ -171,6 +173,7 @@ def save_audio(path, audio, sr, output_format, audio_params):
         codec = "flac"
         if audio_params.get("flac_bit_depth", "PCM_24") == "PCM_24":
             import soundfile as sf
+
             return sf.write(path, audio_array, int(sr), format="FLAC", subtype="PCM_24")
     else:
         wav_codecs = {"PCM_16": "pcm_s16le", "PCM_24": "pcm_s24le", "FLOAT": "pcm_f32le"}

@@ -37,6 +37,7 @@ class ColorFormatter(logging.Formatter):
     Args:
         enable_color (Any, optional): Enable color value. Defaults to True.
     """
+
     COLORS = {
         "DBG": "\033[1;36m",
         "INF": "\033[1;32m",
@@ -104,8 +105,8 @@ class ColorFormatter(logging.Formatter):
 
 
 class FileFormatter(logging.Formatter):
-    """File log formatter that writes stable relative paths.
-    """
+    """File log formatter that writes stable relative paths."""
+
     LEVEL_MAP = ColorFormatter.LEVEL_MAP
 
     def __init__(self):
@@ -203,11 +204,7 @@ def manage_log_files(log_dir, max_log):
     Returns:
         None: This callable completes for its side effects."""
     try:
-        log_files = [
-            filename
-            for filename in os.listdir(log_dir)
-            if filename.endswith(".log") or filename.endswith(".log.gz")
-        ]
+        log_files = [filename for filename in os.listdir(log_dir) if filename.endswith(".log") or filename.endswith(".log.gz")]
     except OSError:
         return
 
@@ -218,11 +215,7 @@ def manage_log_files(log_dir, max_log):
             _compress_log_file(path)
 
     try:
-        log_files = [
-            filename
-            for filename in os.listdir(log_dir)
-            if filename.endswith(".log") or filename.endswith(".log.gz")
-        ]
+        log_files = [filename for filename in os.listdir(log_dir) if filename.endswith(".log") or filename.endswith(".log.gz")]
     except OSError:
         return
 

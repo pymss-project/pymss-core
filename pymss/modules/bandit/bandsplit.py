@@ -14,12 +14,12 @@ from .core.model.bsrnn.utils import (
 
 class NormFC(nn.Module):
     def __init__(
-            self,
-            emb_dim: int,
-            bandwidth: int,
-            in_channels: int,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
+        self,
+        emb_dim: int,
+        bandwidth: int,
+        in_channels: int,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
     ) -> None:
         super().__init__()
         self.treat_channel_as_feature = treat_channel_as_feature
@@ -48,12 +48,12 @@ class NormFC(nn.Module):
 
 class SequentialNormFC(nn.Module):
     def __init__(
-            self,
-            emb_dim: int,
-            bandwidth: int,
-            in_channels: int,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
+        self,
+        emb_dim: int,
+        bandwidth: int,
+        in_channels: int,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
     ) -> None:
         super().__init__()
         if not treat_channel_as_feature:
@@ -72,17 +72,17 @@ class SequentialNormFC(nn.Module):
 
 class BandSplitModuleBase(nn.Module):
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            in_channels: int,
-            norm_fc_cls: type[nn.Module],
-            complex_order: str,
-            flatten_input: bool,
-            require_no_overlap: bool = False,
-            require_no_gap: bool = True,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        in_channels: int,
+        norm_fc_cls: type[nn.Module],
+        complex_order: str,
+        flatten_input: bool,
+        require_no_overlap: bool = False,
+        require_no_gap: bool = True,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
     ) -> None:
         super().__init__()
         check_nonzero_bandwidth(band_specs)
@@ -97,22 +97,24 @@ class BandSplitModuleBase(nn.Module):
         self.emb_dim = emb_dim
         self.complex_order = complex_order
         self.flatten_input = flatten_input
-        self.norm_fc_modules = nn.ModuleList([
-            norm_fc_cls(
-                emb_dim=emb_dim,
-                bandwidth=bw,
-                in_channels=in_channels,
-                normalize_channel_independently=normalize_channel_independently,
-                treat_channel_as_feature=treat_channel_as_feature,
-            )
-            for bw in self.band_widths
-        ])
+        self.norm_fc_modules = nn.ModuleList(
+            [
+                norm_fc_cls(
+                    emb_dim=emb_dim,
+                    bandwidth=bw,
+                    in_channels=in_channels,
+                    normalize_channel_independently=normalize_channel_independently,
+                    treat_channel_as_feature=treat_channel_as_feature,
+                )
+                for bw in self.band_widths
+            ]
+        )
 
     def _band_view(self, x):
         xr = torch.view_as_real(x)
-        if self.complex_order == 'reim_freq':
+        if self.complex_order == "reim_freq":
             return xr.permute(0, 3, 1, 4, 2)
-        if self.complex_order == 'freq_reim':
+        if self.complex_order == "freq_reim":
             return xr.permute(0, 3, 1, 2, 4).contiguous()
         raise ValueError(f"unsupported complex_order: {self.complex_order}")
 
@@ -126,7 +128,7 @@ class BandSplitModuleBase(nn.Module):
 
         for i, nfm in enumerate(self.norm_fc_modules):
             fstart, fend = self.band_specs[i]
-            if self.complex_order == 'reim_freq':
+            if self.complex_order == "reim_freq":
                 xb = xr[..., fstart:fend].reshape(batch, n_time, in_channels, -1)
             else:
                 xb = xr[:, :, :, fstart:fend].reshape(batch, n_time, -1)
@@ -141,14 +143,14 @@ class _ConfiguredBandSplitModule(BandSplitModuleBase):
     flatten_input: bool
 
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            in_channels: int,
-            require_no_overlap: bool = False,
-            require_no_gap: bool = True,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        in_channels: int,
+        require_no_overlap: bool = False,
+        require_no_gap: bool = True,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
     ) -> None:
         super().__init__(
             band_specs=band_specs,

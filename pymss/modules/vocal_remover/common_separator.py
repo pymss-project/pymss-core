@@ -48,4 +48,6 @@ class CommonSeparator:
 
         self.logger.info(f"VR params: model_name={self.model_name}, model_path={self.model_path}")
         self.logger.info(f"VR params: primary_stem={self.primary_stem_name}, secondary_stem={self.secondary_stem_name}")
-        self.logger.debug(f"VR params: is_karaoke={self.is_karaoke}, is_bv_model={self.is_bv_model}, bv_model_rebalance={self.bv_model_rebalance}")
+        self.logger.debug(
+            f"VR params: is_karaoke={self.is_karaoke}, is_bv_model={self.is_bv_model}, bv_model_rebalance={self.bv_model_rebalance}"
+        )

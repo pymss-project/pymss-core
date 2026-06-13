@@ -19,49 +19,51 @@ from .config import AttrDict
 
 
 INFERENCE_PARAM_TARGETS = {
-    'batch_size': 'inference',
-    'overlap_size': 'inference',
-    'chunk_size': 'audio',
-    'standardize': 'inference', # legacy input standardization, will be mapped to inference.normalize
-    'normalize': 'inference', # output peak normalization, takes precedence over standardize if both are present
-    'mask_mode': 'inference',
-    'window_size': 'inference',
-    'aggression': 'inference',
-    'enable_tta': 'inference',
-    'enable_post_process': 'inference',
-    'post_process_threshold': 'inference',
-    'high_end_process': 'inference',
-    'use_amp': 'inference',
-    'cuda_attention_backend': 'inference',
-    'mps_attention_backend': 'inference',
-    'mps_mlx_min_tokens': 'inference',
-    'mps_model_backend': 'inference',
-    'mps_model_compute_dtype': 'inference',
-    'fuse_conv_bn': 'inference',
-    'use_channels_last': 'inference',
-    'shifts': 'inference',
-    'split': 'inference',
-    'overlap': 'inference',
-    'stem_batch_size': 'inference',
+    "batch_size": "inference",
+    "overlap_size": "inference",
+    "chunk_size": "audio",
+    "standardize": "inference",  # legacy input standardization, will be mapped to inference.normalize
+    "normalize": "inference",  # output peak normalization, takes precedence over standardize if both are present
+    "mask_mode": "inference",
+    "window_size": "inference",
+    "aggression": "inference",
+    "enable_tta": "inference",
+    "enable_post_process": "inference",
+    "post_process_threshold": "inference",
+    "high_end_process": "inference",
+    "use_amp": "inference",
+    "cuda_attention_backend": "inference",
+    "mps_attention_backend": "inference",
+    "mps_mlx_min_tokens": "inference",
+    "mps_model_backend": "inference",
+    "mps_model_compute_dtype": "inference",
+    "fuse_conv_bn": "inference",
+    "use_channels_last": "inference",
+    "shifts": "inference",
+    "split": "inference",
+    "overlap": "inference",
+    "stem_batch_size": "inference",
 }
-PASSTHROUGH_INFERENCE_PARAMS = frozenset({
-    'standardize',
-    'normalize',
-    'mask_mode',
-    'enable_tta',
-    'enable_post_process',
-    'high_end_process',
-    'use_amp',
-    'cuda_attention_backend',
-    'mps_attention_backend',
-    'mps_model_backend',
-    'mps_model_compute_dtype',
-    'fuse_conv_bn',
-    'use_channels_last',
-    'split',
-})
-FAST_INIT_MODEL_TYPES = {'bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer'}
-LEGACY_DEMUCS_MODEL_TYPES = {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}
+PASSTHROUGH_INFERENCE_PARAMS = frozenset(
+    {
+        "standardize",
+        "normalize",
+        "mask_mode",
+        "enable_tta",
+        "enable_post_process",
+        "high_end_process",
+        "use_amp",
+        "cuda_attention_backend",
+        "mps_attention_backend",
+        "mps_model_backend",
+        "mps_model_compute_dtype",
+        "fuse_conv_bn",
+        "use_channels_last",
+        "split",
+    }
+)
+FAST_INIT_MODEL_TYPES = {"bs_roformer", "bs_roformer_hyperace", "mel_band_roformer"}
+LEGACY_DEMUCS_MODEL_TYPES = {"demucs", "tasnet", "legacy_demucs", "legacy_tasnet"}
 OUTPUT_NORMALIZE_TARGET_DBFS = -0.01
 OUTPUT_NORMALIZE_PEAK = 10 ** (OUTPUT_NORMALIZE_TARGET_DBFS / 20)
 
@@ -100,10 +102,10 @@ def _select_device(device, device_ids, logger):
 
     Returns:
         Any: Computed result."""
-    if device not in ['cpu', 'cuda', 'mps']:
+    if device not in ["cpu", "cuda", "mps"]:
         if torch.cuda.is_available():
             logger.debug("CUDA is available in Torch, setting Torch device to CUDA")
-            return f'cuda:{device_ids[0]}'
+            return f"cuda:{device_ids[0]}"
         if torch.backends.mps.is_available():
             logger.debug("Apple Silicon MPS/CoreML is available in Torch, setting Torch device to MPS")
             return "mps"
@@ -141,7 +143,7 @@ def _unwrap_state_dict(state_dict):
 
     Returns:
         Any: Computed result."""
-    for key in ('state', 'state_dict', 'model_state_dict'):
+    for key in ("state", "state_dict", "model_state_dict"):
         if key in state_dict:
             return state_dict[key]
     return state_dict
@@ -176,17 +178,17 @@ def _load_state_dict(model_type, model_path, device):
 
     Returns:
         Any: Computed result."""
-    if model_type == 'vr':
+    if model_type == "vr":
         return None
     map_location = "cpu"
-    if model_type == 'htdemucs':
+    if model_type == "htdemucs":
         stubbed_modules = _install_demucs_pickle_stubs()
         try:
             state_dict = torch.load(model_path, map_location=map_location, weights_only=False)
         finally:
             _restore_modules(stubbed_modules)
         return _unwrap_state_dict(state_dict)
-    if model_type == 'apollo':
+    if model_type == "apollo":
         model_path = _apollo_state_dict_path(model_path)
         return _unwrap_state_dict(torch.load(model_path, map_location=map_location, weights_only=False))
     try:
@@ -228,7 +230,7 @@ def _skip_torch_default_init():
         torch.nn.LSTM,
         torch.nn.MultiheadAttention,
     )
-    saved = {cls: cls.reset_parameters for cls in classes if hasattr(cls, 'reset_parameters')}
+    saved = {cls: cls.reset_parameters for cls in classes if hasattr(cls, "reset_parameters")}
     try:
         for cls in saved:
             cls.reset_parameters = lambda self: None
@@ -249,21 +251,21 @@ def _install_demucs_pickle_stubs():
     import sys
     import types
 
-    module_names = ('demucs', 'demucs.demucs', 'demucs.hdemucs', 'demucs.htdemucs')
+    module_names = ("demucs", "demucs.demucs", "demucs.hdemucs", "demucs.htdemucs")
     previous = {name: sys.modules.get(name) for name in module_names}
-    package = sys.modules.setdefault('demucs', types.ModuleType('demucs'))
+    package = sys.modules.setdefault("demucs", types.ModuleType("demucs"))
     package.__path__ = []
     for module_name, class_names in {
-        'demucs': ('Demucs',),
-        'hdemucs': ('HDemucs', 'HTDemucs'),
-        'htdemucs': ('HTDemucs',),
+        "demucs": ("Demucs",),
+        "hdemucs": ("HDemucs", "HTDemucs"),
+        "htdemucs": ("HTDemucs",),
     }.items():
-        full_name = f'demucs.{module_name}'
+        full_name = f"demucs.{module_name}"
         module = sys.modules.setdefault(full_name, types.ModuleType(full_name))
         setattr(package, module_name, module)
         for class_name in class_names:
             if not hasattr(module, class_name):
-                setattr(module, class_name, type(class_name, (), {'__module__': full_name}))
+                setattr(module, class_name, type(class_name, (), {"__module__": full_name}))
     return previous
 
 
@@ -293,7 +295,7 @@ def _runtime_model_type(model_type, state_dict):
 
     Returns:
         Any: Computed result."""
-    return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
+    return "bs_roformer_hyperace" if model_type == "bs_roformer" and any(".segm." in key for key in state_dict) else model_type
 
 
 def _infer_mel_band_roformer_mlp_hidden_layers(state_dict):
@@ -304,7 +306,7 @@ def _infer_mel_band_roformer_mlp_hidden_layers(state_dict):
 
     Returns:
         Any: Computed result."""
-    pattern = re.compile(r'(?:^|\.)mask_estimators\.0\.to_freqs\.0\.0\.(\d+)\.weight$')
+    pattern = re.compile(r"(?:^|\.)mask_estimators\.0\.to_freqs\.0\.0\.(\d+)\.weight$")
     layer_indices = sorted({int(match.group(1)) for key in state_dict for match in [pattern.search(key)] if match})
     if not layer_indices:
         return None
@@ -320,10 +322,7 @@ def _store_torch_model_on_cpu_for_mlx(config, device):
 
     Returns:
         Any: Computed result."""
-    return (
-        torch.device(device).type == "mps"
-        and config.inference.get("mps_model_backend", "torch") == "mlx_full"
-    )
+    return torch.device(device).type == "mps" and config.inference.get("mps_model_backend", "torch") == "mlx_full"
 
 
 def _coerce_mps_float64(module):
@@ -352,9 +351,9 @@ def _model_is_stereo(model_type, config):
 
     Returns:
         Any: Computed result."""
-    if model_type == 'vr':
+    if model_type == "vr":
         return True
-    if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer', *LEGACY_DEMUCS_MODEL_TYPES]:
+    if model_type in ["bs_roformer", "bs_roformer_hyperace", "mel_band_roformer", *LEGACY_DEMUCS_MODEL_TYPES]:
         return config.model.get("stereo", True)
     return True
 
@@ -426,10 +425,7 @@ def _normalize_outputs(results, enabled, logger, target_peak=OUTPUT_NORMALIZE_PE
 
     gain = target_peak / peak
     logger.debug(f"Normalize output stems with peak: {peak}, target_peak: {target_peak}, gain: {gain}")
-    return {
-        stem: np.asarray(audio) * gain
-        for stem, audio in results.items()
-    }
+    return {stem: np.asarray(audio) * gain for stem, audio in results.items()}
 
 
 def _destandardize(estimates, stats):
@@ -456,7 +452,7 @@ def _tta_variants(mix, use_tta, logger):
         Any: Computed result."""
     if not use_tta:
         return [mix.copy()]
-    variants = [mix.copy(), mix[::-1].copy(), -1. * mix.copy()]
+    variants = [mix.copy(), mix[::-1].copy(), -1.0 * mix.copy()]
     logger.debug(f"User needs to apply TTA, total tracks: {len(variants)}")
     return variants
 
@@ -494,17 +490,16 @@ def _build_results(waveforms, instruments, mix_orig, config, standardize_stats, 
         Any: Built value."""
     target_instrument = config.training.target_instrument
     if target_instrument is None:
-        return {
-            instr: _destandardize(waveforms[instr].T, standardize_stats)
-            for instr in instruments
-        }
+        return {instr: _destandardize(waveforms[instr].T, standardize_stats) for instr in instruments}
 
     results = {}
     target_audio = _destandardize(waveforms[target_instrument].T, standardize_stats)
     if target_instrument in instruments:
         results[target_instrument] = target_audio
     other_instruments = [instr for instr in config.training.instruments if instr != target_instrument]
-    logger.debug(f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}")
+    logger.debug(
+        f"target_instrument is not null, extracting instrumental from {target_instrument}, other_instruments: {other_instruments}"
+    )
     if other_instruments:
         secondary = other_instruments[0]
         if secondary in instruments:
@@ -639,37 +634,37 @@ class MSSeparator:
         ...     },
         ...     inference_params={"standardize": True, "normalize": True},
         ... )"""
-    def __init__(
-            self,
-            model_type,
-            model_path,
-            config_path = None,
-            device = 'auto',
-            device_ids = [0],
-            output_format = 'wav',
-            use_tta = False,
-            store_dirs = 'results', # str for single folder, dict with instrument keys for multiple folders
-            audio_params = {
-                "wav_bit_depth": "FLOAT",
-                "flac_bit_depth": "PCM_24",
-                "mp3_bit_rate": "320k",
-                "m4a_bit_rate": "512k",
-                "m4a_codec": "aac",
-                "m4a_aac_at_quality": 2
-            },
-            logger = None,
-            debug = False,
-            progress_callback = None,
-            inference_params = {
-                "batch_size": None,
-                "overlap_size": None,
-                "chunk_size": None,
-                "standardize": None,
-                "normalize": False,
-                "mask_mode": None,
-            }
-    ):
 
+    def __init__(
+        self,
+        model_type,
+        model_path,
+        config_path=None,
+        device="auto",
+        device_ids=[0],
+        output_format="wav",
+        use_tta=False,
+        store_dirs="results",  # str for single folder, dict with instrument keys for multiple folders
+        audio_params={
+            "wav_bit_depth": "FLOAT",
+            "flac_bit_depth": "PCM_24",
+            "mp3_bit_rate": "320k",
+            "m4a_bit_rate": "512k",
+            "m4a_codec": "aac",
+            "m4a_aac_at_quality": 2,
+        },
+        logger=None,
+        debug=False,
+        progress_callback=None,
+        inference_params={
+            "batch_size": None,
+            "overlap_size": None,
+            "chunk_size": None,
+            "standardize": None,
+            "normalize": False,
+            "mask_mode": None,
+        },
+    ):
         """Initialize and load a separator from explicit model files.
 
         Args:
@@ -719,9 +714,9 @@ class MSSeparator:
             ...     inference_params={"chunk_size": 485100, "normalize": True},
             ... )"""
         if not model_type:
-            raise ValueError('model_type is required')
+            raise ValueError("model_type is required")
         if not model_path:
-            raise ValueError('model_path is required')
+            raise ValueError("model_path is required")
 
         logger = logger if logger is not None else get_separation_logger()
         device, inference_params = _resolve_public_device(device, inference_params, logger)
@@ -730,7 +725,7 @@ class MSSeparator:
 
         self.model_path = model_path
         self.config_path_given = config_path is not None
-        self.config_path = config_path if config_path else (model_path + '.yaml')
+        self.config_path = config_path if config_path else (model_path + ".yaml")
         self.output_format = output_format
         self.use_tta = use_tta
         self.store_dirs = store_dirs
@@ -754,7 +749,7 @@ class MSSeparator:
         self.inference_params = _prefer_mlx_for_auto(device, self.device, self.inference_params, self.logger)
 
         torch.backends.cudnn.benchmark = True
-        self.logger.info(f'Using device: {self.device}, device_ids: {self.device_ids}')
+        self.logger.info(f"Using device: {self.device}, device_ids: {self.device_ids}")
 
         self.model, self.config = self.load_model()
 
@@ -905,36 +900,38 @@ class MSSeparator:
             load the YAML config, apply ``inference_params``, configure optional
             attention/model backends, then load the state dict."""
         start_time = time()
-        if self.model_type == 'vr':
+        if self.model_type == "vr":
             from .modules.vocal_remover.vr_models import get_vr_model_metadata
             from .modules.vocal_remover import VRSeparator
 
             model_data = get_vr_model_metadata(self.model_path)
             instruments = [model_data["primary_stem"], model_data["secondary_stem"]]
-            config = AttrDict({
-                "training": {
-                    "instruments": instruments,
-                    "target_instrument": None,
-                    "use_amp": True,
-                },
-                "audio": {
-                    "sample_rate": 44100,
-                },
-                "inference": {
-                    "batch_size": 2,
-                    "window_size": 512,
-                    "aggression": 5,
-                    "enable_tta": self.use_tta,
-                    "enable_post_process": False,
-                    "post_process_threshold": 0.2,
-                    "high_end_process": False,
-                    "use_amp": True,
-                    "fuse_conv_bn": False,
-                    "use_channels_last": False,
-                    "standardize": False,
-                    "normalize": False,
-                },
-            })
+            config = AttrDict(
+                {
+                    "training": {
+                        "instruments": instruments,
+                        "target_instrument": None,
+                        "use_amp": True,
+                    },
+                    "audio": {
+                        "sample_rate": 44100,
+                    },
+                    "inference": {
+                        "batch_size": 2,
+                        "window_size": 512,
+                        "aggression": 5,
+                        "enable_tta": self.use_tta,
+                        "enable_post_process": False,
+                        "post_process_threshold": 0.2,
+                        "high_end_process": False,
+                        "use_amp": True,
+                        "fuse_conv_bn": False,
+                        "use_channels_last": False,
+                        "standardize": False,
+                        "normalize": False,
+                    },
+                }
+            )
             self.update_inference_params(config, self.inference_params)
             common_config = {
                 "logger": self.logger,
@@ -971,9 +968,9 @@ class MSSeparator:
         state_dict = _load_state_dict(self.model_type, self.model_path, self.device)
         model_type = _runtime_model_type(self.model_type, state_dict)
         model_kwargs_override = None
-        if model_type == 'mel_band_roformer':
+        if model_type == "mel_band_roformer":
             model_kwargs_override = {
-                'mlp_hidden_layers': _infer_mel_band_roformer_mlp_hidden_layers(state_dict),
+                "mlp_hidden_layers": _infer_mel_band_roformer_mlp_hidden_layers(state_dict),
             }
 
         init_context = _skip_torch_default_init() if model_type in FAST_INIT_MODEL_TYPES else nullcontext()
@@ -1015,16 +1012,30 @@ class MSSeparator:
         Returns:
             None: Model settings are written to the logger."""
         config_path_part = f", config_path: {config_path}" if include_config_path else ""
-        self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}{config_path_part}, output_folder: {self.store_dirs}")
+        self.logger.info(
+            f"Separator params: model_type: {model_type}, model_path: {self.model_path}{config_path_part}, output_folder: {self.store_dirs}"
+        )
         self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
-        self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-        self.logger.info(f"Model params: batch_size: {config.inference.get('batch_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}")
-        if model_type == 'vr':
-            self.logger.info(f"VR model params: window_size: {config.inference.get('window_size', None)}, aggression: {config.inference.get('aggression', None)}, enable_tta: {config.inference.get('enable_tta', None)}, enable_post_process: {config.inference.get('enable_post_process', None)}, post_process_threshold: {config.inference.get('post_process_threshold', None)}, high_end_process: {config.inference.get('high_end_process', None)}")
-            self.logger.debug(f"VR model params: use_amp: {config.inference.get('use_amp', None)}, fuse_conv_bn: {config.inference.get('fuse_conv_bn', None)}, use_channels_last: {config.inference.get('use_channels_last', None)}")
+        self.logger.info(
+            f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}"
+        )
+        self.logger.info(
+            f"Model params: batch_size: {config.inference.get('batch_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}"
+        )
+        if model_type == "vr":
+            self.logger.info(
+                f"VR model params: window_size: {config.inference.get('window_size', None)}, aggression: {config.inference.get('aggression', None)}, enable_tta: {config.inference.get('enable_tta', None)}, enable_post_process: {config.inference.get('enable_post_process', None)}, post_process_threshold: {config.inference.get('post_process_threshold', None)}, high_end_process: {config.inference.get('high_end_process', None)}"
+            )
+            self.logger.debug(
+                f"VR model params: use_amp: {config.inference.get('use_amp', None)}, fuse_conv_bn: {config.inference.get('fuse_conv_bn', None)}, use_channels_last: {config.inference.get('use_channels_last', None)}"
+            )
         else:
-            self.logger.info(f"MSS model params: chunk_size: {config.inference.get('chunk_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, stem_batch_size: {config.inference.get('stem_batch_size', None)}")
-            self.logger.debug(f"MSS model params: mask_mode: {config.inference.get('mask_mode', None)}, cuda_attention_backend: {config.inference.get('cuda_attention_backend', None)}, mps_attention_backend: {config.inference.get('mps_attention_backend', None)}, mps_mlx_min_tokens: {config.inference.get('mps_mlx_min_tokens', None)}, mps_model_backend: {config.inference.get('mps_model_backend', None)}, mps_model_compute_dtype: {config.inference.get('mps_model_compute_dtype', None)}")
+            self.logger.info(
+                f"MSS model params: chunk_size: {config.inference.get('chunk_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, stem_batch_size: {config.inference.get('stem_batch_size', None)}"
+            )
+            self.logger.debug(
+                f"MSS model params: mask_mode: {config.inference.get('mask_mode', None)}, cuda_attention_backend: {config.inference.get('cuda_attention_backend', None)}, mps_attention_backend: {config.inference.get('mps_attention_backend', None)}, mps_mlx_min_tokens: {config.inference.get('mps_mlx_min_tokens', None)}, mps_model_backend: {config.inference.get('mps_model_backend', None)}, mps_model_compute_dtype: {config.inference.get('mps_model_compute_dtype', None)}"
+            )
 
     def apply_model_inference_config(self, model, config):
         """Apply config-driven runtime options to a loaded model.
@@ -1039,24 +1050,24 @@ class MSSeparator:
 
         Returns:
             None: Supported options are applied directly to model modules."""
-        if hasattr(model, 'set_mask_mode'):
-            model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
-        cuda_attention_backend = config.inference.get('cuda_attention_backend', None)
+        if hasattr(model, "set_mask_mode"):
+            model.set_mask_mode(config.inference.get("mask_mode", "no_segm"))
+        cuda_attention_backend = config.inference.get("cuda_attention_backend", None)
         if cuda_attention_backend is not None:
             for module in model.modules():
-                if hasattr(module, 'set_cuda_attention_backend'):
+                if hasattr(module, "set_cuda_attention_backend"):
                     module.set_cuda_attention_backend(cuda_attention_backend)
-        model_backend = config.inference.get('mps_model_backend', None)
+        model_backend = config.inference.get("mps_model_backend", None)
         if model_backend is not None:
-            compute_dtype = config.inference.get('mps_model_compute_dtype', None)
+            compute_dtype = config.inference.get("mps_model_compute_dtype", None)
             for module in model.modules():
-                if hasattr(module, 'set_mps_model_backend'):
+                if hasattr(module, "set_mps_model_backend"):
                     module.set_mps_model_backend(model_backend, compute_dtype)
-        backend = config.inference.get('mps_attention_backend', None)
-        min_tokens = config.inference.get('mps_mlx_min_tokens', 128)
+        backend = config.inference.get("mps_attention_backend", None)
+        min_tokens = config.inference.get("mps_mlx_min_tokens", 128)
         if backend is not None:
             for module in model.modules():
-                if hasattr(module, 'set_mps_attention_backend'):
+                if hasattr(module, "set_mps_attention_backend"):
                     module.set_mps_attention_backend(backend, min_tokens)
 
     def update_inference_params(self, config, params):
@@ -1089,20 +1100,20 @@ class MSSeparator:
             ``standardize=True`` standardizes the input mix before inference and
             restores scale afterward. ``normalize=True`` peak-normalizes the
             selected output stems together after separation."""
-        if 'normalize' not in config.inference:
-            config.inference['normalize'] = False
-        standardize = params.get('standardize')
+        if "normalize" not in config.inference:
+            config.inference["normalize"] = False
+        standardize = params.get("standardize")
         if standardize is not None:
-            config.inference['normalize'] = standardize
+            config.inference["normalize"] = standardize
 
         for key, section in INFERENCE_PARAM_TARGETS.items():
-            if key in {'standardize', 'normalize'}:
+            if key in {"standardize", "normalize"}:
                 continue
             value = params.get(key)
             if value is None:
                 continue
             if key not in PASSTHROUGH_INFERENCE_PARAMS:
-                value = float(value) if key in {'post_process_threshold', 'overlap'} else int(value)
+                value = float(value) if key in {"post_process_threshold", "overlap"} else int(value)
             config[section][key] = value
         return config
 
@@ -1139,7 +1150,7 @@ class MSSeparator:
                 future.result()
             except Exception as e:
                 save_ok = False
-                self.logger.warning(f'Cannot save track: {path}, error: {str(e)}')
+                self.logger.warning(f"Cannot save track: {path}, error: {str(e)}")
         return save_ok
 
     @staticmethod
@@ -1185,11 +1196,7 @@ class MSSeparator:
         Returns:
             list[str] | None: Stem names to request from separation. ``None``
             means all stems should be separated."""
-        stems = [
-            instr
-            for instr in self.config.training.instruments
-            if _get_store_dir(self.store_dirs, instr)
-        ]
+        stems = [instr for instr in self.config.training.instruments if _get_store_dir(self.store_dirs, instr)]
         return stems or None
 
     def _stem_batches_to_save(self):
@@ -1207,11 +1214,11 @@ class MSSeparator:
         if stems is None:
             return [None]
         if self.output_normalize:
-            return [stems] # we need to normalize across all stems together
-        batch_size = int(self.config.inference.get('stem_batch_size', 0))
+            return [stems]  # we need to normalize across all stems together
+        batch_size = int(self.config.inference.get("stem_batch_size", 0))
         if batch_size <= 0 or len(stems) <= batch_size:
             return [stems]
-        return [stems[index:index + batch_size] for index in range(0, len(stems), batch_size)]
+        return [stems[index : index + batch_size] for index in range(0, len(stems), batch_size)]
 
     def _drain_save_queue(self, pending_saves, success_files, progress, max_pending_saves=0, record_success=True):
         """Drain completed save batches until the queue is small enough.
@@ -1295,9 +1302,11 @@ class MSSeparator:
             return []
 
         sample_rate = 44100
-        if 'sample_rate' in self.config.audio:
-            sample_rate = self.config.audio['sample_rate']
-        self.logger.info(f"{input_label}: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}")
+        if "sample_rate" in self.config.audio:
+            sample_rate = self.config.audio["sample_rate"]
+        self.logger.info(
+            f"{input_label}: {input_folder}, Total files found: {len(all_mixtures_path)}, Use sample rate: {sample_rate}"
+        )
 
         success_files, pending_saves = [], deque()
 
@@ -1312,12 +1321,12 @@ class MSSeparator:
                 for index, path in enumerate(all_mixtures_path):
                     mix = None
                     if progress is not None:
-                        progress.set_postfix({'track': os.path.basename(path)})
+                        progress.set_postfix({"track": os.path.basename(path)})
 
                     try:
                         mix, sr = load_future.result()
                     except Exception as e:
-                        self.logger.warning(f'Cannot process track: {path}, error: {str(e)}')
+                        self.logger.warning(f"Cannot process track: {path}, error: {str(e)}")
                         load_future = self._submit_load(load_executor, all_mixtures_path, index + 1, sample_rate)
                         continue
 
@@ -1331,13 +1340,13 @@ class MSSeparator:
                         for stems in self._stem_batches_to_save():
                             results = self.separate(mix, pbar=False, stems=stems)
                             track_saves.append((path, self._submit_save_outputs(save_executor, results, sr, file_name)))
-                            save_ok = self._drain_save_queue(
-                                track_saves, success_files, None, 1, record_success=False
-                            ) and save_ok
+                            save_ok = (
+                                self._drain_save_queue(track_saves, success_files, None, 1, record_success=False) and save_ok
+                            )
                             del results
                         save_ok = self._wait_pending_saves(track_saves) and save_ok
                     except Exception as e:
-                        self.logger.warning(f'Cannot separate track: {path}, error: {str(e)}')
+                        self.logger.warning(f"Cannot separate track: {path}, error: {str(e)}")
                         if mix is not None:
                             del mix
                         continue
@@ -1399,16 +1408,18 @@ class MSSeparator:
             builds stem results, and finally applies linked output peak
             normalization when ``self.output_normalize`` is true."""
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
-        if self.model_type == 'vr':
-            results = self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
+        if self.model_type == "vr":
+            results = self.model.separate_array(mix, self.config.audio.get("sample_rate", 44100))
             return _normalize_outputs(results, self.output_normalize, self.logger)
 
         instruments, source_indices = _resolve_instruments(self.config, stems)
         if self.config.training.target_instrument is not None:
-            self.logger.debug("Target instrument is not null, set primary_stem to target_instrument, secondary_stem will be calculated by mix - target_instrument")
+            self.logger.debug(
+                "Target instrument is not null, set primary_stem to target_instrument, secondary_stem will be calculated by mix - target_instrument"
+            )
 
         mix_orig = mix.copy()
-        mix, standardize_stats = _standardize_mix(mix, self.config.inference.get('normalize', False), self.logger)
+        mix, standardize_stats = _standardize_mix(mix, self.config.inference.get("normalize", False), self.logger)
         full_result = [
             demix(
                 self.config,

@@ -6,7 +6,7 @@ from pymss.modules.bandit.bandsplit import (
 
 class BandSplitModule(_ConfiguredBandSplitModule):
     norm_fc_cls = NormFC
-    complex_order = 'freq_reim'
+    complex_order = "freq_reim"
     flatten_input = True
 
 

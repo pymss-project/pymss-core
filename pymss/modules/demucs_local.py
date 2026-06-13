@@ -7,11 +7,11 @@ from torch import nn
 from torch.nn import functional as F
 
 
-def pad1d(x, paddings, mode='constant', value=0.):
+def pad1d(x, paddings, mode="constant", value=0.0):
     x0 = x
     length = x.shape[-1]
     left, right = paddings
-    if mode == 'reflect':
+    if mode == "reflect":
         max_pad = max(left, right)
         if length <= max_pad:
             extra = max_pad - length + 1
@@ -21,13 +21,13 @@ def pad1d(x, paddings, mode='constant', value=0.):
             x = F.pad(x, (extra_left, extra_right))
     out = F.pad(x, paddings, mode, value)
     assert out.shape[-1] == length + left + right
-    assert (out[..., left:left + length] == x0).all()
+    assert (out[..., left : left + length] == x0).all()
     return out
 
 
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
-    if x.device.type == 'mps':
+    if x.device.type == "mps":
         x = x.cpu()
     z = torch.stft(
         x.reshape(-1, length),
@@ -38,7 +38,7 @@ def spectro(x, n_fft=512, hop_length=None, pad=0):
         normalized=True,
         center=True,
         return_complex=True,
-        pad_mode='reflect',
+        pad_mode="reflect",
     )
     return z.view(*other, z.shape[-2], z.shape[-1])
 
@@ -47,7 +47,7 @@ def ispectro(z, hop_length=None, length=None, pad=0):
     *other, freqs, frames = z.shape
     n_fft = 2 * freqs - 2
     win_length = n_fft // (1 + pad)
-    if z.device.type == 'mps':
+    if z.device.type == "mps":
         z = z.cpu()
     x = torch.istft(
         z.reshape(-1, freqs, frames),
@@ -88,18 +88,20 @@ class DConv(nn.Module):
         hidden = int(channels / compress)
         norm_fn = (lambda d: nn.GroupNorm(1, d)) if norm else (lambda d: nn.Identity())
         act = nn.GELU if gelu else nn.ReLU
-        self.layers = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv1d(channels, hidden, kernel, dilation=2 ** d, padding=(2 ** d) * (kernel // 2)),
-                norm_fn(hidden),
-                act(),
-                nn.Conv1d(hidden, 2 * channels, 1),
-                norm_fn(2 * channels),
-                nn.GLU(1),
-                LayerScale(channels, init),
-            )
-            for d in range(abs(depth))
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Conv1d(channels, hidden, kernel, dilation=2**d, padding=(2**d) * (kernel // 2)),
+                    norm_fn(hidden),
+                    act(),
+                    nn.Conv1d(hidden, 2 * channels, 1),
+                    norm_fn(2 * channels),
+                    nn.GLU(1),
+                    LayerScale(channels, init),
+                )
+                for d in range(abs(depth))
+            ]
+        )
 
     def forward(self, x):
         for layer in self.layers:
@@ -108,7 +110,7 @@ class DConv(nn.Module):
 
 
 class ScaledEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, scale=10., smooth=False):
+    def __init__(self, num_embeddings, embedding_dim, scale=10.0, smooth=False):
         super().__init__()
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         if smooth:
@@ -127,9 +129,22 @@ class ScaledEmbedding(nn.Module):
 
 
 class HEncLayer(nn.Module):
-    def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False,
-                 freq=True, dconv=True, norm=True, context=0, dconv_kw=None, pad=True,
-                 rewrite=True):
+    def __init__(
+        self,
+        chin,
+        chout,
+        kernel_size=8,
+        stride=4,
+        norm_groups=1,
+        empty=False,
+        freq=True,
+        dconv=True,
+        norm=True,
+        context=0,
+        dconv_kw=None,
+        pad=True,
+        rewrite=True,
+    ):
         super().__init__()
         dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
@@ -171,9 +186,24 @@ class HEncLayer(nn.Module):
 
 
 class HDecLayer(nn.Module):
-    def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False,
-                 freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True,
-                 context_freq=True, rewrite=True):
+    def __init__(
+        self,
+        chin,
+        chout,
+        last=False,
+        kernel_size=8,
+        stride=4,
+        norm_groups=1,
+        empty=False,
+        freq=True,
+        dconv=True,
+        norm=True,
+        context=1,
+        dconv_kw=None,
+        pad=True,
+        context_freq=True,
+        rewrite=True,
+    ):
         super().__init__()
         dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
@@ -212,9 +242,9 @@ class HDecLayer(nn.Module):
                     y = self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
-            z = z[..., self.pad:-self.pad, :]
+            z = z[..., self.pad : -self.pad, :]
         elif not self.freq:
-            z = z[..., self.pad:self.pad + length]
+            z = z[..., self.pad : self.pad + length]
             assert z.shape[-1] == length
         return (z if self.last else F.gelu(z)), y
 
@@ -222,6 +252,7 @@ class HDecLayer(nn.Module):
 class MultiWrap(nn.Module):
     def __init__(self, layer, split_ratios):
         from copy import deepcopy
+
         super().__init__()
         self.split_ratios = split_ratios
         self.conv = isinstance(layer, HEncLayer)
@@ -233,7 +264,7 @@ class MultiWrap(nn.Module):
             else:
                 lay.pad = False
             for m in lay.modules():
-                if hasattr(m, 'reset_parameters'):
+                if hasattr(m, "reset_parameters"):
                     m.reset_parameters()
             return lay
 
@@ -265,12 +296,12 @@ class MultiWrap(nn.Module):
                 layer.last = True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], None)
                 if outs:
-                    outs[-1][:, :, -layer.stride:] += out[:, :, :layer.stride] - layer.conv_tr.bias.view(1, -1, 1, 1)
-                    out = out[:, :, layer.stride:]
+                    outs[-1][:, :, -layer.stride :] += out[:, :, : layer.stride] - layer.conv_tr.bias.view(1, -1, 1, 1)
+                    out = out[:, :, layer.stride :]
                 if ratio == 1:
-                    out = out[:, :, :-layer.stride // 2, :]
+                    out = out[:, :, : -layer.stride // 2, :]
                 if start == 0:
-                    out = out[:, :, layer.stride // 2:, :]
+                    out = out[:, :, layer.stride // 2 :, :]
                 outs.append(out)
                 layer.last = last
                 start = limit
@@ -278,14 +309,14 @@ class MultiWrap(nn.Module):
         return out if self.conv else (out if last else F.gelu(out), None)
 
 
-def create_sin_embedding(length, dim, shift=0, device='cpu', max_period=10000):
+def create_sin_embedding(length, dim, shift=0, device="cpu", max_period=10000):
     pos = shift + torch.arange(length, device=device).view(-1, 1, 1)
     half = dim // 2
     phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
 
-def create_2d_sin_embedding(d_model, height, width, device='cpu', max_period=10000):
+def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=10000):
     pe = torch.zeros(d_model, height, width)
     half = d_model // 2
     div = torch.exp(torch.arange(0.0, half, 2) * -(math.log(max_period) / half))
@@ -293,18 +324,31 @@ def create_2d_sin_embedding(d_model, height, width, device='cpu', max_period=100
     pe[0:half:2] = torch.sin(pos_w * div).t().unsqueeze(1).repeat(1, height, 1)
     pe[1:half:2] = torch.cos(pos_w * div).t().unsqueeze(1).repeat(1, height, 1)
     pe[half::2] = torch.sin(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
-    pe[half + 1::2] = torch.cos(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
+    pe[half + 1 :: 2] = torch.cos(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
     return pe[None].to(device)
 
 
-def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, max_global_shift=0.,
-                              max_local_shift=0., max_scale=1., device='cpu', max_period=10000.):
+def create_sin_embedding_cape(
+    length,
+    dim,
+    batch_size,
+    mean_normalize,
+    augment,
+    max_global_shift=0.0,
+    max_local_shift=0.0,
+    max_scale=1.0,
+    device="cpu",
+    max_period=10000.0,
+):
     pos = torch.arange(length).view(-1, 1, 1).float().repeat(1, batch_size, 1)
     if mean_normalize:
         pos -= torch.nanmean(pos, dim=0, keepdim=True)
     if augment:
-        pos = (pos + np.random.uniform(-max_global_shift, max_global_shift, (1, batch_size, 1))
-               + np.random.uniform(-max_local_shift, max_local_shift, (length, batch_size, 1)))
+        pos = (
+            pos
+            + np.random.uniform(-max_global_shift, max_global_shift, (1, batch_size, 1))
+            + np.random.uniform(-max_local_shift, max_local_shift, (length, batch_size, 1))
+        )
         pos = pos * np.exp(np.random.uniform(-np.log(max_scale), np.log(max_scale), (1, batch_size, 1)))
     pos = pos.to(device)
     half = dim // 2
@@ -318,15 +362,36 @@ class MyGroupNorm(nn.GroupNorm):
 
 
 class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu,
-                 group_norm=0, norm_first=False, norm_out=False, layer_norm_eps=1e-5,
-                 layer_scale=False, init_values=1e-4, batch_first=False, sparse=False, **kwargs):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=F.relu,
+        group_norm=0,
+        norm_first=False,
+        norm_out=False,
+        layer_norm_eps=1e-5,
+        layer_scale=False,
+        init_values=1e-4,
+        batch_first=False,
+        sparse=False,
+        **kwargs,
+    ):
         if sparse:
-            raise NotImplementedError('Sparse Demucs transformer is not supported')
+            raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__(
-            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout,
-            activation=activation, layer_norm_eps=layer_norm_eps, batch_first=batch_first,
-            norm_first=norm_first, device=kwargs.get('device'), dtype=kwargs.get('dtype'),
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            activation=activation,
+            layer_norm_eps=layer_norm_eps,
+            batch_first=batch_first,
+            norm_first=norm_first,
+            device=kwargs.get("device"),
+            dtype=kwargs.get("dtype"),
         )
         if group_norm:
             self.norm1 = MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)
@@ -346,18 +411,34 @@ class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
 
 
 class CrossTransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu,
-                 layer_norm_eps=1e-5, layer_scale=False, init_values=1e-4, norm_first=False,
-                 group_norm=False, norm_out=False, sparse=False, batch_first=False, **_):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=F.relu,
+        layer_norm_eps=1e-5,
+        layer_scale=False,
+        init_values=1e-4,
+        norm_first=False,
+        group_norm=False,
+        norm_out=False,
+        sparse=False,
+        batch_first=False,
+        **_,
+    ):
         if sparse:
-            raise NotImplementedError('Sparse Demucs transformer is not supported')
+            raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__()
         self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
         self.linear1 = nn.Linear(d_model, dim_feedforward)
         self.dropout = nn.Dropout(dropout)
         self.linear2 = nn.Linear(dim_feedforward, d_model)
-        norm = (lambda: MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)) if group_norm else (
-            lambda: nn.LayerNorm(d_model, eps=layer_norm_eps)
+        norm = (
+            (lambda: MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps))
+            if group_norm
+            else (lambda: nn.LayerNorm(d_model, eps=layer_norm_eps))
         )
         self.norm_first = norm_first
         self.norm1, self.norm2, self.norm3 = norm(), norm(), norm()
@@ -394,13 +475,40 @@ class PositionEmbedding(nn.Module):
 
 
 class CrossTransformerEncoder(nn.Module):
-    def __init__(self, dim, emb='sin', hidden_scale=4.0, num_heads=8, num_layers=6, cross_first=False,
-                 dropout=0.0, max_positions=1000, norm_in=True, norm_in_group=False, group_norm=False,
-                 norm_first=False, norm_out=False, max_period=10000.0, weight_decay=0.0, lr=None,
-                 layer_scale=False, gelu=True, sin_random_shift=0, weight_pos_embed=1.0,
-                 cape_mean_normalize=True, cape_augment=True, cape_glob_loc_scale=None,
-                 sparse_self_attn=False, sparse_cross_attn=False, mask_type='diag', mask_random_seed=42,
-                 sparse_attn_window=500, global_window=50, auto_sparsity=False, sparsity=0.95):
+    def __init__(
+        self,
+        dim,
+        emb="sin",
+        hidden_scale=4.0,
+        num_heads=8,
+        num_layers=6,
+        cross_first=False,
+        dropout=0.0,
+        max_positions=1000,
+        norm_in=True,
+        norm_in_group=False,
+        group_norm=False,
+        norm_first=False,
+        norm_out=False,
+        max_period=10000.0,
+        weight_decay=0.0,
+        lr=None,
+        layer_scale=False,
+        gelu=True,
+        sin_random_shift=0,
+        weight_pos_embed=1.0,
+        cape_mean_normalize=True,
+        cape_augment=True,
+        cape_glob_loc_scale=None,
+        sparse_self_attn=False,
+        sparse_cross_attn=False,
+        mask_type="diag",
+        mask_random_seed=42,
+        sparse_attn_window=500,
+        global_window=50,
+        auto_sparsity=False,
+        sparsity=0.95,
+    ):
         super().__init__()
         self.num_layers = num_layers
         self.classic_parity = 1 if cross_first else 0
@@ -408,7 +516,7 @@ class CrossTransformerEncoder(nn.Module):
         self.weight_pos_embed, self.sin_random_shift = weight_pos_embed, sin_random_shift
         self.cape_mean_normalize, self.cape_augment = cape_mean_normalize, cape_augment
         self.cape_glob_loc_scale = cape_glob_loc_scale or [5000.0, 1.0, 1.4]
-        if emb == 'scaled':
+        if emb == "scaled":
             self.position_embeddings = PositionEmbedding(max_positions, dim, scale=0.2)
         if norm_in:
             self.norm_in = nn.LayerNorm(dim)
@@ -420,11 +528,21 @@ class CrossTransformerEncoder(nn.Module):
             self.norm_in = nn.Identity()
             self.norm_in_t = nn.Identity()
         common = dict(
-            d_model=dim, nhead=num_heads, dim_feedforward=int(dim * hidden_scale), dropout=dropout,
-            activation=F.gelu if gelu else F.relu, group_norm=group_norm, norm_first=norm_first,
-            norm_out=norm_out, layer_scale=layer_scale, mask_type=mask_type,
-            mask_random_seed=mask_random_seed, sparse_attn_window=sparse_attn_window,
-            global_window=global_window, sparsity=sparsity, auto_sparsity=auto_sparsity,
+            d_model=dim,
+            nhead=num_heads,
+            dim_feedforward=int(dim * hidden_scale),
+            dropout=dropout,
+            activation=F.gelu if gelu else F.relu,
+            group_norm=group_norm,
+            norm_first=norm_first,
+            norm_out=norm_out,
+            layer_scale=layer_scale,
+            mask_type=mask_type,
+            mask_random_seed=mask_random_seed,
+            sparse_attn_window=sparse_attn_window,
+            global_window=global_window,
+            sparsity=sparsity,
+            auto_sparsity=auto_sparsity,
             batch_first=True,
         )
         self.layers, self.layers_t = nn.ModuleList(), nn.ModuleList()
@@ -435,17 +553,25 @@ class CrossTransformerEncoder(nn.Module):
             self.layers_t.append(klass(**common, sparse=sparse))
 
     def _get_pos_embedding(self, t, b, c, device):
-        if self.emb == 'sin':
+        if self.emb == "sin":
             return create_sin_embedding(t, c, random.randrange(self.sin_random_shift + 1), device, self.max_period)
-        if self.emb == 'cape':
+        if self.emb == "cape":
             scale = self.cape_glob_loc_scale
             return create_sin_embedding_cape(
-                t, c, b, self.cape_mean_normalize, self.training and self.cape_augment,
-                scale[0], scale[1], scale[2], device, self.max_period,
+                t,
+                c,
+                b,
+                self.cape_mean_normalize,
+                self.training and self.cape_augment,
+                scale[0],
+                scale[1],
+                scale[2],
+                device,
+                self.max_period,
             )
-        if self.emb == 'scaled':
+        if self.emb == "scaled":
             return self.position_embeddings(torch.arange(t, device=device))[:, None]
-        raise ValueError(f'unsupported Demucs positional embedding: {self.emb}')
+        raise ValueError(f"unsupported Demucs positional embedding: {self.emb}")
 
     def forward(self, x, xt):
         b, c, fr, t1 = x.shape
@@ -465,7 +591,7 @@ class CrossTransformerEncoder(nn.Module):
         return x.reshape(b, t1, fr, c).permute(0, 3, 2, 1), xt.permute(0, 2, 1)
 
     def make_optim_group(self):
-        group = {'params': list(self.parameters()), 'weight_decay': self.weight_decay}
+        group = {"params": list(self.parameters()), "weight_decay": self.weight_decay}
         if self.lr is not None:
-            group['lr'] = self.lr
+            group["lr"] = self.lr
         return group

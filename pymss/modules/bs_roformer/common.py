@@ -8,7 +8,24 @@ from .bands import BandSplit, MaskEstimator
 from .transformer import RMSNorm, Transformer
 
 
-__all__ = ('DEFAULT_FREQS_PER_BANDS', 'MaskEstimator', 'RMSNorm', 'RoformerRuntimeMixin', 'forward_bandsplit_roformer', 'forward_roformer_mask_core', 'forward_spectral_roformer', 'ignore_roformer_training_kwargs', 'init_roformer_band_modules', 'init_roformer_layers', 'init_roformer_runtime', 'init_roformer_shared_bias', 'init_roformer_stft', 'roformer_stft_freq_bins', 'roformer_transformer_kwargs', 'roformer_freqs_per_bands_with_complex')
+__all__ = (
+    "DEFAULT_FREQS_PER_BANDS",
+    "MaskEstimator",
+    "RMSNorm",
+    "RoformerRuntimeMixin",
+    "forward_bandsplit_roformer",
+    "forward_roformer_mask_core",
+    "forward_spectral_roformer",
+    "ignore_roformer_training_kwargs",
+    "init_roformer_band_modules",
+    "init_roformer_layers",
+    "init_roformer_runtime",
+    "init_roformer_shared_bias",
+    "init_roformer_stft",
+    "roformer_stft_freq_bins",
+    "roformer_transformer_kwargs",
+    "roformer_freqs_per_bands_with_complex",
+)
 
 
 DEFAULT_FREQS_PER_BANDS = (2,) * 24 + (4,) * 12 + (12,) * 8 + (24,) * 8 + (48,) * 8 + (128, 129)
@@ -26,7 +43,7 @@ class SpectralContext(NamedTuple):
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, theta=10000):
         super().__init__()
-        freqs = 1. / (theta ** (torch.arange(0, dim, 2).float() / dim))
+        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
         self.freqs = nn.Parameter(freqs, requires_grad=False)
         self.cache = {}
 
@@ -52,8 +69,18 @@ def mask_to_complex_shape(mask, complex_dim=2):
     return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
 
 
-TRAINING_LOSS_KWARGS = frozenset({'multi_stft_resolution_loss_weight', 'multi_stft_resolutions_window_sizes', 'multi_stft_hop_size', 'multi_stft_normalized', 'multi_stft_window_fn'})
-REMOVED_ROFORMER_KWARGS = frozenset({'linear_transformer_depth', 'use_torch_checkpoint', 'skip_connection', 'attention_layout', 'dim_freqs_in'})
+TRAINING_LOSS_KWARGS = frozenset(
+    {
+        "multi_stft_resolution_loss_weight",
+        "multi_stft_resolutions_window_sizes",
+        "multi_stft_hop_size",
+        "multi_stft_normalized",
+        "multi_stft_window_fn",
+    }
+)
+REMOVED_ROFORMER_KWARGS = frozenset(
+    {"linear_transformer_depth", "use_torch_checkpoint", "skip_connection", "attention_layout", "dim_freqs_in"}
+)
 
 
 def ignore_roformer_training_kwargs(kwargs):
@@ -79,16 +106,16 @@ def init_roformer_shared_bias(module, dim, heads, dim_head, use_shared_bias):
 
 
 def roformer_transformer_kwargs(
-        *,
-        dim,
-        heads,
-        dim_head,
-        attn_dropout,
-        ff_dropout,
-        flash_attn,
-        norm_output=None,
-        shared_qkv_bias=None,
-        shared_out_bias=None,
+    *,
+    dim,
+    heads,
+    dim_head,
+    attn_dropout,
+    ff_dropout,
+    flash_attn,
+    norm_output=None,
+    shared_qkv_bias=None,
+    shared_out_bias=None,
 ):
     kwargs = dict(
         dim=dim,
@@ -98,38 +125,42 @@ def roformer_transformer_kwargs(
         ff_dropout=ff_dropout,
         flash_attn=flash_attn,
     )
-    kwargs.update({k: v for k, v in (
-        ('norm_output', norm_output), ('shared_qkv_bias', shared_qkv_bias), ('shared_out_bias', shared_out_bias)
-    ) if v is not None})
+    kwargs.update(
+        {
+            k: v
+            for k, v in (
+                ("norm_output", norm_output),
+                ("shared_qkv_bias", shared_qkv_bias),
+                ("shared_out_bias", shared_out_bias),
+            )
+            if v is not None
+        }
+    )
     return kwargs
 
 
 def init_roformer_layers(
-        module,
-        *,
-        depth,
-        time_transformer_depth,
-        freq_transformer_depth,
-        dim_head,
-        transformer_kwargs,
+    module,
+    *,
+    depth,
+    time_transformer_depth,
+    freq_transformer_depth,
+    dim_head,
+    transformer_kwargs,
 ):
     time_rotary_embed = RotaryEmbedding(dim=dim_head)
     freq_rotary_embed = RotaryEmbedding(dim=dim_head)
-    module.layers = nn.ModuleList([
-        nn.ModuleList([
-            Transformer(
-                depth=time_transformer_depth,
-                rotary_embed=time_rotary_embed,
-                **transformer_kwargs
-            ),
-            Transformer(
-                depth=freq_transformer_depth,
-                rotary_embed=freq_rotary_embed,
-                **transformer_kwargs
-            ),
-        ])
-        for _ in range(depth)
-    ])
+    module.layers = nn.ModuleList(
+        [
+            nn.ModuleList(
+                [
+                    Transformer(depth=time_transformer_depth, rotary_embed=time_rotary_embed, **transformer_kwargs),
+                    Transformer(depth=freq_transformer_depth, rotary_embed=freq_rotary_embed, **transformer_kwargs),
+                ]
+            )
+            for _ in range(depth)
+        ]
+    )
 
 
 def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
@@ -149,32 +180,36 @@ def roformer_stft_freq_bins(module, window_length):
 
 def roformer_freqs_per_bands_with_complex(module, freqs_per_bands, freqs):
     assert len(freqs_per_bands) > 1
-    assert sum(freqs_per_bands) == freqs, f'the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}'
+    assert sum(freqs_per_bands) == freqs, (
+        f"the number of freqs in the bands must equal {freqs} based on the STFT settings, but got {sum(freqs_per_bands)}"
+    )
     return tuple(2 * f * module.audio_channels for f in freqs_per_bands)
 
 
 def init_roformer_band_modules(
-        module,
-        *,
-        dim,
-        freqs_per_bands_with_complex,
-        num_stems,
-        mask_estimator_cls,
-        mask_estimator_depth,
-        mlp_expansion_factor,
-        mask_estimator_kwargs=None,
+    module,
+    *,
+    dim,
+    freqs_per_bands_with_complex,
+    num_stems,
+    mask_estimator_cls,
+    mask_estimator_depth,
+    mlp_expansion_factor,
+    mask_estimator_kwargs=None,
 ):
     module.band_split = BandSplit(dim=dim, dim_inputs=freqs_per_bands_with_complex)
-    module.mask_estimators = nn.ModuleList([
-        mask_estimator_cls(
-            dim=dim,
-            dim_inputs=freqs_per_bands_with_complex,
-            depth=mask_estimator_depth,
-            mlp_expansion_factor=mlp_expansion_factor,
-            **(mask_estimator_kwargs or {}),
-        )
-        for _ in range(num_stems)
-    ])
+    module.mask_estimators = nn.ModuleList(
+        [
+            mask_estimator_cls(
+                dim=dim,
+                dim_inputs=freqs_per_bands_with_complex,
+                depth=mask_estimator_depth,
+                mlp_expansion_factor=mlp_expansion_factor,
+                **(mask_estimator_kwargs or {}),
+            )
+            for _ in range(num_stems)
+        ]
+    )
 
 
 class RoformerRuntimeMixin:
@@ -199,11 +234,7 @@ class RoformerRuntimeMixin:
             self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, raw_audio):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and raw_audio.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and raw_audio.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from .mlx_roformer import mlx_forward_roformer_mx
@@ -286,11 +317,9 @@ def stft_roformer(module, raw_audio):
         raw_audio = raw_audio.unsqueeze(1)
 
     batch, audio_channels, audio_length = raw_audio.shape
-    assert (
-        not module.stereo and audio_channels == 1
-    ) or (
-        module.stereo and audio_channels == 2
-    ), 'stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)'
+    assert (not module.stereo and audio_channels == 1) or (module.stereo and audio_channels == 2), (
+        "stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). also need to be False if mono (channel dimension of 1)"
+    )
 
     stft_audio = raw_audio.reshape(batch * audio_channels, audio_length)
     stft_window = module.stft_window(device)
@@ -302,7 +331,7 @@ def stft_roformer(module, raw_audio):
             stft_audio.cpu() if x_is_mps else stft_audio,
             **module.stft_kwargs,
             window=stft_window.cpu() if x_is_mps else stft_window,
-            return_complex=True
+            return_complex=True,
         ).to(device)
 
     stft_repr = torch.view_as_real(stft_repr).reshape(batch, audio_channels, -1, stft_repr.shape[-1], 2)
@@ -320,17 +349,15 @@ def stft_roformer(module, raw_audio):
 
 def istft_roformer(module, stft_repr, context, length):
     b, n, _, t = stft_repr.shape
-    stft_repr = stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(
-        0, 1, 3, 2, 4
-    ).reshape(b * n * context.channels, context.freq_bins, t)
+    stft_repr = (
+        stft_repr.reshape(b, n, context.freq_bins, context.channels, t)
+        .permute(0, 1, 3, 2, 4)
+        .reshape(b * n * context.channels, context.freq_bins, t)
+    )
 
     try:
         recon_audio = torch.istft(
-            stft_repr,
-            **module.stft_kwargs,
-            window=context.stft_window,
-            return_complex=False,
-            length=length
+            stft_repr, **module.stft_kwargs, window=context.stft_window, return_complex=False, length=length
         )
     except RuntimeError:
         recon_audio = torch.istft(
@@ -338,7 +365,7 @@ def istft_roformer(module, stft_repr, context, length):
             **module.stft_kwargs,
             window=context.stft_window.cpu() if context.x_is_mps else context.stft_window,
             return_complex=False,
-            length=length
+            length=length,
         ).to(context.stft_window.device)
 
     recon_audio = recon_audio.reshape(context.batch, n, context.channels, recon_audio.shape[-1])
@@ -347,7 +374,9 @@ def istft_roformer(module, stft_repr, context, length):
 
 def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True):
     stft_repr, context = stft_roformer(module, raw_audio)
-    return istft_roformer(module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None)
+    return istft_roformer(
+        module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None
+    )
 
 
 def forward_bandsplit_roformer(module, raw_audio):

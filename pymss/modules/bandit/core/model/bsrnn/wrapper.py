@@ -65,21 +65,21 @@ class MultiMaskMultiSourceBandSplitBaseSimple(_SpectralComponent):
     mps_model_compute_dtype = torch.float16
 
     def __init__(
-            self,
-            stems: List[str],
-            band_specs: Union[str, List[Tuple[float, float]]],
-            fs: int = 44100,
-            n_fft: int = 2048,
-            win_length: Optional[int] = 2048,
-            hop_length: int = 512,
-            window_fn: str = "hann_window",
-            wkwargs: Optional[Dict] = None,
-            power: Optional[int] = None,
-            center: bool = True,
-            normalized: bool = True,
-            pad_mode: str = "constant",
-            onesided: bool = True,
-            n_bands: int = None,
+        self,
+        stems: List[str],
+        band_specs: Union[str, List[Tuple[float, float]]],
+        fs: int = 44100,
+        n_fft: int = 2048,
+        win_length: Optional[int] = 2048,
+        hop_length: int = 512,
+        window_fn: str = "hann_window",
+        wkwargs: Optional[Dict] = None,
+        power: Optional[int] = None,
+        center: bool = True,
+        normalized: bool = True,
+        pad_mode: str = "constant",
+        onesided: bool = True,
+        n_bands: int = None,
     ) -> None:
         super().__init__(
             n_fft=n_fft,
@@ -120,11 +120,7 @@ class MultiMaskMultiSourceBandSplitBaseSimple(_SpectralComponent):
         self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, batch):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and batch.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and batch.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from .....bandit_mlx import mlx_forward_bandit_mx
@@ -151,40 +147,40 @@ class MultiMaskMultiSourceBandSplitBaseSimple(_SpectralComponent):
 
 class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSimple):
     def __init__(
-            self,
-            in_channel: int,
-            stems: List[str],
-            band_specs: Union[str, List[Tuple[float, float]]],
-            fs: int = 44100,
-            require_no_overlap: bool = False,
-            require_no_gap: bool = True,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
-            n_sqm_modules: int = 12,
-            emb_dim: int = 128,
-            rnn_dim: int = 256,
-            cond_dim: int = 0,
-            bidirectional: bool = True,
-            rnn_type: str = "LSTM",
-            mlp_dim: int = 512,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Optional[Dict] = None,
-            complex_mask: bool = True,
-            n_fft: int = 2048,
-            win_length: Optional[int] = 2048,
-            hop_length: int = 512,
-            window_fn: str = "hann_window",
-            wkwargs: Optional[Dict] = None,
-            power: Optional[int] = None,
-            center: bool = True,
-            normalized: bool = True,
-            pad_mode: str = "constant",
-            onesided: bool = True,
-            n_bands: int = None,
-            use_freq_weights: bool = True,
-            normalize_input: bool = False,
-            mult_add_mask: bool = False,
-            freeze_encoder: bool = False,
+        self,
+        in_channel: int,
+        stems: List[str],
+        band_specs: Union[str, List[Tuple[float, float]]],
+        fs: int = 44100,
+        require_no_overlap: bool = False,
+        require_no_gap: bool = True,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
+        n_sqm_modules: int = 12,
+        emb_dim: int = 128,
+        rnn_dim: int = 256,
+        cond_dim: int = 0,
+        bidirectional: bool = True,
+        rnn_type: str = "LSTM",
+        mlp_dim: int = 512,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Optional[Dict] = None,
+        complex_mask: bool = True,
+        n_fft: int = 2048,
+        win_length: Optional[int] = 2048,
+        hop_length: int = 512,
+        window_fn: str = "hann_window",
+        wkwargs: Optional[Dict] = None,
+        power: Optional[int] = None,
+        center: bool = True,
+        normalized: bool = True,
+        pad_mode: str = "constant",
+        onesided: bool = True,
+        n_bands: int = None,
+        use_freq_weights: bool = True,
+        normalize_input: bool = False,
+        mult_add_mask: bool = False,
+        freeze_encoder: bool = False,
     ) -> None:
         super().__init__(
             stems=stems,

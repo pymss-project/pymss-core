@@ -5,12 +5,12 @@ from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
 
 
 def get_norm(norm_type):
-    if norm_type == 'BatchNorm':
+    if norm_type == "BatchNorm":
         return nn.BatchNorm2d
-    if norm_type == 'InstanceNorm':
+    if norm_type == "InstanceNorm":
         return lambda c: nn.InstanceNorm2d(c, affine=True)
-    if 'GroupNorm' in norm_type:
-        groups = int(norm_type.replace('GroupNorm', ''))
+    if "GroupNorm" in norm_type:
+        groups = int(norm_type.replace("GroupNorm", ""))
         return lambda c: nn.GroupNorm(num_groups=groups, num_channels=c)
     return lambda c: nn.Identity()
 
@@ -28,7 +28,7 @@ class Upscale(nn.Module):
         self.conv = nn.Sequential(
             norm(in_c),
             act,
-            nn.ConvTranspose2d(in_channels=in_c, out_channels=out_c, kernel_size=scale, stride=scale, bias=False)
+            nn.ConvTranspose2d(in_channels=in_c, out_channels=out_c, kernel_size=scale, stride=scale, bias=False),
         )
 
     def forward(self, x):
@@ -39,9 +39,7 @@ class Downscale(nn.Module):
     def __init__(self, in_c, out_c, scale, norm, act):
         super().__init__()
         self.conv = nn.Sequential(
-            norm(in_c),
-            act,
-            nn.Conv2d(in_channels=in_c, out_channels=out_c, kernel_size=scale, stride=scale, bias=False)
+            norm(in_c), act, nn.Conv2d(in_channels=in_c, out_channels=out_c, kernel_size=scale, stride=scale, bias=False)
         )
 
     def forward(self, x):
@@ -51,11 +49,14 @@ class Downscale(nn.Module):
 class TFC_TDF(nn.Module):
     def __init__(self, in_c, c, l, f, bn, norm, act):
         super().__init__()
+
         def block():
             nonlocal in_c
             out = _block(
                 tfc1=nn.Sequential(norm(in_c), act, nn.Conv2d(in_c, c, 3, 1, 1, bias=False)),
-                tdf=nn.Sequential(norm(c), act, nn.Linear(f, f // bn, bias=False), norm(c), act, nn.Linear(f // bn, f, bias=False)),
+                tdf=nn.Sequential(
+                    norm(c), act, nn.Linear(f, f // bn, bias=False), norm(c), act, nn.Linear(f // bn, f, bias=False)
+                ),
                 tfc2=nn.Sequential(norm(c), act, nn.Conv2d(c, c, 3, 1, 1, bias=False)),
                 shortcut=nn.Conv2d(in_c, c, 1, 1, 0, bias=False),
             )
@@ -114,7 +115,11 @@ class TFC_TDF_net(nn.Module):
 
         self.decoder_blocks = nn.ModuleList([decoder_block() for _ in range(n)])
 
-        self.final_conv = nn.Sequential(nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False), act, nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False))
+        self.final_conv = nn.Sequential(
+            nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False),
+            act,
+            nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False),
+        )
         self.stft = SubbandSTFT(config.audio)
 
     def set_mps_model_backend(self, backend=None, compute_dtype=None):
@@ -136,11 +141,7 @@ class TFC_TDF_net(nn.Module):
         self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, x):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and x.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and x.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from .mdx23c_mlx import mlx_forward_mdx23c_mx

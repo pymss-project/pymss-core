@@ -31,7 +31,7 @@ def _reflect_pad_last(x, pad):
         return x
     if x.shape[-1] <= pad:
         raise ValueError("reflect padding requires input length greater than padding")
-    return mx.concatenate((x[..., 1:pad + 1][..., ::-1], x, x[..., -pad - 1:-1][..., ::-1]), axis=-1)
+    return mx.concatenate((x[..., 1 : pad + 1][..., ::-1], x, x[..., -pad - 1 : -1][..., ::-1]), axis=-1)
 
 
 def _stft(module, raw_audio, dtype):
@@ -62,7 +62,7 @@ def _istft(spec, context):
     denom = mx.zeros((full_length,), dtype=context["dtype"]).at[positions].add(denom_frames)
     audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=context["dtype"]))
     pad = n_fft // 2
-    return audio[..., pad:pad + context["length"]]
+    return audio[..., pad : pad + context["length"]]
 
 
 def _conv1d_ncl(conv, x, dtype):
@@ -135,7 +135,7 @@ def _conv_act_norm(module, x, dtype):
     y = _silu(y)
     y = _conv1d_ncl(module.conv[4], y, dtype)
     if module.causal:
-        y = y[..., :-module.kernel + 1]
+        y = y[..., : -module.kernel + 1]
     return x + y
 
 
@@ -164,7 +164,7 @@ def _roformer(module, x, dtype):
     q, k, v = mx.split(qkv, 3, axis=-1)
     q = _apply_rope(module, q, dtype)
     k = _apply_rope(module, k, dtype)
-    attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=module.hidden_size ** -0.5, mask=None)
+    attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=module.hidden_size**-0.5, mask=None)
     out = attn.transpose(0, 1, 3, 2).reshape(batch, -1, frames)
     out = _conv1d_ncl(module.output, out, dtype) + x
 
@@ -194,7 +194,7 @@ def _feature_extractor(module, raw_audio, dtype):
     powers = []
     band_index = 0
     for width, bn in zip(module.band_width, module.BN):
-        sub = spec[:, band_index:band_index + width]
+        sub = spec[:, band_index : band_index + width]
         power = mx.sqrt(mx.sum(mx.square(sub.real) + mx.square(sub.imag), axis=1, keepdims=True) + module.eps)
         norm = sub / power
         inp = mx.concatenate((norm.real, norm.imag, mx.log(power)), axis=1)
@@ -225,13 +225,16 @@ def mlx_forward_apollo_mx(module, raw_audio, dtype=torch.float16):
     for block in module.net:
         feature = _bsnet(block, feature, dtype)
     est_spec = _estimate_spec(module, feature, batch * channels, dtype)
-    return _istft(est_spec, {
-        "length": samples,
-        "n_fft": module.win,
-        "hop": module.stride,
-        "window": _torch_to_mlx_array(module.window, torch.float32).astype(mx_dtype),
-        "dtype": mx_dtype,
-    }).reshape(batch, channels, -1)
+    return _istft(
+        est_spec,
+        {
+            "length": samples,
+            "n_fft": module.win,
+            "hop": module.stride,
+            "window": _torch_to_mlx_array(module.window, torch.float32).astype(mx_dtype),
+            "dtype": mx_dtype,
+        },
+    ).reshape(batch, channels, -1)
 
 
 def mlx_forward_apollo(module, raw_audio, dtype=torch.float16):

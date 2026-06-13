@@ -20,14 +20,14 @@ from pymss.modules.bandit.core.model.bsrnn.utils import (
 
 class NormMLP(_NormMLP):
     def __init__(
-            self,
-            emb_dim: int,
-            mlp_dim: int,
-            bandwidth: int,
-            in_channels: Optional[int],
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs=None,
-            complex_mask: bool = True,
+        self,
+        emb_dim: int,
+        mlp_dim: int,
+        bandwidth: int,
+        in_channels: Optional[int],
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs=None,
+        complex_mask: bool = True,
     ) -> None:
         super().__init__(
             emb_dim=emb_dim,
@@ -44,20 +44,20 @@ class NormMLP(_NormMLP):
 
 class OverlappingMaskEstimationModule(_OverlappingMaskEstimationModule):
     def __init__(
-            self,
-            in_channels: int,
-            band_specs: List[Tuple[float, float]],
-            freq_weights: List[torch.Tensor],
-            n_freq: int,
-            emb_dim: int,
-            mlp_dim: int,
-            cond_dim: int = 0,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Dict = None,
-            complex_mask: bool = True,
-            norm_mlp_cls: Type[nn.Module] = NormMLP,
-            norm_mlp_kwargs: Dict = None,
-            use_freq_weights: bool = False,
+        self,
+        in_channels: int,
+        band_specs: List[Tuple[float, float]],
+        freq_weights: List[torch.Tensor],
+        n_freq: int,
+        emb_dim: int,
+        mlp_dim: int,
+        cond_dim: int = 0,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Dict = None,
+        complex_mask: bool = True,
+        norm_mlp_cls: Type[nn.Module] = NormMLP,
+        norm_mlp_kwargs: Dict = None,
+        use_freq_weights: bool = False,
     ) -> None:
         super().__init__(
             in_channels=in_channels,
@@ -75,7 +75,7 @@ class OverlappingMaskEstimationModule(_OverlappingMaskEstimationModule):
             use_freq_weights=use_freq_weights,
             register_all_freq_weights=False,
             allow_cond=False,
-            output_dtype='complex64',
+            output_dtype="complex64",
             compute_all_masks=False,
         )
 
@@ -85,15 +85,15 @@ class OverlappingMaskEstimationModule(_OverlappingMaskEstimationModule):
 
 class MaskEstimationModule(_MaskEstimationModule):
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            mlp_dim: int,
-            in_channels: Optional[int],
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Dict = None,
-            complex_mask: bool = True,
-            **kwargs,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        mlp_dim: int,
+        in_channels: Optional[int],
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Dict = None,
+        complex_mask: bool = True,
+        **kwargs,
     ) -> None:
         check_nonzero_bandwidth(band_specs)
         check_no_gap(band_specs)

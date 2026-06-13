@@ -91,8 +91,7 @@ def _entry_file_specs(entry, model_dir=None):
     if entry.config_relpath and config_path is not None:
         specs.append(("config", entry.config_relpath, config_path))
     specs.extend(
-        ("auxiliary", relpath, path)
-        for relpath, path in zip(entry.auxiliary_relpaths, auxiliary_paths_for(entry, model_dir))
+        ("auxiliary", relpath, path) for relpath, path in zip(entry.auxiliary_relpaths, auxiliary_paths_for(entry, model_dir))
     )
     return specs
 

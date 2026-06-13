@@ -979,9 +979,10 @@ def _create_uvicorn_server(uvicorn, app, config):
 
     Returns:
         Any: Computed result."""
+
     class PymssUvicornServer(uvicorn.Server):
-        """Represent PymssUvicornServer.
-        """
+        """Represent PymssUvicornServer."""
+
         def _log_started_message(self, listeners):
             """Implement the log started message helper.
 

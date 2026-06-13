@@ -18,18 +18,20 @@ class ConvolutionModule(nn.Module):
         hidden_size = int(channels / compress)
         norm = lambda d: nn.GroupNorm(1, d)
         padding = kernel // 2
-        self.layers = nn.ModuleList([
-            nn.Sequential(
-                norm(channels),
-                nn.Conv1d(channels, hidden_size * 2, kernel, padding=padding),
-                nn.GLU(1),
-                nn.Conv1d(hidden_size, hidden_size, kernel, padding=padding, groups=hidden_size),
-                norm(hidden_size),
-                Swish(),
-                nn.Conv1d(hidden_size, channels, 1),
-            )
-            for _ in range(abs(depth))
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    norm(channels),
+                    nn.Conv1d(channels, hidden_size * 2, kernel, padding=padding),
+                    nn.GLU(1),
+                    nn.Conv1d(hidden_size, hidden_size, kernel, padding=padding, groups=hidden_size),
+                    norm(hidden_size),
+                    Swish(),
+                    nn.Conv1d(hidden_size, channels, 1),
+                )
+                for _ in range(abs(depth))
+            ]
+        )
 
     def forward(self, x):
         for layer in self.layers:
@@ -51,11 +53,16 @@ class FusionLayer(nn.Module):
 class SDlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs):
         super().__init__()
-        self.convs = nn.ModuleList([nn.Conv2d(channels_in, channels_out, (config['kernel'], 1), (config['stride'], 1), (0, 0)) for config in band_configs.values()])
-        self.strides = [config['stride'] for config in band_configs.values()]
-        self.kernels = [config['kernel'] for config in band_configs.values()]
-        self.SR_low = band_configs['low']['SR']
-        self.SR_mid = band_configs['mid']['SR']
+        self.convs = nn.ModuleList(
+            [
+                nn.Conv2d(channels_in, channels_out, (config["kernel"], 1), (config["stride"], 1), (0, 0))
+                for config in band_configs.values()
+            ]
+        )
+        self.strides = [config["stride"] for config in band_configs.values()]
+        self.kernels = [config["kernel"] for config in band_configs.values()]
+        self.SR_low = band_configs["low"]["SR"]
+        self.SR_mid = band_configs["mid"]["SR"]
 
     def forward(self, x):
         Fr = x.shape[2]
@@ -76,15 +83,28 @@ class SDlayer(nn.Module):
 class SUlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs):
         super().__init__()
-        self.convtrs = nn.ModuleList([nn.ConvTranspose2d(channels_in, channels_out, [config['kernel'], 1], [config['stride'], 1]) for config in band_configs.values()])
+        self.convtrs = nn.ModuleList(
+            [
+                nn.ConvTranspose2d(channels_in, channels_out, [config["kernel"], 1], [config["stride"], 1])
+                for config in band_configs.values()
+            ]
+        )
 
     def forward(self, x, lengths, origin_lengths):
         def upsample(idx, convtr, start, end):
             out = convtr(x[:, :, start:end, :])
             dist = abs(origin_lengths[idx] - out.shape[2]) // 2
-            return out[:, :, dist:dist + origin_lengths[idx], :]
+            return out[:, :, dist : dist + origin_lengths[idx], :]
 
-        return torch.cat([upsample(idx, convtr, start, end) for idx, (convtr, (start, end)) in enumerate(zip(self.convtrs, [(0, lengths[0]), (lengths[0], lengths[0] + lengths[1]), (lengths[0] + lengths[1], None)]))], dim=2)
+        return torch.cat(
+            [
+                upsample(idx, convtr, start, end)
+                for idx, (convtr, (start, end)) in enumerate(
+                    zip(self.convtrs, [(0, lengths[0]), (lengths[0], lengths[0] + lengths[1]), (lengths[0] + lengths[1], None)])
+                )
+            ],
+            dim=2,
+        )
 
 
 class SDblock(nn.Module):
@@ -97,9 +117,11 @@ class SDblock(nn.Module):
     def forward(self, x):
         bands, original_lengths = self.SDlayer(x)
         bands = [
-            F.gelu(conv(band.permute(0, 2, 1, 3).reshape(-1, band.shape[1], band.shape[3])).view(
-                band.shape[0], band.shape[2], band.shape[1], band.shape[3]
-            ).permute(0, 2, 1, 3))
+            F.gelu(
+                conv(band.permute(0, 2, 1, 3).reshape(-1, band.shape[1], band.shape[3]))
+                .view(band.shape[0], band.shape[2], band.shape[1], band.shape[3])
+                .permute(0, 2, 1, 3)
+            )
             for conv, band in zip(self.conv_modules, bands)
         ]
         lengths = [band.size(-2) for band in bands]
@@ -111,44 +133,68 @@ class SCNet(nn.Module):
     mps_model_backend = "torch"
     mps_model_compute_dtype = torch.float16
 
-    def __init__(self,
-                 sources=['drums', 'bass', 'other', 'vocals'],
-                 audio_channels=2,
-                 dims=[4, 32, 64, 128],
-                 nfft=4096,
-                 hop_size=1024,
-                 win_size=4096,
-                 normalized=True,
-                 band_SR=[0.175, 0.392, 0.433],
-                 band_stride=[1, 4, 16],
-                 band_kernel=[3, 4, 16],
-                 conv_depths=[3, 2, 1],
-                 compress=4,
-                 conv_kernel=3,
-                 num_dplayer=6,
-                 expand=1,
-                 ):
+    def __init__(
+        self,
+        sources=["drums", "bass", "other", "vocals"],
+        audio_channels=2,
+        dims=[4, 32, 64, 128],
+        nfft=4096,
+        hop_size=1024,
+        win_size=4096,
+        normalized=True,
+        band_SR=[0.175, 0.392, 0.433],
+        band_stride=[1, 4, 16],
+        band_kernel=[3, 4, 16],
+        conv_depths=[3, 2, 1],
+        compress=4,
+        conv_kernel=3,
+        num_dplayer=6,
+        expand=1,
+    ):
         super().__init__()
         self.sources = sources
         self.audio_channels = audio_channels
         self.dims = dims
-        band_keys = ['low', 'mid', 'high']
-        self.band_configs = {key: {'SR': sr, 'stride': stride, 'kernel': kernel} for key, sr, stride, kernel in zip(band_keys, band_SR, band_stride, band_kernel)}
+        band_keys = ["low", "mid", "high"]
+        self.band_configs = {
+            key: {"SR": sr, "stride": stride, "kernel": kernel}
+            for key, sr, stride, kernel in zip(band_keys, band_SR, band_stride, band_kernel)
+        }
         self.hop_length = hop_size
-        self.conv_config = {'compress': compress, 'kernel': conv_kernel}
-        self.stft_config = {'n_fft': nfft, 'hop_length': hop_size, 'win_length': win_size, 'center': True, 'normalized': normalized}
+        self.conv_config = {"compress": compress, "kernel": conv_kernel}
+        self.stft_config = {
+            "n_fft": nfft,
+            "hop_length": hop_size,
+            "win_length": win_size,
+            "center": True,
+            "normalized": normalized,
+        }
 
-        self.encoder = nn.ModuleList([
-            SDblock(channels_in=dims[index], channels_out=dims[index + 1], band_configs=self.band_configs, conv_config=self.conv_config, depths=conv_depths)
-            for index in range(len(dims) - 1)
-        ])
-        self.decoder = nn.ModuleList([
-            nn.Sequential(
-                FusionLayer(channels=dims[index + 1]),
-                SUlayer(channels_in=dims[index + 1], channels_out=dims[index] if index != 0 else dims[index] * len(sources), band_configs=self.band_configs),
-            )
-            for index in reversed(range(len(dims) - 1))
-        ])
+        self.encoder = nn.ModuleList(
+            [
+                SDblock(
+                    channels_in=dims[index],
+                    channels_out=dims[index + 1],
+                    band_configs=self.band_configs,
+                    conv_config=self.conv_config,
+                    depths=conv_depths,
+                )
+                for index in range(len(dims) - 1)
+            ]
+        )
+        self.decoder = nn.ModuleList(
+            [
+                nn.Sequential(
+                    FusionLayer(channels=dims[index + 1]),
+                    SUlayer(
+                        channels_in=dims[index + 1],
+                        channels_out=dims[index] if index != 0 else dims[index] * len(sources),
+                        band_configs=self.band_configs,
+                    ),
+                )
+                for index in reversed(range(len(dims) - 1))
+            ]
+        )
 
         self.separation_net = SeparationNet(channels=dims[-1], expand=expand, num_layers=num_dplayer)
 
@@ -171,11 +217,7 @@ class SCNet(nn.Module):
         self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, x):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and x.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and x.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from ..scnet_mlx import mlx_forward_scnet_mx
@@ -199,7 +241,9 @@ class SCNet(nn.Module):
 
         L = x.shape[-1]
         x = torch.view_as_real(torch.stft(x.reshape(-1, L), **self.stft_config, return_complex=True))
-        x = x.permute(0, 3, 1, 2).reshape(x.shape[0] // self.audio_channels, x.shape[3] * self.audio_channels, x.shape[1], x.shape[2])
+        x = x.permute(0, 3, 1, 2).reshape(
+            x.shape[0] // self.audio_channels, x.shape[3] * self.audio_channels, x.shape[1], x.shape[2]
+        )
 
         B, C, Fr, T = x.shape
 
@@ -215,5 +259,8 @@ class SCNet(nn.Module):
             x = su_layer(fusion_layer(x, skip), lengths, original_lengths)
 
         n = self.dims[0]
-        x = torch.istft(torch.view_as_complex(x.view(B, n, -1, Fr, T).reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()), **self.stft_config)
+        x = torch.istft(
+            torch.view_as_complex(x.view(B, n, -1, Fr, T).reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()),
+            **self.stft_config,
+        )
         return x.reshape(B, len(self.sources), self.audio_channels, -1)[:, :, :, :-padding]

@@ -5,18 +5,18 @@ from ....bandsplit import NormFC, _ConfiguredBandSplitModule
 
 class BandSplitModule(_ConfiguredBandSplitModule):
     norm_fc_cls = NormFC
-    complex_order = 'reim_freq'
+    complex_order = "reim_freq"
     flatten_input = False
 
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            in_channel: int,
-            require_no_overlap: bool = False,
-            require_no_gap: bool = True,
-            normalize_channel_independently: bool = False,
-            treat_channel_as_feature: bool = True,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        in_channel: int,
+        require_no_overlap: bool = False,
+        require_no_gap: bool = True,
+        normalize_channel_independently: bool = False,
+        treat_channel_as_feature: bool = True,
     ) -> None:
         super().__init__(
             band_specs=band_specs,

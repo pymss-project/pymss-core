@@ -87,15 +87,17 @@ class RMVN(nn.Module):
         T = input_reshape.shape[-1]
 
         input_norm = (input_reshape - input_reshape.mean(2).unsqueeze(2)) / (
-                    input_reshape.var(2).unsqueeze(2) + self.eps).sqrt()
+            input_reshape.var(2).unsqueeze(2) + self.eps
+        ).sqrt()
         input_norm = input_norm.reshape(B, N, T) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)
 
         return input_norm.reshape(input.shape)
 
 
 class Roformer(nn.Module):
-    def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000,
-                 input_drop=0., attention_drop=0., causal=True):
+    def __init__(
+        self, input_size, hidden_size, num_head=8, theta=10000, window=10000, input_drop=0.0, attention_drop=0.0, causal=True
+    ):
         super().__init__()
 
         self.input_size = input_size
@@ -118,15 +120,14 @@ class Roformer(nn.Module):
         self.weight = nn.Conv1d(self.input_size, self.hidden_size * self.num_head * 3, 1, bias=False)
         self.output = nn.Conv1d(self.hidden_size * self.num_head, self.input_size, 1, bias=False)
 
-        self.MLP = nn.Sequential(RMSNorm(self.input_size),
-                                 nn.Conv1d(self.input_size, self.input_size * 8, 1, bias=False),
-                                 nn.SiLU()
-                                 )
+        self.MLP = nn.Sequential(
+            RMSNorm(self.input_size), nn.Conv1d(self.input_size, self.input_size * 8, 1, bias=False), nn.SiLU()
+        )
         self.MLP_output = nn.Conv1d(self.input_size * 4, self.input_size, 1, bias=False)
 
     def _calc_rotary_emb(self):
         theta_i = torch.arange(0, self.hidden_size, 2)[: self.hidden_size // 2] / self.hidden_size
-        freq = (1.0 / (self.theta ** theta_i)).reshape(1, -1)
+        freq = (1.0 / (self.theta**theta_i)).reshape(1, -1)
         pos = torch.arange(self.window).reshape(-1, 1)
         cos_freq = torch.cos(pos * freq).repeat_interleave(2, dim=-1)
         sin_freq = torch.sin(pos * freq).repeat_interleave(2, dim=-1)
@@ -220,25 +221,25 @@ class ConvActNorm1d(nn.Module):
                 RMSNorm(in_channel),
                 nn.Conv1d(in_channel, hidden_channel, 1),
                 nn.SiLU(),
-                nn.Conv1d(hidden_channel, in_channel, 1)
-                )
+                nn.Conv1d(hidden_channel, in_channel, 1),
+            )
         else:
-            self.conv = nn.Sequential(nn.Conv1d(in_channel, in_channel, kernel, padding=kernel - 1, groups=in_channel),
-                                      RMSNorm(in_channel),
-                                      nn.Conv1d(in_channel, hidden_channel, 1),
-                                      nn.SiLU(),
-                                      nn.Conv1d(hidden_channel, in_channel, 1)
-                                      )
+            self.conv = nn.Sequential(
+                nn.Conv1d(in_channel, in_channel, kernel, padding=kernel - 1, groups=in_channel),
+                RMSNorm(in_channel),
+                nn.Conv1d(in_channel, hidden_channel, 1),
+                nn.SiLU(),
+                nn.Conv1d(hidden_channel, in_channel, 1),
+            )
 
     def forward(self, input):
-
         output = self.conv[0](input)
         output = self.conv[1](output)
         output = pointwise_conv1d(output, self.conv[2])
         output = self.conv[3](output)
         output = pointwise_conv1d(output, self.conv[4])
         if self.causal:
-            output = output[..., :-self.kernel + 1]
+            output = output[..., : -self.kernel + 1]
         return input + output
 
 
@@ -246,10 +247,11 @@ class ICB(nn.Module):
     def __init__(self, in_channel, kernel=7, causal=False):
         super(ICB, self).__init__()
 
-        self.blocks = nn.Sequential(ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal),
-                                    ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal),
-                                    ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal)
-                                    )
+        self.blocks = nn.Sequential(
+            ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal),
+            ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal),
+            ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal),
+        )
 
     def forward(self, input):
         return self.blocks(input)
@@ -277,13 +279,7 @@ class Apollo(nn.Module):
     mps_model_backend = "torch"
     mps_model_compute_dtype = torch.float16
 
-    def __init__(
-            self,
-            sr: int,
-            win: int,
-            feature_dim: int,
-            layer: int
-    ):
+    def __init__(self, sr: int, win: int, feature_dim: int, layer: int):
         super().__init__()
 
         self.sr = sr
@@ -299,9 +295,16 @@ class Apollo(nn.Module):
         self.band_width = [bandwidth] * 79 + [self.enc_dim - bandwidth * 79]
         self.nband = len(self.band_width)
 
-        self.BN = nn.ModuleList([nn.Sequential(RMSNorm(width * 2 + 1), nn.Conv1d(width * 2 + 1, self.feature_dim, 1)) for width in self.band_width])
+        self.BN = nn.ModuleList(
+            [nn.Sequential(RMSNorm(width * 2 + 1), nn.Conv1d(width * 2 + 1, self.feature_dim, 1)) for width in self.band_width]
+        )
         self.net = nn.Sequential(*[BSNet(self.feature_dim) for _ in range(layer)])
-        self.output = nn.ModuleList([nn.Sequential(RMSNorm(self.feature_dim), nn.Conv1d(self.feature_dim, width * 4, 1), nn.GLU(dim=1)) for width in self.band_width])
+        self.output = nn.ModuleList(
+            [
+                nn.Sequential(RMSNorm(self.feature_dim), nn.Conv1d(self.feature_dim, width * 4, 1), nn.GLU(dim=1))
+                for width in self.band_width
+            ]
+        )
 
     def set_mps_model_backend(self, backend=None, compute_dtype=None):
         backend = (backend or "torch").lower()
@@ -322,11 +325,7 @@ class Apollo(nn.Module):
         self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, input):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and input.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and input.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from ..apollo_mlx import mlx_forward_apollo_mx
@@ -351,14 +350,17 @@ class Apollo(nn.Module):
             return cached["norm_weight"], cached["conv_weight"], cached["conv_bias"], cached["groups"], cached["eps"]
 
         modules = list(modules[:count])
-        norm_weight, conv_weight = torch.stack([module[0].weight.detach() for module in modules], dim=0), torch.cat(
-            [module[1].weight.detach() for module in modules], dim=0
+        norm_weight, conv_weight = (
+            torch.stack([module[0].weight.detach() for module in modules], dim=0),
+            torch.cat([module[1].weight.detach() for module in modules], dim=0),
         )
         cached = {
             "key": key,
             "norm_weight": norm_weight,
             "conv_weight": conv_weight,
-            "conv_bias": torch.cat([module[1].bias.detach() for module in modules], dim=0) if modules[0][1].bias is not None else None,
+            "conv_bias": torch.cat([module[1].bias.detach() for module in modules], dim=0)
+            if modules[0][1].bias is not None
+            else None,
             "groups": modules[0][0].groups,
             "eps": modules[0][0].eps,
         }
@@ -401,15 +403,19 @@ class Apollo(nn.Module):
         return (left * torch.sigmoid(right)).reshape(batch, bands, 2, width, frames)
 
     def spec_band_split(self, input):
-
         B, nch, nsample = input.shape
 
-        spec = torch.stft(input.view(B * nch, nsample), n_fft=self.win, hop_length=self.stride,
-                          window=self._window(input), return_complex=True)
+        spec = torch.stft(
+            input.view(B * nch, nsample),
+            n_fft=self.win,
+            hop_length=self.stride,
+            window=self._window(input),
+            return_complex=True,
+        )
 
         subband_spec_norm, subband_power, band_idx = [], [], 0
         for width in self.band_width:
-            this_spec = spec[:, band_idx:band_idx + width]
+            this_spec = spec[:, band_idx : band_idx + width]
             subband_power.append((this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1))  # B, 1, T
             subband_spec_norm.append(_complex_div_by_real(this_spec, subband_power[-1]))  # B, BW, T
             band_idx += width
@@ -418,8 +424,13 @@ class Apollo(nn.Module):
 
     def _spec_band_split_packed(self, input):
         B, nch, nsample = input.shape
-        spec = torch.stft(input.view(B * nch, nsample), n_fft=self.win, hop_length=self.stride,
-                          window=self._window(input), return_complex=True)
+        spec = torch.stft(
+            input.view(B * nch, nsample),
+            n_fft=self.win,
+            hop_length=self.stride,
+            window=self._window(input),
+            return_complex=True,
+        )
 
         count, width = self._uniform_band_prefix()
         prefix_bins = count * width
@@ -429,7 +440,7 @@ class Apollo(nn.Module):
 
         tail_norm, tail_power, band_idx = [], [], prefix_bins
         for width in self.band_width[count:]:
-            this_spec = spec[:, band_idx:band_idx + width]
+            this_spec = spec[:, band_idx : band_idx + width]
             power = (this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1)
             tail_power.append(power)
             tail_norm.append(_complex_div_by_real(this_spec, power))
@@ -444,35 +455,54 @@ class Apollo(nn.Module):
         return self._feature_extractor_by_band(input)
 
     def _feature_extractor_by_band(self, input):
-
         subband_spec_norm, subband_power = self.spec_band_split(input)
-        return torch.stack([
-            self.BN[i](torch.cat([subband_spec_norm[i].real, subband_spec_norm[i].imag, torch.log(subband_power[:, i].unsqueeze(1))], 1))
-            for i in range(self.nband)
-        ], 1)
+        return torch.stack(
+            [
+                self.BN[i](
+                    torch.cat(
+                        [subband_spec_norm[i].real, subband_spec_norm[i].imag, torch.log(subband_power[:, i].unsqueeze(1))], 1
+                    )
+                )
+                for i in range(self.nband)
+            ],
+            1,
+        )
 
     def _feature_extractor_packed(self, input):
         prefix_norm, prefix_power, tail_norm, tail_power = self._spec_band_split_packed(input)
         count, _ = self._uniform_band_prefix()
 
-        prefix_feature = self._packed_bn_prefix(torch.cat([prefix_norm.real, prefix_norm.imag, torch.log(prefix_power).unsqueeze(2)], dim=2), count)
+        prefix_feature = self._packed_bn_prefix(
+            torch.cat([prefix_norm.real, prefix_norm.imag, torch.log(prefix_power).unsqueeze(2)], dim=2), count
+        )
 
         if count == self.nband:
             return prefix_feature
 
-        return torch.cat([
-            prefix_feature,
-            torch.stack([
-                self.BN[count + offset](torch.cat([subband_norm.real, subband_norm.imag, torch.log(tail_power[offset])], 1))
-                for offset, subband_norm in enumerate(tail_norm)
-            ], 1)
-        ], dim=1)
+        return torch.cat(
+            [
+                prefix_feature,
+                torch.stack(
+                    [
+                        self.BN[count + offset](
+                            torch.cat([subband_norm.real, subband_norm.imag, torch.log(tail_power[offset])], 1)
+                        )
+                        for offset, subband_norm in enumerate(tail_norm)
+                    ],
+                    1,
+                ),
+            ],
+            dim=1,
+        )
 
     def _estimate_spec_by_band(self, feature, batch_channels):
-        return torch.cat([
-            _complex_from_ri(output(feature[:, i]).view(batch_channels, 2, width, -1), dim=1)
-            for i, (output, width) in enumerate(zip(self.output, self.band_width))
-        ], 1)
+        return torch.cat(
+            [
+                _complex_from_ri(output(feature[:, i]).view(batch_channels, 2, width, -1), dim=1)
+                for i, (output, width) in enumerate(zip(self.output, self.band_width))
+            ],
+            1,
+        )
 
     def _estimate_spec_packed(self, feature, batch_channels):
         count, width = self._uniform_band_prefix()
@@ -482,13 +512,16 @@ class Apollo(nn.Module):
         if count == self.nband:
             return prefix_spec
 
-        return torch.cat([
-            prefix_spec,
-            *[
-                _complex_from_ri(self.output[i](feature[:, i]).view(batch_channels, 2, self.band_width[i], -1), dim=1)
-                for i in range(count, self.nband)
+        return torch.cat(
+            [
+                prefix_spec,
+                *[
+                    _complex_from_ri(self.output[i](feature[:, i]).view(batch_channels, 2, self.band_width[i], -1), dim=1)
+                    for i in range(count, self.nband)
+                ],
             ],
-        ], 1)
+            1,
+        )
 
     def forward(self, input):
         if self._use_mlx_full_forward(input):

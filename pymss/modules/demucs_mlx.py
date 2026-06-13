@@ -39,10 +39,10 @@ def _reflect_pad_last(x, left=0, right=0):
 
     parts = []
     if left > 0:
-        parts.append(x[..., 1:left + 1][..., ::-1])
+        parts.append(x[..., 1 : left + 1][..., ::-1])
     parts.append(x)
     if right > 0:
-        parts.append(x[..., -right - 1:-1][..., ::-1])
+        parts.append(x[..., -right - 1 : -1][..., ::-1])
     return mx.concatenate(parts, axis=-1)
 
 
@@ -94,7 +94,7 @@ def _ispectro(z, hop, length, dtype):
     denom = mx.zeros((full_length,), dtype=dtype).at[positions].add(denom_frames)
     audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=dtype))
     pad = n_fft // 2
-    audio = audio[..., pad:pad + length]
+    audio = audio[..., pad : pad + length]
     return audio.reshape(*leading, audio.shape[-1])
 
 
@@ -105,19 +105,19 @@ def _demucs_spec(module, x, dtype):
     pad = hop // 2 * 3
     x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect")
     z = _spectro(x, n_fft, hop, dtype)[..., :-1, :]
-    return z[..., 2:2 + le]
+    return z[..., 2 : 2 + le]
 
 
 def _demucs_ispec(module, z, length, scale, dtype):
     import mlx.core as mx
 
-    hop = module.hop_length // (4 ** scale)
+    hop = module.hop_length // (4**scale)
     z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)])
     z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)])
     pad = hop // 2 * 3
     le = hop * int(math.ceil(length / hop)) + 2 * pad
     x = _ispectro(z, hop, le, dtype)
-    return x[..., pad:pad + length]
+    return x[..., pad : pad + length]
 
 
 def _conv1d_ncl(conv, x, dtype):
@@ -285,7 +285,11 @@ def _module_forward(module, x, dtype):
     if isinstance(module, torch.nn.ConvTranspose2d):
         return _conv_transpose2d_nchw(module, x, dtype)
     if isinstance(module, torch.nn.Linear):
-        return _linear(x, _mlx_param(module, "weight", module.weight, dtype), None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype))
+        return _linear(
+            x,
+            _mlx_param(module, "weight", module.weight, dtype),
+            None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype),
+        )
     if isinstance(module, (torch.nn.GroupNorm, torch.nn.LayerNorm, MyGroupNorm, torch.nn.Identity)):
         return _norm(module, x, dtype)
     if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)):
@@ -321,7 +325,11 @@ def _henc_layer(module, x, inject, dtype):
     if module.dconv:
         if module.freq:
             b, c, fr, t = y.shape
-            y = _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype).reshape(b, fr, c, t).transpose(0, 2, 1, 3)
+            y = (
+                _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype)
+                .reshape(b, fr, c, t)
+                .transpose(0, 2, 1, 3)
+            )
         else:
             y = _dconv(module.dconv, y, dtype)
     return _glu(_norm(module.norm2, _module_forward(module.rewrite, y, dtype), dtype), axis=1) if module.rewrite else y
@@ -338,14 +346,18 @@ def _hdec_layer(module, x, skip, length, dtype):
         if module.dconv:
             if module.freq:
                 b, c, fr, t = y.shape
-                y = _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype).reshape(b, fr, c, t).transpose(0, 2, 1, 3)
+                y = (
+                    _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype)
+                    .reshape(b, fr, c, t)
+                    .transpose(0, 2, 1, 3)
+                )
             else:
                 y = _dconv(module.dconv, y, dtype)
     z = _norm(module.norm2, _module_forward(module.conv_tr, y, dtype), dtype)
     if module.freq and module.pad:
-        z = z[..., module.pad:-module.pad, :]
+        z = z[..., module.pad : -module.pad, :]
     elif not module.freq:
-        z = z[..., module.pad:module.pad + length]
+        z = z[..., module.pad : module.pad + length]
     return (z if module.last else _gelu(z)), y
 
 
@@ -364,7 +376,7 @@ def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
     pe = pe.at[0:half:2].add(mx.broadcast_to(sin_w, (sin_w.shape[0], height, width)))
     pe = pe.at[1:half:2].add(mx.broadcast_to(cos_w, (cos_w.shape[0], height, width)))
     pe = pe.at[half::2].add(mx.broadcast_to(sin_h, (sin_h.shape[0], height, width)))
-    pe = pe.at[half + 1::2].add(mx.broadcast_to(cos_h, (cos_h.shape[0], height, width)))
+    pe = pe.at[half + 1 :: 2].add(mx.broadcast_to(cos_h, (cos_h.shape[0], height, width)))
     return pe[None].astype(dtype)
 
 
@@ -389,9 +401,13 @@ def _self_attention(mha, x, dtype):
     q = q.reshape(q.shape[0], q.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
     k = k.reshape(k.shape[0], k.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
     v = v.reshape(v.shape[0], v.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
-    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim ** -0.5)
+    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
     out = out.transpose(0, 2, 1, 3).reshape(x.shape)
-    return _linear(out, _mlx_param(mha.out_proj, "weight", mha.out_proj.weight, dtype), _mlx_param(mha.out_proj, "bias", mha.out_proj.bias, dtype))
+    return _linear(
+        out,
+        _mlx_param(mha.out_proj, "weight", mha.out_proj.weight, dtype),
+        _mlx_param(mha.out_proj, "bias", mha.out_proj.bias, dtype),
+    )
 
 
 def _cross_attention(mha, q_in, k_in, dtype):
@@ -410,9 +426,13 @@ def _cross_attention(mha, q_in, k_in, dtype):
     q = q.reshape(q.shape[0], q.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
     k = k.reshape(k.shape[0], k.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
     v = v.reshape(v.shape[0], v.shape[1], heads, head_dim).transpose(0, 2, 1, 3)
-    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim ** -0.5)
+    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
     out = out.transpose(0, 2, 1, 3).reshape(q_in.shape)
-    return _linear(out, _mlx_param(mha.out_proj, "weight", mha.out_proj.weight, dtype), _mlx_param(mha.out_proj, "bias", mha.out_proj.bias, dtype))
+    return _linear(
+        out,
+        _mlx_param(mha.out_proj, "weight", mha.out_proj.weight, dtype),
+        _mlx_param(mha.out_proj, "bias", mha.out_proj.bias, dtype),
+    )
 
 
 def _transformer_encoder_layer(module, x, dtype):
@@ -420,7 +440,11 @@ def _transformer_encoder_layer(module, x, dtype):
         x = x + _layer_scale(module.gamma_1, _self_attention(module.self_attn, _norm(module.norm1, x, dtype), dtype), dtype)
         x = x + _layer_scale(
             module.gamma_2,
-            _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, _norm(module.norm2, x, dtype), dtype)), dtype),
+            _module_forward(
+                module.linear2,
+                _activation(module.activation, _module_forward(module.linear1, _norm(module.norm2, x, dtype), dtype)),
+                dtype,
+            ),
             dtype,
         )
         return _norm(module.norm_out, x, dtype) if module.norm_out else x
@@ -434,7 +458,11 @@ def _cross_transformer_layer(module, q, k, dtype):
     if module.norm_first:
         attn = _cross_attention(module.cross_attn, _norm(module.norm1, q, dtype), _norm(module.norm2, k, dtype), dtype)
         x = q + _layer_scale(module.gamma_1, attn, dtype)
-        ffn = _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, _norm(module.norm3, x, dtype), dtype)), dtype)
+        ffn = _module_forward(
+            module.linear2,
+            _activation(module.activation, _module_forward(module.linear1, _norm(module.norm3, x, dtype), dtype)),
+            dtype,
+        )
         x = x + _layer_scale(module.gamma_2, ffn, dtype)
         return _norm(module.norm_out, x, dtype) if module.norm_out else x
     attn = _cross_attention(module.cross_attn, q, k, dtype)
@@ -524,8 +552,10 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
                 inject = xt
         x = _henc_layer(encode, x, inject, dtype)
         if idx == 0 and module.freq_emb is not None:
-            weight = _mlx_param(module.freq_emb.embedding, "weight", module.freq_emb.embedding.weight, dtype) * module.freq_emb.scale
-            emb = weight[:x.shape[-2]].transpose(1, 0)[None, :, :, None]
+            weight = (
+                _mlx_param(module.freq_emb.embedding, "weight", module.freq_emb.embedding.weight, dtype) * module.freq_emb.scale
+            )
+            emb = weight[: x.shape[-2]].transpose(1, 0)[None, :, :, None]
             x = x + module.freq_emb_scale * emb
         saved.append((x, skip_length))
 

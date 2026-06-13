@@ -33,8 +33,8 @@ VR_SUPPORTED_PARAMETERS = {
 
 
 class InferenceParameterError(ValueError):
-    """Exception raised for unsupported inference parameters.
-    """
+    """Exception raised for unsupported inference parameters."""
+
     pass
 
 
@@ -44,6 +44,7 @@ class RequestLimiter:
     Args:
         limit (int): Limit value.
     """
+
     def __init__(self, limit):
         """Initialize the instance.
 
@@ -84,8 +85,8 @@ class RequestLimiter:
 
 @dataclass
 class LoadedModel:
-    """Container for one loaded separator and its metadata.
-    """
+    """Container for one loaded separator and its metadata."""
+
     separator: object
     entry: object
     resolved: dict
@@ -111,8 +112,8 @@ class LoadedModel:
 
 @dataclass
 class ServerState:
-    """Mutable server state for the currently loaded model.
-    """
+    """Mutable server state for the currently loaded model."""
+
     config: ServerConfig
     logger: object
     operation_lock: asyncio.Lock

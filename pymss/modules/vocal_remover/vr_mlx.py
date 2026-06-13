@@ -121,19 +121,14 @@ def _resize_bilinear_nchw(x, size=None, scale_factor=None):
     v11 = mx.take(mx.take(x, y1, axis=2), x1, axis=3)
     wy = wy.reshape(1, 1, out_h, 1)
     wx = wx.reshape(1, 1, 1, out_w)
-    return (
-        v00 * (1 - wy) * (1 - wx)
-        + v01 * (1 - wy) * wx
-        + v10 * wy * (1 - wx)
-        + v11 * wy * wx
-    )
+    return v00 * (1 - wy) * (1 - wx) + v01 * (1 - wy) * wx + v10 * wy * (1 - wx) + v11 * wy * wx
 
 
 def _crop_center(skip, target):
     h, w = target.shape[2], target.shape[3]
     dh = (skip.shape[2] - h) // 2
     dw = (skip.shape[3] - w) // 2
-    return skip[:, :, dh:dh + h, dw:dw + w]
+    return skip[:, :, dh : dh + h, dw : dw + w]
 
 
 def _adaptive_avg_pool_1_none(x):
@@ -178,7 +173,9 @@ def _module_forward(module, x, dtype):
         if module.output_size != (1, None):
             raise TypeError(f"unsupported VR AdaptiveAvgPool2d output_size: {module.output_size}")
         return _adaptive_avg_pool_1_none(x)
-    if isinstance(module, (torch.nn.ReLU, torch.nn.LeakyReLU, torch.nn.Sigmoid, torch.nn.Dropout, torch.nn.Dropout2d, torch.nn.Identity)):
+    if isinstance(
+        module, (torch.nn.ReLU, torch.nn.LeakyReLU, torch.nn.Sigmoid, torch.nn.Dropout, torch.nn.Dropout2d, torch.nn.Identity)
+    ):
         return _activation(module, x)
     if isinstance(module, layers.ASPPModule):
         return _old_aspp(module, x, dtype)
@@ -251,18 +248,27 @@ def _old_base_aspp_net(module, x, dtype):
 def _old_cascaded_aspp_net(module, x, dtype):
     import mlx.core as mx
 
-    x = x[:, :, :module.max_bin]
+    x = x[:, :, : module.max_bin]
     bandwidth = x.shape[2] // 2
-    aux1 = mx.concatenate((
-        _old_base_aspp_net(module.stg1_low_band_net, x[:, :, :bandwidth], dtype),
-        _old_base_aspp_net(module.stg1_high_band_net, x[:, :, bandwidth:], dtype),
-    ), axis=2)
+    aux1 = mx.concatenate(
+        (
+            _old_base_aspp_net(module.stg1_low_band_net, x[:, :, :bandwidth], dtype),
+            _old_base_aspp_net(module.stg1_high_band_net, x[:, :, bandwidth:], dtype),
+        ),
+        axis=2,
+    )
 
     hidden = mx.concatenate((x, aux1), axis=1)
     aux2 = _old_base_aspp_net(module.stg2_full_band_net, _module_forward(module.stg2_bridge, hidden, dtype), dtype)
 
     hidden = mx.concatenate((x, aux1, aux2), axis=1)
-    mask = mx.sigmoid(_conv2d_nchw(module.out, _old_base_aspp_net(module.stg3_full_band_net, _module_forward(module.stg3_bridge, hidden, dtype), dtype), dtype))
+    mask = mx.sigmoid(
+        _conv2d_nchw(
+            module.out,
+            _old_base_aspp_net(module.stg3_full_band_net, _module_forward(module.stg3_bridge, hidden, dtype), dtype),
+            dtype,
+        )
+    )
     return _replicate_pad_freq_bottom(mask, module.output_bin - mask.shape[2])
 
 
@@ -284,13 +290,16 @@ def _new_aspp(module, x, dtype):
     import mlx.core as mx
 
     h, w = x.shape[2], x.shape[3]
-    out = mx.concatenate((
-        _resize_bilinear_nchw(_module_forward(module.conv1, x, dtype), size=(h, w)),
-        _module_forward(module.conv2, x, dtype),
-        _module_forward(module.conv3, x, dtype),
-        _module_forward(module.conv4, x, dtype),
-        _module_forward(module.conv5, x, dtype),
-    ), axis=1)
+    out = mx.concatenate(
+        (
+            _resize_bilinear_nchw(_module_forward(module.conv1, x, dtype), size=(h, w)),
+            _module_forward(module.conv2, x, dtype),
+            _module_forward(module.conv3, x, dtype),
+            _module_forward(module.conv4, x, dtype),
+            _module_forward(module.conv5, x, dtype),
+        ),
+        axis=1,
+    )
     out = _module_forward(module.bottleneck, out, dtype)
     return out if module.dropout is None else out
 
@@ -362,7 +371,7 @@ def _new_base_net(module, x, dtype):
 def _new_cascaded_net(module, x, dtype):
     import mlx.core as mx
 
-    x = x[:, :, :module.max_bin]
+    x = x[:, :, : module.max_bin]
     bandwidth = x.shape[2] // 2
     low_in = x[:, :, :bandwidth]
     high_in = x[:, :, bandwidth:]
@@ -392,7 +401,7 @@ def mlx_predict_mask_vr_mx(module, x, dtype=torch.float16):
     else:
         raise TypeError(f"unsupported VR model for MLX full backend: {type(module).__name__}")
     if module.offset > 0:
-        mask = mask[:, :, :, module.offset:-module.offset]
+        mask = mask[:, :, :, module.offset : -module.offset]
         if mask.shape[3] <= 0:
             raise ValueError("Window size error: h1_shape[3] must be greater than h2_shape[3]")
     return mask

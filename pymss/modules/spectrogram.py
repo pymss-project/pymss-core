@@ -23,7 +23,7 @@ class SubbandSTFT:
         )
         x = torch.view_as_real(x).permute(0, 3, 1, 2)
         x = x.reshape(*batch_dims, channels * 2, -1, x.shape[-1])
-        return x[..., :self.dim_f, :]
+        return x[..., : self.dim_f, :]
 
     def inverse(self, x):
         window = self.window.to(x.device)
@@ -33,7 +33,7 @@ class SubbandSTFT:
         f_pad = torch.zeros([*batch_dims, channels, full_freq_bins - freq_bins, time_bins]).to(x.device)
         x = torch.cat([x, f_pad], -2)
         x = x.reshape(-1, 2, full_freq_bins, time_bins).permute(0, 2, 3, 1)
-        x = x[..., 0] + x[..., 1] * 1.j
+        x = x[..., 0] + x[..., 1] * 1.0j
         x = torch.istft(
             x,
             n_fft=self.n_fft,
@@ -45,12 +45,12 @@ class SubbandSTFT:
 
 
 def get_activation(act_type):
-    if act_type == 'gelu':
+    if act_type == "gelu":
         return nn.GELU()
-    if act_type == 'relu':
+    if act_type == "relu":
         return nn.ReLU()
-    if act_type[:3] == 'elu':
-        alpha = float(act_type.replace('elu', ''))
+    if act_type[:3] == "elu":
+        alpha = float(act_type.replace("elu", ""))
         return nn.ELU(alpha)
     raise Exception
 

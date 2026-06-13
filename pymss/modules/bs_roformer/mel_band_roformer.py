@@ -20,34 +20,34 @@ from .common import (
     roformer_transformer_kwargs,
 )
 
-class MelBandRoformer(RoformerRuntimeMixin, Module):
 
+class MelBandRoformer(RoformerRuntimeMixin, Module):
     def __init__(
-            self,
-            dim,
-            *,
-            depth,
-            stereo=False,
-            num_stems=1,
-            time_transformer_depth=2,
-            freq_transformer_depth=2,
-            num_bands=60,
-            dim_head=64,
-            heads=8,
-            attn_dropout=0.1,
-            ff_dropout=0.1,
-            flash_attn=True,
-            sample_rate=44100,
-            stft_n_fft=2048,
-            stft_hop_length=512,
-            stft_win_length=2048,
-            stft_normalized=False,
-            stft_window_fn: Optional[Callable] = None,
-            mask_estimator_depth=1,
-            match_input_audio_length=False,
-            mlp_expansion_factor=4,
-            mlp_hidden_layers=None,
-            **kwargs,
+        self,
+        dim,
+        *,
+        depth,
+        stereo=False,
+        num_stems=1,
+        time_transformer_depth=2,
+        freq_transformer_depth=2,
+        num_bands=60,
+        dim_head=64,
+        heads=8,
+        attn_dropout=0.1,
+        ff_dropout=0.1,
+        flash_attn=True,
+        sample_rate=44100,
+        stft_n_fft=2048,
+        stft_hop_length=512,
+        stft_win_length=2048,
+        stft_normalized=False,
+        stft_window_fn: Optional[Callable] = None,
+        mask_estimator_depth=1,
+        match_input_audio_length=False,
+        mlp_expansion_factor=4,
+        mlp_hidden_layers=None,
+        **kwargs,
     ):
         super().__init__()
         ignore_roformer_training_kwargs(kwargs)
@@ -79,11 +79,11 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         mel_filter_bank_numpy = filters.mel(sr=sample_rate, n_fft=stft_n_fft, n_mels=num_bands)
 
         mel_filter_bank = torch.from_numpy(mel_filter_bank_numpy)
-        mel_filter_bank[0][0] = 1.
-        mel_filter_bank[-1, -1] = 1.
+        mel_filter_bank[0][0] = 1.0
+        mel_filter_bank[-1, -1] = 1.0
 
         freqs_per_band = mel_filter_bank > 0
-        assert freqs_per_band.any(dim=0).all(), 'all frequencies need to be covered by all bands for now'
+        assert freqs_per_band.any(dim=0).all(), "all frequencies need to be covered by all bands for now"
 
         repeated_freq_indices = torch.arange(freqs).expand(num_bands, -1)
         freq_indices = repeated_freq_indices[freqs_per_band]
@@ -91,18 +91,18 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         if stereo:
             freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).flatten()
 
-        self.register_buffer('freq_indices', freq_indices, persistent=False)
-        self.register_buffer('freqs_per_band', freqs_per_band, persistent=False)
+        self.register_buffer("freq_indices", freq_indices, persistent=False)
+        self.register_buffer("freqs_per_band", freqs_per_band, persistent=False)
 
         num_freqs_per_band = freqs_per_band.sum(dim=1)
         num_bands_per_freq = freqs_per_band.sum(dim=0)
 
-        self.register_buffer('num_freqs_per_band', num_freqs_per_band, persistent=False)
-        self.register_buffer('num_bands_per_freq', num_bands_per_freq, persistent=False)
+        self.register_buffer("num_freqs_per_band", num_freqs_per_band, persistent=False)
+        self.register_buffer("num_bands_per_freq", num_bands_per_freq, persistent=False)
         self.register_buffer(
-            'num_bands_per_channel_freq',
+            "num_bands_per_channel_freq",
             num_bands_per_freq.repeat_interleave(self.audio_channels).view(1, 1, -1, 1),
-            persistent=False
+            persistent=False,
         )
 
         freqs_per_bands_with_complex = tuple(2 * f * self.audio_channels for f in num_freqs_per_band.tolist())
@@ -114,7 +114,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             mask_estimator_cls=MaskEstimator,
             mask_estimator_depth=mask_estimator_depth,
             mlp_expansion_factor=mlp_expansion_factor,
-            mask_estimator_kwargs={'mlp_hidden_layers': mlp_hidden_layers},
+            mask_estimator_kwargs={"mlp_hidden_layers": mlp_hidden_layers},
         )
 
         self.match_input_audio_length = match_input_audio_length

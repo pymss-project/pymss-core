@@ -43,7 +43,7 @@ def _reflect_pad_last(x, pad):
         return x
     if x.shape[-1] <= pad:
         raise ValueError("reflect padding requires input length greater than padding")
-    return mx.concatenate((x[..., 1:pad + 1][..., ::-1], x, x[..., -pad - 1:-1][..., ::-1]), axis=-1)
+    return mx.concatenate((x[..., 1 : pad + 1][..., ::-1], x, x[..., -pad - 1 : -1][..., ::-1]), axis=-1)
 
 
 def _subband_stft(module, raw_audio, dtype):
@@ -101,7 +101,7 @@ def _subband_istft(module, x, context):
     denom = mx.zeros((full_length,), dtype=context["dtype"]).at[positions].add(denom_frames)
     audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=context["dtype"]))
     pad = n_fft // 2
-    audio = audio[..., pad:pad + context["audio_length"]]
+    audio = audio[..., pad : pad + context["audio_length"]]
     return audio.reshape(*batch_dims, 2, audio.shape[-1])
 
 
@@ -236,7 +236,11 @@ def _module_forward(module, x, dtype):
     if isinstance(module, torch.nn.ConvTranspose2d):
         return _conv_transpose2d_nchw(module, x, dtype)
     if isinstance(module, torch.nn.Linear):
-        return _linear(x, _mlx_param(module, "weight", module.weight, dtype), None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype))
+        return _linear(
+            x,
+            _mlx_param(module, "weight", module.weight, dtype),
+            None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype),
+        )
     if isinstance(module, torch.nn.InstanceNorm2d):
         return _instance_norm2d(module, x, dtype)
     if isinstance(module, torch.nn.BatchNorm2d):

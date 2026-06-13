@@ -38,7 +38,7 @@ def _reflect_pad_last(x, pad):
         return x
     if x.shape[-1] <= pad:
         raise ValueError("reflect padding requires input length greater than padding")
-    return mx.concatenate((x[..., 1:pad + 1][..., ::-1], x, x[..., -pad - 1:-1][..., ::-1]), axis=-1)
+    return mx.concatenate((x[..., 1 : pad + 1][..., ::-1], x, x[..., -pad - 1 : -1][..., ::-1]), axis=-1)
 
 
 def _stft_scnet(module, raw_audio, dtype):
@@ -93,7 +93,7 @@ def _istft_scnet(module, spec, context, length):
     audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=context["dtype"]))
     if context["center"]:
         pad = n_fft // 2
-        audio = audio[..., pad:pad + length]
+        audio = audio[..., pad : pad + length]
     else:
         audio = audio[..., :length]
     return audio.reshape(*leading_shape, audio.shape[-1])
@@ -212,7 +212,11 @@ def _module_forward(module, x, dtype):
     if isinstance(module, torch.nn.ConvTranspose2d):
         return _conv_transpose2d_nchw(module, x, dtype)
     if isinstance(module, torch.nn.Linear):
-        return _linear(x, _mlx_param(module, "weight", module.weight, dtype), None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype))
+        return _linear(
+            x,
+            _mlx_param(module, "weight", module.weight, dtype),
+            None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype),
+        )
     if isinstance(module, torch.nn.GroupNorm):
         return _group_norm(module, x, dtype)
     if isinstance(module, torch.nn.GLU):
@@ -300,12 +304,20 @@ def _dual_path_rnn(module, x, dtype):
     b, c, f, t = x.shape
     y = _group_norm(module.norm_layers[0], x, dtype).transpose(0, 3, 2, 1).reshape(b * t, f, c)
     y = _rnn_forward_lstm(module.lstm_layers[0], y, dtype)
-    y = _linear(y, _mlx_param(module.linear_layers[0], "weight", module.linear_layers[0].weight, dtype), _mlx_param(module.linear_layers[0], "bias", module.linear_layers[0].bias, dtype))
+    y = _linear(
+        y,
+        _mlx_param(module.linear_layers[0], "weight", module.linear_layers[0].weight, dtype),
+        _mlx_param(module.linear_layers[0], "bias", module.linear_layers[0].bias, dtype),
+    )
     x = y.reshape(b, t, f, c).transpose(0, 3, 2, 1) + x
 
     y = _group_norm(module.norm_layers[1], x, dtype).transpose(0, 2, 1, 3).reshape(b * f, c, t).transpose(0, 2, 1)
     y = _rnn_forward_lstm(module.lstm_layers[1], y, dtype)
-    y = _linear(y, _mlx_param(module.linear_layers[1], "weight", module.linear_layers[1].weight, dtype), _mlx_param(module.linear_layers[1], "bias", module.linear_layers[1].bias, dtype))
+    y = _linear(
+        y,
+        _mlx_param(module.linear_layers[1], "weight", module.linear_layers[1].weight, dtype),
+        _mlx_param(module.linear_layers[1], "bias", module.linear_layers[1].bias, dtype),
+    )
     return y.transpose(0, 2, 1).reshape(b, f, c, t).transpose(0, 2, 1, 3) + x
 
 
@@ -330,7 +342,7 @@ def _crop_center(skip, target):
     h, w = target.shape[2], target.shape[3]
     dh = (skip.shape[2] - h) // 2
     dw = (skip.shape[3] - w) // 2
-    return skip[:, :, dh:dh + h, dw:dw + w]
+    return skip[:, :, dh : dh + h, dw : dw + w]
 
 
 def _fusion_layer(module, x, skip, dtype):
@@ -349,7 +361,7 @@ def _sulayer(module, x, lengths, origin_lengths, dtype):
     for idx, (convtr, (start, end)) in enumerate(zip(module.convtrs, ranges)):
         out = _conv_transpose2d_nchw(convtr, x[:, :, start:end, :], dtype)
         dist = abs(origin_lengths[idx] - out.shape[2]) // 2
-        outs.append(out[:, :, dist:dist + origin_lengths[idx], :])
+        outs.append(out[:, :, dist : dist + origin_lengths[idx], :])
     return mx.concatenate(outs, axis=2)
 
 
@@ -369,7 +381,9 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     length = x.shape[-1]
     spec, context = _stft_scnet(module, x.reshape(-1, length), mx_dtype)
     ri = mx.stack((spec.real, spec.imag), axis=-1)
-    x = ri.transpose(0, 3, 1, 2).reshape(ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2])
+    x = ri.transpose(0, 3, 1, 2).reshape(
+        ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2]
+    )
     _, _, freq_bins, time_bins = x.shape
 
     saved = []

@@ -8,7 +8,9 @@ import torch
 
 
 ARM = "arm"
-wav_resolution = "polyphase" if platform.system() == "Darwin" and (platform.processor() == ARM or ARM in platform.platform()) else "soxr_hq"
+wav_resolution = (
+    "polyphase" if platform.system() == "Darwin" and (platform.processor() == ARM or ARM in platform.platform()) else "soxr_hq"
+)
 
 
 _HANN_WINDOW_CACHE = {}
@@ -56,10 +58,15 @@ def _linear_resample(wave, orig_sr, target_sr):
     old_x, new_x = np.linspace(0.0, 1.0, original_length, endpoint=False), np.linspace(0.0, 1.0, target_length, endpoint=False)
     if wave.ndim == 1:
         return np.asfortranarray(np.interp(new_x, old_x, wave).astype(wave.dtype, copy=False))
-    return np.asfortranarray(np.stack([
-        np.interp(new_x, old_x, channel).astype(wave.dtype, copy=False)
-        for channel in wave.reshape((-1, original_length))
-    ], axis=0).reshape(wave.shape[:-1] + (target_length,)))
+    return np.asfortranarray(
+        np.stack(
+            [
+                np.interp(new_x, old_x, channel).astype(wave.dtype, copy=False)
+                for channel in wave.reshape((-1, original_length))
+            ],
+            axis=0,
+        ).reshape(wave.shape[:-1] + (target_length,))
+    )
 
 
 def crop_center(h1, h2):
@@ -69,7 +76,7 @@ def crop_center(h1, h2):
     if h1_time < h2_time:
         raise ValueError("h1_shape[3] must be greater than h2_shape[3]")
     start = (h1_time - h2_time) // 2
-    return h1[:, :, :, start:start + h2_time]
+    return h1[:, :, :, start : start + h2_time]
 
 
 def preprocess(x_spec):
@@ -102,14 +109,14 @@ def merge_artifacts(y_mask, thres=0.01, min_range=64, fade_size=32):
                 if old_e is not None and s - old_e < fade_size:
                     s = old_e - fade_size * 2
                 if s != 0:
-                    weight[:, :, s:s + fade_size] = np.linspace(0, 1, fade_size)
+                    weight[:, :, s : s + fade_size] = np.linspace(0, 1, fade_size)
                 else:
                     s -= fade_size
                 if e != y_mask.shape[2]:
-                    weight[:, :, e - fade_size:e] = np.linspace(1, 0, fade_size)
+                    weight[:, :, e - fade_size : e] = np.linspace(1, 0, fade_size)
                 else:
                     e += fade_size
-                weight[:, :, s + fade_size:e - fade_size] = 1
+                weight[:, :, s + fade_size : e - fade_size] = 1
                 old_e = e
 
         y_mask += weight * (1 - y_mask)
@@ -140,7 +147,7 @@ def combine_spectrograms(specs, mp, is_v51_model=False):
     for d in range(1, bands_n + 1):
         band = mp.param["band"][d]
         height = band["crop_stop"] - band["crop_start"]
-        spec_c[:, offset:offset + height, :length] = specs[d][:, band["crop_start"]:band["crop_stop"], :length]
+        spec_c[:, offset : offset + height, :length] = specs[d][:, band["crop_start"] : band["crop_stop"], :length]
         offset += height
 
     if offset > mp.param["bins"]:
@@ -172,14 +179,19 @@ def wave_to_spectrogram(wave, hop_length, n_fft, mp, band, is_v51_model=False, t
         elif mp.param["mid_side"]:
             left, right = np.asfortranarray(np.add(wave[0], wave[1]) / 2), np.asfortranarray(np.subtract(wave[0], wave[1]))
         elif mp.param["mid_side_b2"]:
-            left, right = np.asfortranarray(np.add(wave[1], wave[0] * 0.5)), np.asfortranarray(np.subtract(wave[0], wave[1] * 0.5))
+            left, right = (
+                np.asfortranarray(np.add(wave[1], wave[0] * 0.5)),
+                np.asfortranarray(np.subtract(wave[0], wave[1] * 0.5)),
+            )
 
     spec = _torch_stft(np.asfortranarray([left, right]), n_fft, hop_length, torch_device)
     if spec is None:
-        spec = np.asfortranarray([
-            librosa.stft(left, n_fft=n_fft, hop_length=hop_length),
-            librosa.stft(right, n_fft=n_fft, hop_length=hop_length),
-        ])
+        spec = np.asfortranarray(
+            [
+                librosa.stft(left, n_fft=n_fft, hop_length=hop_length),
+                librosa.stft(right, n_fft=n_fft, hop_length=hop_length),
+            ]
+        )
     return convert_channels(spec, mp, band) if is_v51_model else spec
 
 
@@ -250,20 +262,28 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
         bp = mp.param["band"][d]
         spec_s = np.zeros((2, bp["n_fft"] // 2 + 1, spec_m.shape[2]), dtype=np.result_type(spec_m.dtype, np.complex64))
         height = bp["crop_stop"] - bp["crop_start"]
-        spec_s[:, bp["crop_start"]:bp["crop_stop"], :] = spec_m[:, offset:offset + height, :]
+        spec_s[:, bp["crop_start"] : bp["crop_stop"], :] = spec_m[:, offset : offset + height, :]
         offset += height
 
         if d == bands_n:
             if extra_bins_h is not None:
-                spec_s[:, bp["n_fft"] // 2 - extra_bins_h:bp["n_fft"] // 2, :] = extra_bins[:, :extra_bins_h, :]
+                spec_s[:, bp["n_fft"] // 2 - extra_bins_h : bp["n_fft"] // 2, :] = extra_bins[:, :extra_bins_h, :]
             if bp["hpf_start"] > 0:
-                spec_s = spec_s * get_hp_filter_mask(spec_s.shape[1], bp["hpf_start"], bp["hpf_stop"] - 1) if is_v51_model else fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
+                spec_s = (
+                    spec_s * get_hp_filter_mask(spec_s.shape[1], bp["hpf_start"], bp["hpf_stop"] - 1)
+                    if is_v51_model
+                    else fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
+                )
             band_wave = spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)
             wave = band_wave if wave is None else np.add(wave, band_wave)
         else:
             sr = mp.param["band"][d + 1]["sr"]
             if d == 1:
-                spec_s = spec_s * get_lp_filter_mask(spec_s.shape[1], bp["lpf_start"], bp["lpf_stop"]) if is_v51_model else fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
+                spec_s = (
+                    spec_s * get_lp_filter_mask(spec_s.shape[1], bp["lpf_start"], bp["lpf_stop"])
+                    if is_v51_model
+                    else fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
+                )
                 wave = resample_audio(
                     spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device),
                     orig_sr=bp["sr"],
@@ -277,7 +297,12 @@ def cmb_spectrogram_to_wave(spec_m, mp, extra_bins_h=None, extra_bins=None, is_v
                 else:
                     spec_s = fft_hp_filter(spec_s, bp["hpf_start"], bp["hpf_stop"] - 1)
                     spec_s = fft_lp_filter(spec_s, bp["lpf_start"], bp["lpf_stop"])
-                wave = resample_audio(np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)), orig_sr=bp["sr"], target_sr=sr, res_type=wav_resolution)
+                wave = resample_audio(
+                    np.add(wave, spectrogram_to_wave(spec_s, bp["hl"], mp, d, is_v51_model, torch_device=torch_device)),
+                    orig_sr=bp["sr"],
+                    target_sr=sr,
+                    res_type=wav_resolution,
+                )
 
     return wave
 
@@ -286,15 +311,22 @@ def _get_filter_mask(kind, n_bins, bin_start, bin_stop):
     key = (kind, int(n_bins), int(bin_start), int(bin_stop))
     mask = _FILTER_MASK_CACHE.get(key)
     if mask is None:
-        mask = np.concatenate(([
-            np.ones((bin_start - 1, 1)),
-            np.linspace(1, 0, bin_stop - bin_start + 1)[:, None],
-            np.zeros((n_bins - bin_stop, 1)),
-        ] if kind == "lp" else [
-            np.zeros((bin_stop + 1, 1)),
-            np.linspace(0, 1, 1 + bin_start - bin_stop)[:, None],
-            np.ones((n_bins - bin_start - 2, 1)),
-        ]), axis=0)
+        mask = np.concatenate(
+            (
+                [
+                    np.ones((bin_start - 1, 1)),
+                    np.linspace(1, 0, bin_stop - bin_start + 1)[:, None],
+                    np.zeros((n_bins - bin_stop, 1)),
+                ]
+                if kind == "lp"
+                else [
+                    np.zeros((bin_stop + 1, 1)),
+                    np.linspace(0, 1, 1 + bin_start - bin_stop)[:, None],
+                    np.ones((n_bins - bin_start - 2, 1)),
+                ]
+            ),
+            axis=0,
+        )
         _FILTER_MASK_CACHE[key] = mask
     return mask
 
@@ -321,15 +353,19 @@ def fft_hp_filter(spec, bin_start, bin_stop):
     for b in range(bin_start, bin_stop, -1):
         gain -= 1 / (bin_start - bin_stop)
         spec[:, b, :] = gain * spec[:, b, :]
-    spec[:, 0:bin_stop + 1, :] *= 0
+    spec[:, 0 : bin_stop + 1, :] *= 0
     return spec
 
 
 def mirroring(mode, spec_m, input_high_end, mp):
     if mode not in ("mirroring", "mirroring2"):
         return input_high_end
-    mirror = np.flip(np.abs(spec_m[:, mp.param["pre_filter_start"] - 10 - input_high_end.shape[1]:mp.param["pre_filter_start"] - 10, :]), 1)
-    mirror = mirror * np.exp(1.0j * np.angle(input_high_end)) if mode == "mirroring" else np.multiply(mirror, input_high_end * 1.7)
+    mirror = np.flip(
+        np.abs(spec_m[:, mp.param["pre_filter_start"] - 10 - input_high_end.shape[1] : mp.param["pre_filter_start"] - 10, :]), 1
+    )
+    mirror = (
+        mirror * np.exp(1.0j * np.angle(input_high_end)) if mode == "mirroring" else np.multiply(mirror, input_high_end * 1.7)
+    )
     return np.where(np.abs(input_high_end) <= np.abs(mirror), input_high_end, mirror)
 
 

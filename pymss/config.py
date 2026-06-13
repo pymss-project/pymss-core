@@ -4,8 +4,8 @@ import yaml
 
 
 class ConfigLoader(yaml.FullLoader):
-    """YAML loader used by pymss model configuration files.
-    """
+    """YAML loader used by pymss model configuration files."""
+
     pass
 
 
@@ -35,6 +35,7 @@ class AttrDict(dict):
         >>> cfg = AttrDict({"audio": {"chunk_size": 485100}})
         >>> cfg.audio.chunk_size
         485100"""
+
     def __init__(self, data=None, **kwargs):
         """Initialize the instance.
 
