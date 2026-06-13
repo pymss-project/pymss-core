@@ -43,10 +43,10 @@ def _pad_last(x, left, right, mode="constant"):
         raise ValueError("reflect padding requires input length greater than padding")
     parts = []
     if left > 0:
-        parts.append(x[..., 1:left + 1][..., ::-1])
+        parts.append(x[..., 1 : left + 1][..., ::-1])
     parts.append(x)
     if right > 0:
-        parts.append(x[..., -right - 1:-1][..., ::-1])
+        parts.append(x[..., -right - 1 : -1][..., ::-1])
     return mx.concatenate(parts, axis=-1)
 
 
@@ -103,7 +103,7 @@ def _spectral_istft(istft_module, spec, context, length):
     audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=context["dtype"]))
     if context["center"]:
         pad = n_fft // 2
-        audio = audio[..., pad:pad + length]
+        audio = audio[..., pad : pad + length]
     elif length is not None:
         audio = audio[..., :length]
     return audio.reshape(*leading_shape, audio.shape[-1])
@@ -167,12 +167,18 @@ def _glu(x, axis=-1):
 def _norm_fc(module, xb, dtype):
     if hasattr(module, "combined"):
         xb = _layer_norm(module.combined[0], xb, dtype)
-        return _linear(xb, _mlx_param(module.combined[1], "weight", module.combined[1].weight, dtype), _mlx_param(module.combined[1], "bias", module.combined[1].bias, dtype))
+        return _linear(
+            xb,
+            _mlx_param(module.combined[1], "weight", module.combined[1].weight, dtype),
+            _mlx_param(module.combined[1], "bias", module.combined[1].bias, dtype),
+        )
 
     batch, n_time, in_channels, ribw = xb.shape
     xb = _layer_norm(module.norm, xb.reshape(batch, n_time, in_channels * ribw), dtype)
     if module.treat_channel_as_feature:
-        return _linear(xb, _mlx_param(module.fc, "weight", module.fc.weight, dtype), _mlx_param(module.fc, "bias", module.fc.bias, dtype))
+        return _linear(
+            xb, _mlx_param(module.fc, "weight", module.fc.weight, dtype), _mlx_param(module.fc, "bias", module.fc.bias, dtype)
+        )
     out = _linear(
         xb.reshape(batch, n_time, in_channels, ribw),
         _mlx_param(module.fc, "weight", module.fc.weight, dtype),
@@ -282,7 +288,12 @@ def _residual_rnn(module, z, dtype):
         import mlx.core as mx
 
         z = mx.stack([_rnn_forward(module.rnn, z[:, i], dtype) for i in range(n_uncrossed)], axis=1)
-    return _linear(z, _mlx_param(module.fc, "weight", module.fc.weight, dtype), _mlx_param(module.fc, "bias", module.fc.bias, dtype)) + z0
+    return (
+        _linear(
+            z, _mlx_param(module.fc, "weight", module.fc.weight, dtype), _mlx_param(module.fc, "bias", module.fc.bias, dtype)
+        )
+        + z0
+    )
 
 
 def _tf_model(module, z, dtype):
@@ -311,7 +322,11 @@ def _tf_model(module, z, dtype):
 
 def _norm_mlp(module, qb, dtype):
     x = _layer_norm(module.norm, qb, dtype)
-    x = _linear(x, _mlx_param(module.hidden[0], "weight", module.hidden[0].weight, dtype), _mlx_param(module.hidden[0], "bias", module.hidden[0].bias, dtype))
+    x = _linear(
+        x,
+        _mlx_param(module.hidden[0], "weight", module.hidden[0].weight, dtype),
+        _mlx_param(module.hidden[0], "bias", module.hidden[0].bias, dtype),
+    )
     x = _activation(module.hidden[1], x)
     output = module.output[0]
     x = _linear(x, _mlx_param(output, "weight", output.weight, dtype), _mlx_param(output, "bias", output.bias, dtype))

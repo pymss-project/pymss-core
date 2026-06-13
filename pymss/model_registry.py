@@ -28,8 +28,8 @@ DEFAULT_MODEL_DIR = _default_model_dir()
 
 @dataclass(frozen=True)
 class ModelEntry:
-    """Catalog metadata for one downloadable pymss model.
-    """
+    """Catalog metadata for one downloadable pymss model."""
+
     name: str
     aliases: tuple
     model_type: str | None
@@ -184,7 +184,8 @@ def list_models(category=None, supported=None):
     if category:
         category = category.lower()
         models = [
-            item for item in models
+            item
+            for item in models
             if item.primary_category.lower() == category
             or item.secondary_category.lower() == category
             or item.category_path.lower() == category

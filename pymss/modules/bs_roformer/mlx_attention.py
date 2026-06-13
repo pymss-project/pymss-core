@@ -67,7 +67,7 @@ def _sigmoid(x):
 def _gelu(x):
     import mlx.core as mx
 
-    return 0.5 * x * (1 + mx.erf(x * (2 ** -0.5)))
+    return 0.5 * x * (1 + mx.erf(x * (2**-0.5)))
 
 
 def _rotary_metal_kernel():
@@ -198,10 +198,7 @@ def _attention_cache(module, dtype):
         module.to_out[0].weight,
         module.to_out[0].bias,
     )
-    key = tuple(
-        None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype)
-        for p in params
-    )
+    key = tuple(None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype) for p in params)
     if cache is not None and cache.get("key") == key:
         return cache
 
@@ -313,10 +310,7 @@ def _feed_forward_cache(module, dtype):
         linear_out.weight,
         linear_out.bias,
     )
-    key = tuple(
-        None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype)
-        for p in params
-    )
+    key = tuple(None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype) for p in params)
     if cache is not None and cache.get("key") == key:
         return cache
 
@@ -363,6 +357,7 @@ def _mlx_feed_forward_compiled(module, x, dtype, cache):
     key = (tuple(x.shape), dtype, has_in_bias, has_out_bias, cache["key"])
     fn = compiled_cache.get(key)
     if fn is None:
+
         def ffn_core(x_arg, norm_gamma, linear_in_weight, linear_in_bias, linear_out_weight, linear_out_bias):
             x_arg = _rms_norm(x_arg, norm_gamma)
             x_arg = _linear(x_arg, linear_in_weight, linear_in_bias if has_in_bias else None)

@@ -8,6 +8,7 @@ class APIError(Exception):
         param (str | None, optional): Param value. Defaults to None.
         error_type (str, optional): Error type value. Defaults to 'invalid_request_error'.
     """
+
     def __init__(self, status_code, code, message, param=None, error_type="invalid_request_error"):
         """Initialize the instance.
 

@@ -228,7 +228,12 @@ class VRSeparator(CommonSeparator):
                     torch_device=self.torch_device,
                 )
             else:
-                x_wave[d] = spec_utils.resample_audio(x_wave[d + 1], orig_sr=self.model_params.param["band"][d + 1]["sr"], target_sr=bp["sr"], res_type=wav_resolution)
+                x_wave[d] = spec_utils.resample_audio(
+                    x_wave[d + 1],
+                    orig_sr=self.model_params.param["band"][d + 1]["sr"],
+                    target_sr=bp["sr"],
+                    res_type=wav_resolution,
+                )
                 x_spec_s[d] = spec_utils.wave_to_spectrogram(
                     x_wave[d],
                     bp["hl"],
@@ -240,8 +245,10 @@ class VRSeparator(CommonSeparator):
                 )
 
             if d == bands_n and self.high_end_process:
-                self.input_high_end_h = (bp["n_fft"] // 2 - bp["crop_stop"]) + (self.model_params.param["pre_filter_stop"] - self.model_params.param["pre_filter_start"])
-                self.input_high_end = x_spec_s[d][:, bp["n_fft"] // 2 - self.input_high_end_h:bp["n_fft"] // 2, :]
+                self.input_high_end_h = (bp["n_fft"] // 2 - bp["crop_stop"]) + (
+                    self.model_params.param["pre_filter_stop"] - self.model_params.param["pre_filter_start"]
+                )
+                self.input_high_end = x_spec_s[d][:, bp["n_fft"] // 2 - self.input_high_end_h : bp["n_fft"] // 2, :]
 
         return spec_utils.combine_spectrograms(x_spec_s, self.model_params, is_v51_model=self.is_vr_51_model)
 
@@ -257,12 +264,16 @@ class VRSeparator(CommonSeparator):
 
     @staticmethod
     def _resample_wave(wave, orig_sr, target_sr, res_type):
-        return np.asfortranarray(wave) if int(orig_sr) == int(target_sr) else spec_utils.resample_audio(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=res_type)
+        return (
+            np.asfortranarray(wave)
+            if int(orig_sr) == int(target_sr)
+            else spec_utils.resample_audio(wave, orig_sr=orig_sr, target_sr=target_sr, res_type=res_type)
+        )
 
     def inference_vr(self, x_spec, device, aggressiveness):
         def execute(x_mag_pad, roi_size):
             patches = (x_mag_pad.shape[2] - 2 * self.model_run.offset) // roi_size
-            x_dataset = [x_mag_pad[:, :, i * roi_size:i * roi_size + self.window_size] for i in range(patches)]
+            x_dataset = [x_mag_pad[:, :, i * roi_size : i * roi_size + self.window_size] for i in range(patches)]
             if not x_dataset:
                 raise ValueError("Window size error: no VR patches generated")
 
@@ -278,7 +289,7 @@ class VRSeparator(CommonSeparator):
 
                 mask_batches = []
                 for i in process_batches:
-                    pred = self._predict_mask_mlx(torch.from_numpy(x_dataset[i:i + self.batch_size]))
+                    pred = self._predict_mask_mlx(torch.from_numpy(x_dataset[i : i + self.batch_size]))
                     pred = pred.astype(mx.float32).transpose(1, 2, 0, 3).reshape(pred.shape[1], pred.shape[2], -1)
                     mask_batches.append(pred)
                     write_pos += pred.shape[2]
@@ -288,8 +299,12 @@ class VRSeparator(CommonSeparator):
 
             with torch.inference_mode():
                 for i in process_batches:
-                    x_batch_cpu = torch.from_numpy(x_dataset[i:i + self.batch_size])
-                    x_batch = x_batch_cpu.to(device=device, non_blocking=True, memory_format=torch.channels_last) if self.use_channels_last else x_batch_cpu.to(device=device, non_blocking=True)
+                    x_batch_cpu = torch.from_numpy(x_dataset[i : i + self.batch_size])
+                    x_batch = (
+                        x_batch_cpu.to(device=device, non_blocking=True, memory_format=torch.channels_last)
+                        if self.use_channels_last
+                        else x_batch_cpu.to(device=device, non_blocking=True)
+                    )
                     device_type = torch.device(device).type
                     use_amp = self.use_amp and device_type in ("cuda", "mps")
                     with torch.amp.autocast(device_type, dtype=torch.float16, enabled=use_amp):
@@ -303,7 +318,7 @@ class VRSeparator(CommonSeparator):
                             dtype=pred.dtype,
                             device=pred.device,
                         )
-                    mask[:, :, write_pos:write_pos + pred.size(2)] = pred
+                    mask[:, :, write_pos : write_pos + pred.size(2)] = pred
                     write_pos += pred.size(2)
                     if self.progress_callback:
                         self.progress_callback(min(i + self.batch_size, patches), patches, "Processing VR batches")
@@ -394,7 +409,7 @@ class VRSeparator(CommonSeparator):
             max_value = x_mag_pad.max()
             if max_value > 0:
                 x_mag_pad /= max_value
-            mask_tta = execute(x_mag_pad, roi_size)[:, :, roi_size // 2:]
+            mask_tta = execute(x_mag_pad, roi_size)[:, :, roi_size // 2 :]
             mask = (mask[:, :, :n_frame] + mask_tta[:, :, :n_frame]) * 0.5
         else:
             mask = mask[:, :, :n_frame]
@@ -412,4 +427,6 @@ class VRSeparator(CommonSeparator):
                 is_v51_model=self.is_vr_51_model,
                 torch_device=self.torch_device,
             )
-        return spec_utils.cmb_spectrogram_to_wave(spec, self.model_params, is_v51_model=self.is_vr_51_model, torch_device=self.torch_device)
+        return spec_utils.cmb_spectrogram_to_wave(
+            spec, self.model_params, is_v51_model=self.is_vr_51_model, torch_device=self.torch_device
+        )

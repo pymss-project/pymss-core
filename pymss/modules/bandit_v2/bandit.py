@@ -122,9 +122,7 @@ class BaseBandit(_SpectralComponent):
     ):
         assert band_type == "musical"
 
-        self.band_specs = MusicalBandsplitSpecification(
-            nfft=n_fft, fs=fs, n_bands=n_bands
-        )
+        self.band_specs = MusicalBandsplitSpecification(nfft=n_fft, fs=fs, n_bands=n_bands)
 
         self.band_split = BandSplitModule(
             in_channels=in_channels,
@@ -167,11 +165,7 @@ class BaseBandit(_SpectralComponent):
         init_shape = batch.shape
         if not isinstance(batch, dict):
             mono = batch.view(-1, 1, batch.shape[-1])
-            batch = {
-                "mixture": {
-                    "audio": mono
-                }
-            }
+            batch = {"mixture": {"audio": mono}}
 
         with torch.no_grad():
             mixture = batch["mixture"]["audio"]
@@ -187,7 +181,7 @@ class BaseBandit(_SpectralComponent):
 
         batch = self.separate(batch)
 
-        return torch.stack([batch['estimates'][s]['audio'].view(-1, init_shape[1], init_shape[2]) for s in self.stems], dim=1)
+        return torch.stack([batch["estimates"][s]["audio"].view(-1, init_shape[1], init_shape[2]) for s in self.stems], dim=1)
 
     def encode(self, batch):
         x = batch["mixture"]["spectrogram"]

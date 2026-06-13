@@ -12,19 +12,23 @@ class TimeFrequencyModellingModule(nn.Module):
 
 class ResidualRNN(nn.Module):
     def __init__(
-            self,
-            emb_dim: int,
-            rnn_dim: int,
-            bidirectional: bool = True,
-            rnn_type: str = "LSTM",
-            use_batch_trick: bool = True,
-            use_layer_norm: bool = True,
+        self,
+        emb_dim: int,
+        rnn_dim: int,
+        bidirectional: bool = True,
+        rnn_type: str = "LSTM",
+        use_batch_trick: bool = True,
+        use_layer_norm: bool = True,
     ) -> None:
         super().__init__()
         self.use_layer_norm = use_layer_norm
-        self.norm = nn.LayerNorm(emb_dim) if use_layer_norm else nn.GroupNorm(
-            num_groups=emb_dim,
-            num_channels=emb_dim,
+        self.norm = (
+            nn.LayerNorm(emb_dim)
+            if use_layer_norm
+            else nn.GroupNorm(
+                num_groups=emb_dim,
+                num_channels=emb_dim,
+            )
         )
         self.rnn = rnn.__dict__[rnn_type](
             input_size=emb_dim,
@@ -73,15 +77,15 @@ class Transpose(nn.Module):
 
 class SeqBandModellingModule(TimeFrequencyModellingModule):
     def __init__(
-            self,
-            n_modules: int = 12,
-            emb_dim: int = 128,
-            rnn_dim: int = 256,
-            bidirectional: bool = True,
-            rnn_type: str = "LSTM",
-            parallel_mode: bool = False,
-            sequential_transpose: bool = False,
-            checkpoint_segments: int | None = None,
+        self,
+        n_modules: int = 12,
+        emb_dim: int = 128,
+        rnn_dim: int = 256,
+        bidirectional: bool = True,
+        rnn_type: str = "LSTM",
+        parallel_mode: bool = False,
+        sequential_transpose: bool = False,
+        checkpoint_segments: int | None = None,
     ) -> None:
         super().__init__()
         self.n_modules = n_modules
@@ -89,46 +93,54 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
         self.checkpoint_segments = checkpoint_segments
 
         if parallel_mode:
-            self.seqband = nn.ModuleList([
-                nn.ModuleList([
-                    ResidualRNN(
-                        emb_dim=emb_dim,
-                        rnn_dim=rnn_dim,
-                        bidirectional=bidirectional,
-                        rnn_type=rnn_type,
-                    ),
-                    ResidualRNN(
-                        emb_dim=emb_dim,
-                        rnn_dim=rnn_dim,
-                        bidirectional=bidirectional,
-                        rnn_type=rnn_type,
-                    ),
-                ])
-                for _ in range(n_modules)
-            ])
+            self.seqband = nn.ModuleList(
+                [
+                    nn.ModuleList(
+                        [
+                            ResidualRNN(
+                                emb_dim=emb_dim,
+                                rnn_dim=rnn_dim,
+                                bidirectional=bidirectional,
+                                rnn_type=rnn_type,
+                            ),
+                            ResidualRNN(
+                                emb_dim=emb_dim,
+                                rnn_dim=rnn_dim,
+                                bidirectional=bidirectional,
+                                rnn_type=rnn_type,
+                            ),
+                        ]
+                    )
+                    for _ in range(n_modules)
+                ]
+            )
         elif sequential_transpose:
             layers = []
             for _ in range(2 * n_modules):
-                layers.extend([
+                layers.extend(
+                    [
+                        ResidualRNN(
+                            emb_dim=emb_dim,
+                            rnn_dim=rnn_dim,
+                            bidirectional=bidirectional,
+                            rnn_type=rnn_type,
+                        ),
+                        Transpose(1, 2),
+                    ]
+                )
+            self.seqband = nn.Sequential(*layers)
+        else:
+            self.seqband = nn.ModuleList(
+                [
                     ResidualRNN(
                         emb_dim=emb_dim,
                         rnn_dim=rnn_dim,
                         bidirectional=bidirectional,
                         rnn_type=rnn_type,
-                    ),
-                    Transpose(1, 2),
-                ])
-            self.seqband = nn.Sequential(*layers)
-        else:
-            self.seqband = nn.ModuleList([
-                ResidualRNN(
-                    emb_dim=emb_dim,
-                    rnn_dim=rnn_dim,
-                    bidirectional=bidirectional,
-                    rnn_type=rnn_type,
-                )
-                for _ in range(2 * n_modules)
-            ])
+                    )
+                    for _ in range(2 * n_modules)
+                ]
+            )
 
     def forward(self, z):
         if self.parallel_mode:
@@ -156,13 +168,13 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
 
 class _SeqBandModellingPreset(SeqBandModellingModule):
     def __init__(
-            self,
-            n_modules: int = 12,
-            emb_dim: int = 128,
-            rnn_dim: int = 256,
-            bidirectional: bool = True,
-            rnn_type: str = "LSTM",
-            parallel_mode: bool = False,
+        self,
+        n_modules: int = 12,
+        emb_dim: int = 128,
+        rnn_dim: int = 256,
+        bidirectional: bool = True,
+        rnn_type: str = "LSTM",
+        parallel_mode: bool = False,
     ) -> None:
         super().__init__(
             n_modules=n_modules,

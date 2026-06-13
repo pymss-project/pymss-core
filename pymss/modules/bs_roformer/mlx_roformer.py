@@ -45,8 +45,8 @@ def _reflect_pad_last(x, pad):
         return x
     if x.shape[-1] <= pad:
         raise ValueError("reflect padding requires input length greater than padding")
-    left = x[..., 1:pad + 1][..., ::-1]
-    right = x[..., -pad - 1:-1][..., ::-1]
+    left = x[..., 1 : pad + 1][..., ::-1]
+    right = x[..., -pad - 1 : -1][..., ::-1]
     return mx.concatenate((left, x, right), axis=-1)
 
 
@@ -134,7 +134,7 @@ def _istft_roformer(module, stft_repr, context, length):
     if length is None:
         audio = audio[..., pad:-pad] if pad > 0 else audio
     else:
-        audio = audio[..., pad:pad + length]
+        audio = audio[..., pad : pad + length]
     audio = audio.reshape(context["batch"], n, channels, audio.shape[-1])
     return audio[:, 0] if n == 1 else audio
 
@@ -153,18 +153,20 @@ def _band_split_cache(module, dtype):
     for start, end, dim_in in contiguous_dim_groups(module.band_split.dim_inputs):
         norms = [module.band_split.to_features[i][0] for i in range(start, end)]
         linears = [module.band_split.to_features[i][1] for i in range(start, end)]
-        groups.append({
-            "start": start,
-            "end": end,
-            "dim_in": dim_in,
-            "offset_start": module.band_split._dim_offsets[start],
-            "offset_end": module.band_split._dim_offsets[end],
-            "gamma": _torch_to_mlx_array(torch.stack([norm.gamma for norm in norms], dim=0), dtype),
-            "weight": _torch_to_mlx_array(torch.stack([linear.weight for linear in linears], dim=0), dtype),
-            "bias": None if linears[0].bias is None else _torch_to_mlx_array(
-                torch.stack([linear.bias for linear in linears], dim=0), dtype
-            ),
-        })
+        groups.append(
+            {
+                "start": start,
+                "end": end,
+                "dim_in": dim_in,
+                "offset_start": module.band_split._dim_offsets[start],
+                "offset_end": module.band_split._dim_offsets[end],
+                "gamma": _torch_to_mlx_array(torch.stack([norm.gamma for norm in norms], dim=0), dtype),
+                "weight": _torch_to_mlx_array(torch.stack([linear.weight for linear in linears], dim=0), dtype),
+                "bias": None
+                if linears[0].bias is None
+                else _torch_to_mlx_array(torch.stack([linear.bias for linear in linears], dim=0), dtype),
+            }
+        )
 
     cache = {"key": key, "groups": groups}
     module._pymss_mlx_full_band_split_cache = cache
@@ -183,7 +185,7 @@ def _band_split(module, x, dtype):
 
     outs = []
     for group in _band_split_cache(module, dtype)["groups"]:
-        group_x = x[..., group["offset_start"]:group["offset_end"]]
+        group_x = x[..., group["offset_start"] : group["offset_end"]]
         group_x = group_x.reshape(*group_x.shape[:-1], group["end"] - group["start"], group["dim_in"])
         group_x = _rms_norm(group_x, group["gamma"])
         outs.append(_grouped_linear(group_x, group["weight"], group["bias"]))
@@ -236,11 +238,13 @@ def _mask_estimator_cache(estimator, dtype):
             if kind == "tanh":
                 layers.append(("tanh", None, None))
             else:
-                layers.append((
-                    "linear",
-                    _torch_to_mlx_array(layer.weight, dtype),
-                    None if layer.bias is None else _torch_to_mlx_array(layer.bias, dtype),
-                ))
+                layers.append(
+                    (
+                        "linear",
+                        _torch_to_mlx_array(layer.weight, dtype),
+                        None if layer.bias is None else _torch_to_mlx_array(layer.bias, dtype),
+                    )
+                )
         band_layers.append(tuple(layers))
     cache = {"key": key, "band_layers": tuple(band_layers)}
     estimator._pymss_mlx_full_mask_cache = cache
@@ -373,12 +377,7 @@ def _resize_bilinear_nchw(x, size):
     v11 = mx.take(mx.take(x, y1, axis=2), x1, axis=3)
     wy = wy.reshape(1, 1, out_h, 1)
     wx = wx.reshape(1, 1, 1, out_w)
-    return (
-        v00 * (1 - wy) * (1 - wx)
-        + v01 * (1 - wy) * wx
-        + v10 * wy * (1 - wx)
-        + v11 * wy * wx
-    )
+    return v00 * (1 - wy) * (1 - wx) + v01 * (1 - wy) * wx + v10 * wy * (1 - wx) + v11 * wy * wx
 
 
 def _seq(module, x, dtype):
@@ -442,10 +441,13 @@ def _c3ah(module, x, dtype):
 
     return _conv_block(
         module.cv3,
-        mx.concatenate((
-            _adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype),
-            _conv_block(module.cv1, x, dtype),
-        ), axis=1),
+        mx.concatenate(
+            (
+                _adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype),
+                _conv_block(module.cv1, x, dtype),
+            ),
+            axis=1,
+        ),
         dtype,
     )
 
@@ -457,17 +459,20 @@ def _hyperace(module, features, dtype):
     size = b4.shape[2:]
     x = _conv_block(
         module.fuse_conv,
-        mx.concatenate((
-            _resize_bilinear_nchw(b2, size),
-            _resize_bilinear_nchw(b3, size),
-            b4,
-            _resize_bilinear_nchw(b5, size),
-        ), axis=1),
+        mx.concatenate(
+            (
+                _resize_bilinear_nchw(b2, size),
+                _resize_bilinear_nchw(b3, size),
+                b4,
+                _resize_bilinear_nchw(b5, size),
+            ),
+            axis=1,
+        ),
         dtype,
     )
-    x_h = x[:, :module.c_h]
-    x_l = x[:, module.c_h:module.c_h + module.c_l]
-    x_s = x[:, module.c_h + module.c_l:]
+    x_h = x[:, : module.c_h]
+    x_l = x[:, module.c_h : module.c_h + module.c_l]
+    x_s = x[:, module.c_h + module.c_l :]
     high = _conv_block(
         module.high_order_fuse,
         mx.concatenate([_c3ah(branch, x_h, dtype) for branch in module.high_order_branch], axis=1),
@@ -497,11 +502,17 @@ def _decoder(module, enc_feats, h_ace, dtype):
         dtype,
     )
     d4 = _ds_c3k2(module.up_d5, _resize_bilinear_nchw(d5, p4.shape[2:]), dtype) + _conv_block(module.skip_p4, p4, dtype)
-    d4 = _gated_fusion(module.fusion_d4, d4, _conv_block(module.h_to_d4, _resize_bilinear_nchw(h_ace, d4.shape[2:]), dtype), dtype)
+    d4 = _gated_fusion(
+        module.fusion_d4, d4, _conv_block(module.h_to_d4, _resize_bilinear_nchw(h_ace, d4.shape[2:]), dtype), dtype
+    )
     d3 = _ds_c3k2(module.up_d4, _resize_bilinear_nchw(d4, p3.shape[2:]), dtype) + _conv_block(module.skip_p3, p3, dtype)
-    d3 = _gated_fusion(module.fusion_d3, d3, _conv_block(module.h_to_d3, _resize_bilinear_nchw(h_ace, d3.shape[2:]), dtype), dtype)
+    d3 = _gated_fusion(
+        module.fusion_d3, d3, _conv_block(module.h_to_d3, _resize_bilinear_nchw(h_ace, d3.shape[2:]), dtype), dtype
+    )
     d2 = _ds_c3k2(module.up_d3, _resize_bilinear_nchw(d3, p2.shape[2:]), dtype) + _conv_block(module.skip_p2, p2, dtype)
-    d2 = _gated_fusion(module.fusion_d2, d2, _conv_block(module.h_to_d2, _resize_bilinear_nchw(h_ace, d2.shape[2:]), dtype), dtype)
+    d2 = _gated_fusion(
+        module.fusion_d2, d2, _conv_block(module.h_to_d2, _resize_bilinear_nchw(h_ace, d2.shape[2:]), dtype), dtype
+    )
     return _ds_c3k2(module.final_d2, d2, dtype)
 
 
@@ -560,7 +571,11 @@ def _segm_module(module, x, dtype):
     if isinstance(module, torch.nn.Conv2d):
         return _conv2d_nchw(module, x, dtype)
     if isinstance(module, torch.nn.Linear):
-        return _linear(x, _mlx_param(module, "weight", module.weight, dtype), None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype))
+        return _linear(
+            x,
+            _mlx_param(module, "weight", module.weight, dtype),
+            None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype),
+        )
     if isinstance(module, torch.nn.Identity):
         return x
     raise TypeError(f"unsupported HyperACE SegmModel layer for MLX full backend: {type(module).__name__}")
@@ -620,10 +635,14 @@ def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     x = stft_repr[:, freq_indices]
     masks = _forward_mask_core(module, x, dtype)
     num_stems = len(module.mask_estimators)
-    masks_summed = mx.zeros(
-        (context["batch"], num_stems, stft_repr.shape[1], stft_repr.shape[-2], 2),
-        dtype=masks.dtype,
-    ).at[:, :, freq_indices, :, :].add(masks)
+    masks_summed = (
+        mx.zeros(
+            (context["batch"], num_stems, stft_repr.shape[1], stft_repr.shape[-2], 2),
+            dtype=masks.dtype,
+        )
+        .at[:, :, freq_indices, :, :]
+        .add(masks)
+    )
     denom = mx.array(module.num_bands_per_channel_freq.detach().cpu().numpy(), dtype=masks.dtype)[..., None]
     return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(masks_summed / mx.maximum(denom, 1e-8))
 

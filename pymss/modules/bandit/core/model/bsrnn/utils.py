@@ -47,7 +47,7 @@ def create_triangular_filterbank(all_freqs, f_pts):
 def triangular_filterbank_from_points(all_freqs, f_pts):
     fb = create_triangular_filterbank(all_freqs, f_pts).T
     first_active_band = torch.nonzero(torch.sum(fb, dim=-1))[0, 0]
-    fb[first_active_band, :torch.nonzero(fb[first_active_band, :])[0, 0]] = 1.0
+    fb[first_active_band, : torch.nonzero(fb[first_active_band, :])[0, 0]] = 1.0
     return fb
 
 
@@ -123,16 +123,39 @@ class VocalBandsplitSpecification(BandsplitSpecification):
         return self.bands((0, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
 
     def version4(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
+        return (
+            self.bands((0, self.split1k, 100), (self.split1k, self.split8k, 1000), (self.split8k, self.split16k, 2000))
+            + self.above16k
+        )
 
     def version5(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
+        return (
+            self.bands((0, self.split1k, 100), (self.split1k, self.split16k, 1000), (self.split16k, self.split20k, 2000))
+            + self.above20k
+        )
 
     def version6(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 500), (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
+        return (
+            self.bands(
+                (0, self.split1k, 100),
+                (self.split1k, self.split4k, 500),
+                (self.split4k, self.split8k, 1000),
+                (self.split8k, self.split16k, 2000),
+            )
+            + self.above16k
+        )
 
     def version7(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 250), (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
+        return (
+            self.bands(
+                (0, self.split1k, 100),
+                (self.split1k, self.split4k, 250),
+                (self.split4k, self.split8k, 500),
+                (self.split8k, self.split16k, 1000),
+                (self.split16k, self.split20k, 2000),
+            )
+            + self.above20k
+        )
 
 
 class OtherBandsplitSpecification(VocalBandsplitSpecification):
@@ -145,7 +168,13 @@ class BassBandsplitSpecification(BandsplitSpecification):
         super().__init__(nfft=nfft, fs=fs)
 
     def get_band_specs(self):
-        return self.bands((0, self.split500, 50), (self.split500, self.split1k, 100), (self.split1k, self.split4k, 500), (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + [(self.split16k, self.max_index)]
+        return self.bands(
+            (0, self.split500, 50),
+            (self.split500, self.split1k, 100),
+            (self.split1k, self.split4k, 500),
+            (self.split4k, self.split8k, 1000),
+            (self.split8k, self.split16k, 2000),
+        ) + [(self.split16k, self.max_index)]
 
 
 class DrumBandsplitSpecification(BandsplitSpecification):
@@ -153,29 +182,31 @@ class DrumBandsplitSpecification(BandsplitSpecification):
         super().__init__(nfft=nfft, fs=fs)
 
     def get_band_specs(self):
-        return self.bands((0, self.split1k, 50), (self.split1k, self.split2k, 100), (self.split2k, self.split4k, 250), (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000)) + [(self.split16k, self.max_index)]
-
-
+        return self.bands(
+            (0, self.split1k, 50),
+            (self.split1k, self.split2k, 100),
+            (self.split2k, self.split4k, 250),
+            (self.split4k, self.split8k, 500),
+            (self.split8k, self.split16k, 1000),
+        ) + [(self.split16k, self.max_index)]
 
 
 class PerceptualBandsplitSpecification(BandsplitSpecification):
     def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            fbank_fn: Callable[[int, int, float, float, int], torch.Tensor],
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
+        self,
+        nfft: int,
+        fs: int,
+        fbank_fn: Callable[[int, int, float, float, int], torch.Tensor],
+        n_bands: int,
+        f_min: float = 0.0,
+        f_max: float = None,
     ) -> None:
         super().__init__(nfft=nfft, fs=fs)
         self.n_bands = n_bands
         if f_max is None:
             f_max = fs / 2
 
-        self.filterbank = fbank_fn(
-                n_bands, fs, f_min, f_max, self.max_index
-        )
+        self.filterbank = fbank_fn(n_bands, fs, f_min, f_max, self.max_index)
 
         weight_per_bin = torch.sum(self.filterbank, dim=0, keepdim=True)
         normalized_mel_fb = self.filterbank / weight_per_bin  # (n_mels, n_freqs)
@@ -201,13 +232,13 @@ class PerceptualBandsplitSpecification(BandsplitSpecification):
         return self.freq_weights
 
     def save_to_file(self, dir_path: str) -> None:
-
         os.makedirs(dir_path, exist_ok=True)
 
         import pickle
 
         with open(os.path.join(dir_path, "mel_bandsplit_spec.pkl"), "wb") as f:
             pickle.dump({"band_specs": self.band_specs, "freq_weights": self.freq_weights, "filterbank": self.filterbank}, f)
+
 
 def mel_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     nfft = 2 * (n_freqs - 1)
@@ -227,19 +258,11 @@ def mel_filterbank(n_bands, fs, f_min, f_max, n_freqs):
 
 
 class MelBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=mel_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)
 
-def musical_filterbank(n_bands, fs, f_min, f_max, n_freqs,
-                       scale="constant"):
 
+def musical_filterbank(n_bands, fs, f_min, f_max, n_freqs, scale="constant"):
     nfft, f_max, f_min = 2 * (n_freqs - 1), f_max or fs / 2, fs / (2 * (n_freqs - 1))
     df, bandwidth_mult = fs / nfft, np.power(2.0, np.log2(f_max / f_min) / n_bands)
     hz_pts = midi_to_hz(np.linspace(max(0, hz_to_midi(f_min)), hz_to_midi(f_max), n_bands))
@@ -248,28 +271,20 @@ def musical_filterbank(n_bands, fs, f_min, f_max, n_freqs,
     fb = np.zeros((n_bands, n_freqs))
 
     for i in range(n_bands):
-        fb[i, low_bins[i]:high_bins[i]+1] = 1.0
+        fb[i, low_bins[i] : high_bins[i] + 1] = 1.0
 
-    fb[0, :low_bins[0]] = 1.0
-    fb[-1, high_bins[-1]+1:] = 1.0
+    fb[0, : low_bins[0]] = 1.0
+    fb[-1, high_bins[-1] + 1 :] = 1.0
 
     return torch.as_tensor(fb)
 
+
 class MusicalBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=musical_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)
 
 
-def bark_filterbank(
-    n_bands, fs, f_min, f_max, n_freqs
-):
+def bark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     nfft = 2 * (n_freqs - 1)
     f_max = f_max or fs / 2
     centers = np.linspace(hz_to_bark(f_min), hz_to_bark(f_max), n_bands)
@@ -291,60 +306,33 @@ def bark_filterbank(
 
     return torch.as_tensor(fb)
 
+
 class BarkBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=bark_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)
 
 
-def triangular_bark_filterbank(
-    n_bands, fs, f_min, f_max, n_freqs
-):
-
+def triangular_bark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     return triangular_filterbank_from_points(
         torch.linspace(0, fs // 2, n_freqs),
         600 * torch.sinh(torch.linspace(hz_to_bark(f_min), hz_to_bark(f_max), n_bands + 2) / 6),
     )
 
+
 class TriangularBarkBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=triangular_bark_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)
 
 
-
-def minibark_filterbank(
-    n_bands, fs, f_min, f_max, n_freqs
-):
+def minibark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     fb = bark_filterbank(n_bands, fs, f_min, f_max, n_freqs)
     fb[fb < np.sqrt(0.5)] = 0.0
     return fb
 
+
 class MiniBarkBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=minibark_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)
-
-
-
 
 
 def erb_filterbank(
@@ -361,14 +349,6 @@ def erb_filterbank(
     )
 
 
-
 class EquivalentRectangularBandsplitSpecification(PerceptualBandsplitSpecification):
-    def __init__(
-            self,
-            nfft: int,
-            fs: int,
-            n_bands: int,
-            f_min: float = 0.0,
-            f_max: float = None
-    ) -> None:
+    def __init__(self, nfft: int, fs: int, n_bands: int, f_min: float = 0.0, f_max: float = None) -> None:
         super().__init__(fbank_fn=erb_filterbank, nfft=nfft, fs=fs, n_bands=n_bands, f_min=f_min, f_max=f_max)

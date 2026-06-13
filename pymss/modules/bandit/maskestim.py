@@ -22,15 +22,15 @@ def _resolve_channels(in_channels=None, in_channel=None):
 
 class BaseNormMLP(nn.Module):
     def __init__(
-            self,
-            emb_dim: int,
-            mlp_dim: int,
-            bandwidth: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs=None,
-            complex_mask: bool = True,
+        self,
+        emb_dim: int,
+        mlp_dim: int,
+        bandwidth: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs=None,
+        complex_mask: bool = True,
     ):
         super().__init__()
         if hidden_activation_kwargs is None:
@@ -52,17 +52,17 @@ class BaseNormMLP(nn.Module):
 
 class NormMLP(BaseNormMLP):
     def __init__(
-            self,
-            emb_dim: int,
-            mlp_dim: int,
-            bandwidth: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs=None,
-            complex_mask: bool = True,
-            use_combined: bool = False,
-            use_checkpoint: bool = False,
+        self,
+        emb_dim: int,
+        mlp_dim: int,
+        bandwidth: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs=None,
+        complex_mask: bool = True,
+        use_combined: bool = False,
+        use_checkpoint: bool = False,
     ) -> None:
         super().__init__(
             emb_dim=emb_dim,
@@ -95,7 +95,7 @@ class NormMLP(BaseNormMLP):
         return mb.permute(0, 2, 3, 1)
 
     def forward(self, qb):
-        if hasattr(self, 'combined'):
+        if hasattr(self, "combined"):
             if self.use_checkpoint:
                 mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False)
             else:
@@ -107,15 +107,15 @@ class NormMLP(BaseNormMLP):
 
 class MultAddNormMLP(NormMLP):
     def __init__(
-            self,
-            emb_dim: int,
-            mlp_dim: int,
-            bandwidth: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs=None,
-            complex_mask: bool = True,
+        self,
+        emb_dim: int,
+        mlp_dim: int,
+        bandwidth: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs=None,
+        complex_mask: bool = True,
     ) -> None:
         super().__init__(
             emb_dim=emb_dim,
@@ -146,17 +146,17 @@ class MaskEstimationModuleSuperBase(nn.Module):
 
 class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            mlp_dim: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Dict = None,
-            complex_mask: bool = True,
-            norm_mlp_cls: Type[nn.Module] = NormMLP,
-            norm_mlp_kwargs: Dict = None,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        mlp_dim: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Dict = None,
+        complex_mask: bool = True,
+        norm_mlp_cls: Type[nn.Module] = NormMLP,
+        norm_mlp_kwargs: Dict = None,
     ) -> None:
         super().__init__()
         channels = _resolve_channels(in_channels, in_channel)
@@ -164,19 +164,21 @@ class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
         self.n_bands = len(band_specs)
         hidden_activation_kwargs = hidden_activation_kwargs or {}
         norm_mlp_kwargs = norm_mlp_kwargs or {}
-        self.norm_mlp = nn.ModuleList([
-            norm_mlp_cls(
-                bandwidth=self.band_widths[b],
-                emb_dim=emb_dim,
-                mlp_dim=mlp_dim,
-                in_channels=channels,
-                hidden_activation=hidden_activation,
-                hidden_activation_kwargs=hidden_activation_kwargs,
-                complex_mask=complex_mask,
-                **norm_mlp_kwargs,
-            )
-            for b in range(self.n_bands)
-        ])
+        self.norm_mlp = nn.ModuleList(
+            [
+                norm_mlp_cls(
+                    bandwidth=self.band_widths[b],
+                    emb_dim=emb_dim,
+                    mlp_dim=mlp_dim,
+                    in_channels=channels,
+                    hidden_activation=hidden_activation,
+                    hidden_activation_kwargs=hidden_activation_kwargs,
+                    complex_mask=complex_mask,
+                    **norm_mlp_kwargs,
+                )
+                for b in range(self.n_bands)
+            ]
+        )
 
     def compute_masks(self, q):
         return [nmlp(q[:, b, :, :]) for b, nmlp in enumerate(self.norm_mlp)]
@@ -187,25 +189,25 @@ class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
 
 class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            freq_weights: List[torch.Tensor],
-            n_freq: int,
-            emb_dim: int,
-            mlp_dim: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            cond_dim: int = 0,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Dict = None,
-            complex_mask: bool = True,
-            norm_mlp_cls: Type[nn.Module] = NormMLP,
-            norm_mlp_kwargs: Dict = None,
-            use_freq_weights: bool = True,
-            register_all_freq_weights: bool = True,
-            allow_cond: bool = True,
-            output_dtype: str = 'mask',
-            compute_all_masks: bool = True,
+        self,
+        band_specs: List[Tuple[float, float]],
+        freq_weights: List[torch.Tensor],
+        n_freq: int,
+        emb_dim: int,
+        mlp_dim: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        cond_dim: int = 0,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Dict = None,
+        complex_mask: bool = True,
+        norm_mlp_cls: Type[nn.Module] = NormMLP,
+        norm_mlp_kwargs: Dict = None,
+        use_freq_weights: bool = True,
+        register_all_freq_weights: bool = True,
+        allow_cond: bool = True,
+        output_dtype: str = "mask",
+        compute_all_masks: bool = True,
     ) -> None:
         check_nonzero_bandwidth(band_specs)
         check_no_gap(band_specs)
@@ -264,7 +266,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
         batch, n_bands, n_time, _ = q.shape
 
         mask_list = self.compute_masks(q) if self.compute_all_masks else None
-        dtype = torch.complex64 if self.output_dtype == 'complex64' else mask_list[0].dtype
+        dtype = torch.complex64 if self.output_dtype == "complex64" else mask_list[0].dtype
         masks = torch.zeros(batch, self.in_channels, self.n_freq, n_time, device=q.device, dtype=dtype)
 
         for im in range(n_bands):
@@ -279,16 +281,16 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
 
 class MaskEstimationModule(OverlappingMaskEstimationModule):
     def __init__(
-            self,
-            band_specs: List[Tuple[float, float]],
-            emb_dim: int,
-            mlp_dim: int,
-            in_channels: Optional[int] = None,
-            in_channel: Optional[int] = None,
-            hidden_activation: str = "Tanh",
-            hidden_activation_kwargs: Dict = None,
-            complex_mask: bool = True,
-            **kwargs,
+        self,
+        band_specs: List[Tuple[float, float]],
+        emb_dim: int,
+        mlp_dim: int,
+        in_channels: Optional[int] = None,
+        in_channel: Optional[int] = None,
+        hidden_activation: str = "Tanh",
+        hidden_activation_kwargs: Dict = None,
+        complex_mask: bool = True,
+        **kwargs,
     ) -> None:
         check_nonzero_bandwidth(band_specs)
         check_no_gap(band_specs)

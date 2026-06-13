@@ -18,11 +18,7 @@ class SeparatorCase:
     device_ids: tuple[int, ...] = (0,)
 
     def missing_paths(self) -> list[Path]:
-        return [
-            path
-            for path in (self.model_path, self.config_path, self.input_path)
-            if not path.exists()
-        ]
+        return [path for path in (self.model_path, self.config_path, self.input_path) if not path.exists()]
 
 
 SEPARATOR_CASES = [

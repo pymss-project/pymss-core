@@ -48,11 +48,7 @@ def inference_tanh(x):
 
 
 class BandSplit(Module):
-    def __init__(
-            self,
-            dim,
-            dim_inputs: Tuple[int, ...]
-    ):
+    def __init__(self, dim, dim_inputs: Tuple[int, ...]):
         super().__init__()
         self.dim_inputs = dim_inputs
         self._dim_offsets = dim_input_offsets(dim_inputs)
@@ -74,7 +70,9 @@ class BandSplit(Module):
         cached = (
             gamma,
             weight,
-            torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0) if linears[0].bias is not None else None,
+            torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
+            if linears[0].bias is not None
+            else None,
         )
         self._group_cache[key] = cached
         return cached
@@ -85,7 +83,7 @@ class BandSplit(Module):
             offset_end = self._dim_offsets[end]
             group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in)
             gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype)
-            group_x = F.normalize(group_x, dim=-1) * (dim_in ** 0.5) * gamma
+            group_x = F.normalize(group_x, dim=-1) * (dim_in**0.5) * gamma
             return grouped_linear(group_x, weight, bias)
 
         return torch.cat([forward_group(start, end, dim_in) for start, end, dim_in in self._dim_groups], dim=-2)
@@ -98,35 +96,44 @@ class BandSplit(Module):
         if not self.training and self.use_grouped_forward:
             return self._forward_grouped(x)
 
-        return torch.stack([to_feature(split_input) for split_input, to_feature in zip(x.split(self.dim_inputs, dim=-1), self.to_features)], dim=-2)
+        return torch.stack(
+            [to_feature(split_input) for split_input, to_feature in zip(x.split(self.dim_inputs, dim=-1), self.to_features)],
+            dim=-2,
+        )
 
 
 def MLP(
-        dim_in,
-        dim_out,
-        dim_hidden=None,
-        depth=1,
-        activation=nn.Tanh,
-        hidden_layers=None,
+    dim_in,
+    dim_out,
+    dim_hidden=None,
+    depth=1,
+    activation=nn.Tanh,
+    hidden_layers=None,
 ):
     dim_hidden = default(dim_hidden, dim_in)
     hidden_layers = default(hidden_layers, max(depth - 1, 0))
     dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out)
-    return nn.Sequential(*[
-        layer
-        for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:]))
-        for layer in ((nn.Linear(layer_dim_in, layer_dim_out),) if ind == len(dims) - 2 else (nn.Linear(layer_dim_in, layer_dim_out), activation()))
-    ])
+    return nn.Sequential(
+        *[
+            layer
+            for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:]))
+            for layer in (
+                (nn.Linear(layer_dim_in, layer_dim_out),)
+                if ind == len(dims) - 2
+                else (nn.Linear(layer_dim_in, layer_dim_out), activation())
+            )
+        ]
+    )
 
 
 class MaskEstimator(Module):
     def __init__(
-            self,
-            dim,
-            dim_inputs: Tuple[int, ...],
-            depth,
-            mlp_expansion_factor=4,
-            mlp_hidden_layers=None,
+        self,
+        dim,
+        dim_inputs: Tuple[int, ...],
+        depth,
+        mlp_expansion_factor=4,
+        mlp_hidden_layers=None,
     ):
         super().__init__()
         self.dim_inputs = dim_inputs
@@ -146,13 +153,14 @@ class MaskEstimator(Module):
         # _groupable_layers_cache intentionally removed: id()-keyed caching is
         # unsafe under DataParallel replica recycling (see _groupable_layers).
         dim_hidden = dim * mlp_expansion_factor
-        self.to_freqs = ModuleList([
-            nn.Sequential(
-                MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth, hidden_layers=mlp_hidden_layers),
-                nn.GLU(dim=-1)
-            )
-            for dim_in in dim_inputs
-        ])
+        self.to_freqs = ModuleList(
+            [
+                nn.Sequential(
+                    MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth, hidden_layers=mlp_hidden_layers), nn.GLU(dim=-1)
+                )
+                for dim_in in dim_inputs
+            ]
+        )
 
     def _groupable_layers(self, mlp_with_glu):
         # NOTE: Do not cache by id(mlp_with_glu). Under torch.nn.DataParallel the
@@ -169,12 +177,12 @@ class MaskEstimator(Module):
         layers = []
         for layer in mlp:
             if isinstance(layer, nn.Linear):
-                layers.append(('linear', layer))
+                layers.append(("linear", layer))
             elif isinstance(layer, nn.Tanh):
-                layers.append(('tanh', None))
+                layers.append(("tanh", None))
             else:
                 return None
-        if not layers or layers[-1][0] != 'linear':
+        if not layers or layers[-1][0] != "linear":
             return None
         return tuple(layers)
 
@@ -185,12 +193,19 @@ class MaskEstimator(Module):
 
     @staticmethod
     def _layers_signature(layers):
-        return tuple(item if kind != 'linear' else (kind, item.in_features, item.out_features, item.bias is not None) for kind, item in layers)
+        return tuple(
+            item if kind != "linear" else (kind, item.in_features, item.out_features, item.bias is not None)
+            for kind, item in layers
+        )
 
     def _band_layer_signatures(self):
         if self._band_signatures_cache is None:
             layers = self._band_groupable_layers()
-            self._band_signatures_cache = None if any(layer_group is None for layer_group in layers) else tuple(self._layers_signature(layer_group) for layer_group in layers)
+            self._band_signatures_cache = (
+                None
+                if any(layer_group is None for layer_group in layers)
+                else tuple(self._layers_signature(layer_group) for layer_group in layers)
+            )
         return self._band_signatures_cache
 
     def _layer_grouping_plan(self):
@@ -212,15 +227,15 @@ class MaskEstimator(Module):
         plan = []
         for layer_index in range(layer_count):
             first_kind = band_layers[0][layer_index][0]
-            if first_kind == 'tanh':
-                if any(layers[layer_index][0] != 'tanh' for layers in band_layers):
+            if first_kind == "tanh":
+                if any(layers[layer_index][0] != "tanh" for layers in band_layers):
                     self._layer_group_plan_ready = True
                     self._layer_group_plan = None
                     return None
-                plan.append(('tanh', None))
+                plan.append(("tanh", None))
                 continue
 
-            if first_kind != 'linear':
+            if first_kind != "linear":
                 self._layer_group_plan_ready = True
                 self._layer_group_plan = None
                 return None
@@ -228,19 +243,19 @@ class MaskEstimator(Module):
             groups = defaultdict(list)
             for band_index, layers in enumerate(band_layers):
                 kind, layer = layers[layer_index]
-                if kind != 'linear':
+                if kind != "linear":
                     self._layer_group_plan_ready = True
                     self._layer_group_plan = None
                     return None
                 signature = (layer.in_features, layer.out_features, layer.bias is not None)
                 groups[signature].append(band_index)
 
-            plan.append(('linear', tuple((signature, tuple(indices)) for signature, indices in groups.items())))
+            plan.append(("linear", tuple((signature, tuple(indices)) for signature, indices in groups.items())))
 
         # Extra hidden layers in MBR produce large per-band hidden->hidden
         # batched GEMMs. On CUDA those are slower than the existing addmm
         # loop, so keep this fast path to the common two-linear mask heads.
-        if sum(1 for kind, _ in plan if kind == 'linear') > 2:
+        if sum(1 for kind, _ in plan if kind == "linear") > 2:
             self._layer_group_plan_ready = True
             self._layer_group_plan = None
             return None
@@ -275,8 +290,8 @@ class MaskEstimator(Module):
         band_layers = self._band_groupable_layers()
         first_layers = band_layers[start]
         for layer_index, (kind, _) in enumerate(first_layers):
-            if kind == 'tanh':
-                grouped_layers.append(('tanh', None, None))
+            if kind == "tanh":
+                grouped_layers.append(("tanh", None, None))
                 continue
 
             linears = [band_layers[i][layer_index][1] for i in range(start, end)]
@@ -284,7 +299,7 @@ class MaskEstimator(Module):
             bias = None
             if linears[0].bias is not None:
                 bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
-            grouped_layers.append(('linear', weight, bias))
+            grouped_layers.append(("linear", weight, bias))
 
         cached = tuple(grouped_layers)
         self._group_cache[key] = cached
@@ -315,9 +330,7 @@ class MaskEstimator(Module):
             return cached
 
         linears = [
-            estimator._band_groupable_layers()[band_index][layer_index][1]
-            for estimator in estimators
-            for band_index in indices
+            estimator._band_groupable_layers()[band_index][layer_index][1] for estimator in estimators for band_index in indices
         ]
         weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
         bias = None
@@ -360,7 +373,7 @@ class MaskEstimator(Module):
         def forward_group(start, end):
             group_x = x[:, :, start:end, :]
             for kind, weight, bias in self._get_group_params(start, end, x.device, x.dtype):
-                if kind == 'linear':
+                if kind == "linear":
                     group_x = grouped_linear(group_x, weight, bias)
                 else:
                     group_x = inference_tanh(group_x)
@@ -375,7 +388,7 @@ class MaskEstimator(Module):
 
         group_x = x
         for layer_index, (kind, groups) in enumerate(plan):
-            if kind == 'tanh':
+            if kind == "tanh":
                 group_x = inference_tanh(group_x)
                 continue
 
@@ -416,7 +429,7 @@ class MaskEstimator(Module):
                 return None
 
             for kind, layer in layers:
-                if kind == 'tanh':
+                if kind == "tanh":
                     group_x = inference_tanh(group_x)
                 else:
                     group_x = layer(group_x)
@@ -460,7 +473,7 @@ class MaskEstimator(Module):
 
     @staticmethod
     def _forward_packed_estimators_two_layer_stream(estimators, x, plan):
-        if len(plan) != 3 or plan[0][0] != 'linear' or plan[1][0] != 'tanh' or plan[2][0] != 'linear':
+        if len(plan) != 3 or plan[0][0] != "linear" or plan[1][0] != "tanh" or plan[2][0] != "linear":
             return None
 
         first = estimators[0]
@@ -474,18 +487,14 @@ class MaskEstimator(Module):
         result = x.new_empty(x.shape[0], stem_count, x.shape[1], sum(first.dim_inputs))
 
         for final_signature, indices in final_groups:
-            weight, bias = first._get_packed_layer_group_params(
-                estimators, 0, first_signature, indices, x.device, x.dtype
-            )
+            weight, bias = first._get_packed_layer_group_params(estimators, 0, first_signature, indices, x.device, x.dtype)
             band_index = first._indices_tensor(indices, x.device)
             group_x = x.index_select(-2, band_index).unsqueeze(2).expand(-1, -1, stem_count, -1, -1)
             b, t, s, g, d = group_x.shape
             group_x = grouped_linear(group_x.reshape(b, t, s * g, d), weight, bias)
             group_x = inference_tanh(group_x)
 
-            weight, bias = first._get_packed_layer_group_params(
-                estimators, 2, final_signature, indices, x.device, x.dtype
-            )
+            weight, bias = first._get_packed_layer_group_params(estimators, 2, final_signature, indices, x.device, x.dtype)
             group_x = grouped_linear(group_x, weight, bias)
             group_x = F.glu(group_x, dim=-1).reshape(b, t, s, g, -1)
 
@@ -518,7 +527,7 @@ class MaskEstimator(Module):
         group_x = x
 
         for layer_index, (kind, groups) in enumerate(plan):
-            if kind == 'tanh':
+            if kind == "tanh":
                 group_x = inference_tanh(group_x)
                 continue
 
@@ -582,7 +591,7 @@ class MaskEstimator(Module):
         for band_index, layers in enumerate(band_layers):
             group_x = x[:, :, band_index, :].unsqueeze(-2).expand(-1, -1, stem_count, -1)
             for layer_index, (kind, layer) in enumerate(layers):
-                if kind == 'tanh':
+                if kind == "tanh":
                     group_x = inference_tanh(group_x)
                     continue
 
@@ -621,7 +630,7 @@ class MaskEstimator(Module):
         if plan is None:
             return
         for layer_index, (kind, groups) in enumerate(plan):
-            if kind == 'tanh':
+            if kind == "tanh":
                 continue
             for signature, indices in groups:
                 self._get_layer_group_params(layer_index, signature, indices, device, dtype)
@@ -637,7 +646,13 @@ class MaskEstimator(Module):
 
         first = estimators[0]
         plan = first._layer_grouping_plan()
-        if len(plan) == 3 and plan[0][0] == 'linear' and plan[1][0] == 'tanh' and plan[2][0] == 'linear' and len(plan[0][1]) == 1:
+        if (
+            len(plan) == 3
+            and plan[0][0] == "linear"
+            and plan[1][0] == "tanh"
+            and plan[2][0] == "linear"
+            and len(plan[0][1]) == 1
+        ):
             first_signature, _ = plan[0][1][0]
             for final_signature, indices in plan[2][1]:
                 first._get_packed_layer_group_params(estimators, 0, first_signature, indices, device, dtype)
@@ -645,7 +660,7 @@ class MaskEstimator(Module):
             return
 
         for layer_index, (kind, groups) in enumerate(plan):
-            if kind == 'tanh':
+            if kind == "tanh":
                 continue
             for signature, indices in groups:
                 first._get_packed_layer_group_params(estimators, layer_index, signature, indices, device, dtype)
@@ -657,5 +672,12 @@ class MaskEstimator(Module):
         first = estimators[0]
         for band_index, layers in enumerate(first._band_groupable_layers()):
             for layer_index, (kind, layer) in enumerate(layers):
-                if kind != 'tanh':
-                    first._get_packed_layer_group_params(estimators, layer_index, (layer.in_features, layer.out_features, layer.bias is not None), (band_index,), device, dtype)
+                if kind != "tanh":
+                    first._get_packed_layer_group_params(
+                        estimators,
+                        layer_index,
+                        (layer.in_features, layer.out_features, layer.bias is not None),
+                        (band_index,),
+                        device,
+                        dtype,
+                    )

@@ -174,18 +174,9 @@ class HTDemucs(nn.Module):
                 chout_z = max(chout, chout_z)
                 chout = chout_z
 
-            enc = HEncLayer(
-                chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw
-            )
+            enc = HEncLayer(chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw)
             if freq:
-                tenc = HEncLayer(
-                    chin,
-                    chout,
-                    dconv=dconv_mode & 1,
-                    context=context_enc,
-                    empty=last_freq,
-                    **kwt
-                )
+                tenc = HEncLayer(chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt)
                 self.tencoder.append(tenc)
 
             if multi:
@@ -198,26 +189,11 @@ class HTDemucs(nn.Module):
                     chin_z *= 2
                 if self.num_subbands > 1:
                     chin_z *= self.num_subbands
-            dec = HDecLayer(
-                chout_z,
-                chin_z,
-                dconv=dconv_mode & 2,
-                last=index == 0,
-                context=context,
-                **kw_dec
-            )
+            dec = HDecLayer(chout_z, chin_z, dconv=dconv_mode & 2, last=index == 0, context=context, **kw_dec)
             if multi:
                 dec = MultiWrap(dec, multi_freqs)
             if freq:
-                tdec = HDecLayer(
-                    chout,
-                    chin,
-                    dconv=dconv_mode & 2,
-                    empty=last_freq,
-                    last=index == 0,
-                    context=context,
-                    **kwt
-                )
+                tdec = HDecLayer(chout, chin, dconv=dconv_mode & 2, empty=last_freq, last=index == 0, context=context, **kwt)
                 self.tdecoder.insert(0, tdec)
             self.decoder.insert(0, dec)
 
@@ -231,9 +207,7 @@ class HTDemucs(nn.Module):
                 else:
                     freqs //= stride
             if index == 0 and freq_emb:
-                self.freq_emb = ScaledEmbedding(
-                    freqs, chin_z, smooth=emb_smooth, scale=emb_scale
-                )
+                self.freq_emb = ScaledEmbedding(freqs, chin_z, smooth=emb_smooth, scale=emb_scale)
                 self.freq_emb_scale = freq_emb
 
         if rescale:
@@ -242,15 +216,9 @@ class HTDemucs(nn.Module):
         transformer_channels = channels * growth ** (depth - 1)
         if bottom_channels:
             self.channel_upsampler = nn.Conv1d(transformer_channels, bottom_channels, 1)
-            self.channel_downsampler = nn.Conv1d(
-                bottom_channels, transformer_channels, 1
-            )
-            self.channel_upsampler_t = nn.Conv1d(
-                transformer_channels, bottom_channels, 1
-            )
-            self.channel_downsampler_t = nn.Conv1d(
-                bottom_channels, transformer_channels, 1
-            )
+            self.channel_downsampler = nn.Conv1d(bottom_channels, transformer_channels, 1)
+            self.channel_upsampler_t = nn.Conv1d(transformer_channels, bottom_channels, 1)
+            self.channel_downsampler_t = nn.Conv1d(bottom_channels, transformer_channels, 1)
 
             transformer_channels = bottom_channels
 
@@ -310,11 +278,7 @@ class HTDemucs(nn.Module):
         self.mps_model_compute_dtype = compute_dtype
 
     def _use_mlx_full_forward(self, mix):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and mix.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and mix.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from .demucs_mlx import mlx_forward_demucs_mx
@@ -333,7 +297,7 @@ class HTDemucs(nn.Module):
 
         z = spectro(x, nfft, hl)[..., :-1, :]
         assert z.shape[-1] == le + 4, (z.shape, x.shape, le)
-        z = z[..., 2: 2 + le]
+        z = z[..., 2 : 2 + le]
         return z
 
     def _ispec(self, z, length=None, scale=0):
@@ -343,7 +307,7 @@ class HTDemucs(nn.Module):
         pad = hl // 2 * 3
         le = hl * int(math.ceil(length / hl)) + 2 * pad
         x = ispectro(z, hl, length=le)
-        x = x[..., pad: pad + length]
+        x = x[..., pad : pad + length]
         return x
 
     def _magnitude(self, z):
@@ -368,16 +332,14 @@ class HTDemucs(nn.Module):
             return self._wiener(m, z, niters)
 
     def _wiener(self, mag_out, mix_stft, niters):
-        raise NotImplementedError('non-CaC Wiener Demucs is not supported by the dependency-free path')
+        raise NotImplementedError("non-CaC Wiener Demucs is not supported by the dependency-free path")
 
     def valid_length(self, length: int):
         if not self.use_train_segment:
             return length
         training_length = int(self.segment * self.samplerate)
         if training_length < length:
-            raise ValueError(
-                    f"Given length {length} is longer than "
-                    f"training length {training_length}")
+            raise ValueError(f"Given length {length} is longer than training length {training_length}")
         return training_length
 
     def cac2cws(self, x):
@@ -506,12 +468,12 @@ class HTDemucs(nn.Module):
 
 def get_model(args):
     extra = {
-        'sources': list(args.training.instruments),
-        'audio_channels': args.training.channels,
-        'samplerate': args.training.samplerate,
-        'segment': args.training.segment,
+        "sources": list(args.training.instruments),
+        "audio_channels": args.training.channels,
+        "samplerate": args.training.samplerate,
+        "segment": args.training.segment,
     }
-    if args.model != 'htdemucs':
+    if args.model != "htdemucs":
         raise ValueError(f"Only htdemucs configs are supported, got {args.model!r}")
     kw = to_plain(getattr(args, args.model))
     return HTDemucs(**extra, **kw)

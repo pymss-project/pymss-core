@@ -23,7 +23,7 @@ def center_trim(tensor, reference):
     if delta < 0:
         raise ValueError(f"tensor must be larger than reference. Delta is {delta}.")
     if delta:
-        tensor = tensor[..., delta // 2:-(delta - delta // 2)]
+        tensor = tensor[..., delta // 2 : -(delta - delta // 2)]
     return tensor
 
 
@@ -261,7 +261,9 @@ class LegacyV3Demucs(nn.Module):
                 act2(),
             ]
             if dconv_mode & 1:
-                encode.append(LegacyDConv(channels, depth=dconv_depth, init=dconv_init, compress=dconv_comp, attn=attn, lstm=lstm))
+                encode.append(
+                    LegacyDConv(channels, depth=dconv_depth, init=dconv_init, compress=dconv_comp, attn=attn, lstm=lstm)
+                )
             if rewrite:
                 encode += [nn.Conv1d(channels, ch_scale * channels, 1), norm_fn(ch_scale * channels), activation]
             self.encoder.append(nn.Sequential(*encode))
@@ -275,7 +277,9 @@ class LegacyV3Demucs(nn.Module):
                     activation,
                 ]
             if dconv_mode & 2:
-                decode.append(LegacyDConv(channels, depth=dconv_depth, init=dconv_init, compress=dconv_comp, attn=attn, lstm=lstm))
+                decode.append(
+                    LegacyDConv(channels, depth=dconv_depth, init=dconv_init, compress=dconv_comp, attn=attn, lstm=lstm)
+                )
             decode.append(nn.ConvTranspose1d(channels, out_channels, kernel_size, stride))
             if index > 0:
                 decode += [norm_fn(out_channels), act2()]
@@ -373,12 +377,12 @@ class LegacyLocalState(nn.Module):
         if self.nfreqs:
             periods = torch.arange(1, self.nfreqs + 1, device=x.device, dtype=x.dtype)
             freq_kernel = torch.cos(2 * math.pi * delta / periods.view(-1, 1, 1))
-            freq_q = self.query_freqs(x).view(batch, heads, -1, time) / self.nfreqs ** 0.5
+            freq_q = self.query_freqs(x).view(batch, heads, -1, time) / self.nfreqs**0.5
             dots += torch.einsum("fts,bhfs->bhts", freq_kernel, freq_q)
         if self.ndecay:
             decays = torch.arange(1, self.ndecay + 1, device=x.device, dtype=x.dtype)
             decay_q = torch.sigmoid(self.query_decay(x).view(batch, heads, -1, time)) / 2
-            decay_kernel = -decays.view(-1, 1, 1) * delta.abs() / self.ndecay ** 0.5
+            decay_kernel = -decays.view(-1, 1, 1) * delta.abs() / self.ndecay**0.5
             dots += torch.einsum("fts,bhfs->bhts", decay_kernel, decay_q)
 
         dots.masked_fill_(torch.eye(time, device=dots.device, dtype=torch.bool), -100)
@@ -393,14 +397,28 @@ class LegacyLocalState(nn.Module):
 
 
 class LegacyDConv(nn.Module):
-    def __init__(self, channels, compress=4, depth=2, init=1e-4, norm=True, attn=False, heads=4, ndecay=4, lstm=False, gelu=True, kernel=3, **_):
+    def __init__(
+        self,
+        channels,
+        compress=4,
+        depth=2,
+        init=1e-4,
+        norm=True,
+        attn=False,
+        heads=4,
+        ndecay=4,
+        lstm=False,
+        gelu=True,
+        kernel=3,
+        **_,
+    ):
         super().__init__()
         norm_fn = (lambda d: nn.GroupNorm(1, d)) if norm else (lambda d: nn.Identity())
         act = nn.GELU if gelu else nn.ReLU
         hidden = int(channels / compress)
         self.layers = nn.ModuleList()
         for index in range(abs(depth)):
-            dilation = 2 ** index if depth > 0 else 1
+            dilation = 2**index if depth > 0 else 1
             padding = dilation * (kernel // 2)
             mods = [
                 nn.Conv1d(channels, hidden, kernel, dilation=dilation, padding=padding),
@@ -424,9 +442,22 @@ class LegacyDConv(nn.Module):
 
 
 class LegacyHEncLayer(nn.Module):
-    def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False,
-                 freq=True, dconv=True, norm=True, context=0, dconv_kw=None, pad=True,
-                 rewrite=True):
+    def __init__(
+        self,
+        chin,
+        chout,
+        kernel_size=8,
+        stride=4,
+        norm_groups=1,
+        empty=False,
+        freq=True,
+        dconv=True,
+        norm=True,
+        context=0,
+        dconv_kw=None,
+        pad=True,
+        rewrite=True,
+    ):
         super().__init__()
         dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
@@ -461,16 +492,35 @@ class LegacyHEncLayer(nn.Module):
         if self.dconv:
             if self.freq:
                 batch, channels, freqs, time = y.shape
-                y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, channels, time)).view(batch, freqs, channels, time).transpose(1, 2)
+                y = (
+                    self.dconv(y.permute(0, 2, 1, 3).reshape(-1, channels, time))
+                    .view(batch, freqs, channels, time)
+                    .transpose(1, 2)
+                )
             else:
                 y = self.dconv(y)
         return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
 
 
 class LegacyHDecLayer(nn.Module):
-    def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False,
-                 freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True,
-                 context_freq=True, rewrite=True):
+    def __init__(
+        self,
+        chin,
+        chout,
+        last=False,
+        kernel_size=8,
+        stride=4,
+        norm_groups=1,
+        empty=False,
+        freq=True,
+        dconv=True,
+        norm=True,
+        context=1,
+        dconv_kw=None,
+        pad=True,
+        context_freq=True,
+        rewrite=True,
+    ):
         super().__init__()
         dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
@@ -504,14 +554,18 @@ class LegacyHDecLayer(nn.Module):
             if self.dconv:
                 if self.freq:
                     batch, channels, freqs, time = y.shape
-                    y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, channels, time)).view(batch, freqs, channels, time).transpose(1, 2)
+                    y = (
+                        self.dconv(y.permute(0, 2, 1, 3).reshape(-1, channels, time))
+                        .view(batch, freqs, channels, time)
+                        .transpose(1, 2)
+                    )
                 else:
                     y = self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
-            z = z[..., self.pad:-self.pad, :]
+            z = z[..., self.pad : -self.pad, :]
         elif not self.freq:
-            z = z[..., self.pad:self.pad + length]
+            z = z[..., self.pad : self.pad + length]
             assert z.shape[-1] == length
         return (z if self.last else F.gelu(z)), y
 
@@ -564,12 +618,12 @@ class LegacyMultiWrap(nn.Module):
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], length)
                 if outs:
                     bias = layer.conv_tr.bias.view(1, -1, 1, 1)
-                    outs[-1][:, :, -layer.stride:] += out[:, :, :layer.stride] - bias
-                    out = out[:, :, layer.stride:]
+                    outs[-1][:, :, -layer.stride :] += out[:, :, : layer.stride] - bias
+                    out = out[:, :, layer.stride :]
                 if ratio == 1:
-                    out = out[:, :, :-layer.stride // 2, :]
+                    out = out[:, :, : -layer.stride // 2, :]
                 if start == 0:
-                    out = out[:, :, layer.stride // 2:, :]
+                    out = out[:, :, layer.stride // 2 :, :]
                 outs.append(out)
                 layer.last = last
                 start = limit
@@ -610,7 +664,7 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
             x = F.pad(x, (extra_left, extra_right))
     out = F.pad(x, paddings, mode, value)
     assert out.shape[-1] == length + left + right
-    assert (out[..., left:left + length] == x0).all()
+    assert (out[..., left : left + length] == x0).all()
     return out
 
 
@@ -773,7 +827,9 @@ class LegacyHDemucs(nn.Module):
                 enc = LegacyMultiWrap(enc, multi_freqs)
             self.encoder.append(enc)
             if hybrid and freq:
-                self.tencoder.append(LegacyHEncLayer(chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt))
+                self.tencoder.append(
+                    LegacyHEncLayer(chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt)
+                )
             if index == 0:
                 chin = audio_channels * len(self.sources)
                 chin_z = chin * 2 if cac else chin
@@ -782,7 +838,12 @@ class LegacyHDemucs(nn.Module):
                 dec = LegacyMultiWrap(dec, multi_freqs)
             self.decoder.insert(0, dec)
             if hybrid and freq:
-                self.tdecoder.insert(0, LegacyHDecLayer(chout, chin, dconv=dconv_mode & 2, empty=last_freq, last=index == 0, context=context, **kwt))
+                self.tdecoder.insert(
+                    0,
+                    LegacyHDecLayer(
+                        chout, chin, dconv=dconv_mode & 2, empty=last_freq, last=index == 0, context=context, **kwt
+                    ),
+                )
 
             chin = chout
             chin_z = chout_z
@@ -810,18 +871,18 @@ class LegacyHDemucs(nn.Module):
             x = _pad1d(x, (pad, pad + le * hl - x.shape[-1]), mode=mode)
         z = _spectro(x, nfft, hl)[..., :-1, :]
         if self.hybrid:
-            z = z[..., 2:2 + le]
+            z = z[..., 2 : 2 + le]
         return z
 
     def _ispec(self, z, length=None, scale=0):
-        hl = self.hop_length // (4 ** scale)
+        hl = self.hop_length // (4**scale)
         z = F.pad(z, (0, 0, 0, 1))
         if self.hybrid:
             z = F.pad(z, (2, 2))
             pad = hl // 2 * 3
             le = hl * int(math.ceil(length / hl)) + (0 if self.hybrid_old else 2 * pad)
             x = _ispectro(z, hl, length=le)
-            x = x[..., :length] if self.hybrid_old else x[..., pad:pad + length]
+            x = x[..., :length] if self.hybrid_old else x[..., pad : pad + length]
             return x
         return _ispectro(z, hl, length)
 
@@ -914,9 +975,7 @@ def overlap_and_add(signal, frame_step):
     output_subframes = output_size // subframe_length
 
     subframe_signal = signal.view(*outer_dimensions, -1, subframe_length)
-    frame = torch.arange(0, output_subframes, device=signal.device).unfold(
-        0, subframes_per_frame, subframe_step
-    )
+    frame = torch.arange(0, output_subframes, device=signal.device).unfold(0, subframes_per_frame, subframe_step)
     frame = frame.long().contiguous().view(-1)
     result = signal.new_zeros(*outer_dimensions, output_subframes, subframe_length)
     result.index_add_(-2, frame, subframe_signal)
@@ -1007,9 +1066,11 @@ class TemporalConvNet(nn.Module):
         for _ in range(R):
             blocks = []
             for index in range(X):
-                dilation = 2 ** index
+                dilation = 2**index
                 padding = (P - 1) * dilation if causal else (P - 1) * dilation // 2
-                blocks.append(TemporalBlock(B, H, P, stride=1, padding=padding, dilation=dilation, norm_type=norm_type, causal=causal))
+                blocks.append(
+                    TemporalBlock(B, H, P, stride=1, padding=padding, dilation=dilation, norm_type=norm_type, causal=causal)
+                )
             repeats.append(nn.Sequential(*blocks))
         self.network = nn.Sequential(
             ChannelwiseLayerNorm(N),
@@ -1075,7 +1136,7 @@ class Chomp1d(nn.Module):
         self.chomp_size = chomp_size
 
     def forward(self, x):
-        return x[:, :, :-self.chomp_size].contiguous()
+        return x[:, :, : -self.chomp_size].contiguous()
 
 
 class ChannelwiseLayerNorm(nn.Module):
@@ -1198,7 +1259,15 @@ def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transitio
         estimates = 0.0
         totals = [0.0] * len(model.sources)
         for sub_model, weights in zip(model.models, model.weights):
-            out = apply_legacy_model(sub_model, mix, shifts=shifts, split=split, overlap=overlap, transition_power=transition_power, progress=progress)
+            out = apply_legacy_model(
+                sub_model,
+                mix,
+                shifts=shifts,
+                split=split,
+                overlap=overlap,
+                transition_power=transition_power,
+                progress=progress,
+            )
             for index, weight in enumerate(weights):
                 out[index] *= weight
                 totals[index] += weight
@@ -1215,18 +1284,20 @@ def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transitio
         sum_weight = torch.zeros(length, device=device)
         segment = int(model.segment_length)
         stride = int((1 - overlap) * segment)
-        weight = torch.cat([
-            torch.arange(1, segment // 2 + 1, device=device),
-            torch.arange(segment - segment // 2, 0, -1, device=device),
-        ])
+        weight = torch.cat(
+            [
+                torch.arange(1, segment // 2 + 1, device=device),
+                torch.arange(segment - segment // 2, 0, -1, device=device),
+            ]
+        )
         weight = (weight / weight.max()) ** transition_power
         offsets = range(0, length, stride)
         for offset in offsets:
             chunk = TensorChunk(mix, offset, segment)
             chunk_out = apply_legacy_model(model, chunk, shifts=shifts, split=False)
             chunk_length = chunk_out.shape[-1]
-            out[..., offset:offset + segment] += weight[:chunk_length] * chunk_out
-            sum_weight[offset:offset + segment] += weight[:chunk_length]
+            out[..., offset : offset + segment] += weight[:chunk_length] * chunk_out
+            sum_weight[offset : offset + segment] += weight[:chunk_length]
         out /= sum_weight
         return out
     if shifts:
@@ -1238,7 +1309,7 @@ def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transitio
             offset = random.randint(0, max_shift)
             shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)
             shifted_out = apply_legacy_model(model, shifted, shifts=0, split=False)
-            out += shifted_out[..., max_shift - offset:]
+            out += shifted_out[..., max_shift - offset :]
         return out / shifts
 
     valid_length = model.valid_length(length)
@@ -1374,50 +1445,60 @@ def _infer_state_dict_architecture(state, model_path):
         encoder = state["encoder.conv1d_U.weight"]
         mask_conv = state["separator.network.3.weight"]
         repeats = {
-            int(key.split(".")[3])
-            for key in state
-            if key.startswith("separator.network.2.") and len(key.split(".")) > 4
+            int(key.split(".")[3]) for key in state if key.startswith("separator.network.2.") and len(key.split(".")) > 4
         }
         blocks = {
-            int(key.split(".")[4])
-            for key in state
-            if key.startswith("separator.network.2.0.") and len(key.split(".")) > 5
+            int(key.split(".")[4]) for key in state if key.startswith("separator.network.2.0.") and len(key.split(".")) > 5
         }
         klass = _stub_class("demucs.tasnet", "ConvTasNet")
-        return klass, (), {
-            "sources": int(mask_conv.shape[0] // encoder.shape[0]),
-            "N": int(encoder.shape[0]),
-            "L": int(encoder.shape[2]),
-            "B": int(state["separator.network.1.weight"].shape[0]),
-            "H": int(state["separator.network.2.0.0.net.0.weight"].shape[0]),
-            "P": int(state["separator.network.2.0.0.net.3.net.0.weight"].shape[-1]),
-            "X": max(blocks) + 1 if blocks else 8,
-            "R": max(repeats) + 1 if repeats else 4,
-            "audio_channels": int(encoder.shape[1]),
-        }
+        return (
+            klass,
+            (),
+            {
+                "sources": int(mask_conv.shape[0] // encoder.shape[0]),
+                "N": int(encoder.shape[0]),
+                "L": int(encoder.shape[2]),
+                "B": int(state["separator.network.1.weight"].shape[0]),
+                "H": int(state["separator.network.2.0.0.net.0.weight"].shape[0]),
+                "P": int(state["separator.network.2.0.0.net.3.net.0.weight"].shape[-1]),
+                "X": max(blocks) + 1 if blocks else 8,
+                "R": max(repeats) + 1 if repeats else 4,
+                "audio_channels": int(encoder.shape[1]),
+            },
+        )
     if name.startswith("demucs_unittest"):
         klass = _stub_class("demucs.model", "Demucs")
         depth = sum(1 for key in state if key.startswith("encoder.") and key.endswith(".0.weight"))
         return klass, (), {"sources": 4, "audio_channels": 2, "channels": 4, "depth": depth, "lstm_layers": 2}
     if "lstm.lstm.weight_ih_l0" in state and "encoder.0.0.weight" in state:
         first = state["encoder.0.0.weight"]
-        last_decoder_bias = f"decoder.{sum(1 for key in state if key.startswith('encoder.') and key.endswith('.0.weight')) - 1}.2.bias"
+        last_decoder_bias = (
+            f"decoder.{sum(1 for key in state if key.startswith('encoder.') and key.endswith('.0.weight')) - 1}.2.bias"
+        )
         sources = state[last_decoder_bias].numel() // first.shape[1] if last_decoder_bias in state else 4
         channels = first.shape[0]
         depth = sum(1 for key in state if key.startswith("encoder.") and key.endswith(".0.weight"))
         context = int(state["decoder.0.0.weight"].shape[-1]) if "decoder.0.0.weight" in state else 3
         deepest_encoder = f"encoder.{depth - 1}.0.weight"
-        resample = bool(state["decoder.0.2.weight"].shape[1] == state[deepest_encoder].shape[0]) if "decoder.0.2.weight" in state and deepest_encoder in state else False
+        resample = (
+            bool(state["decoder.0.2.weight"].shape[1] == state[deepest_encoder].shape[0])
+            if "decoder.0.2.weight" in state and deepest_encoder in state
+            else False
+        )
         klass = _stub_class("demucs.model", "Demucs")
-        return klass, (), {
-            "sources": int(sources),
-            "audio_channels": int(first.shape[1]),
-            "channels": int(channels),
-            "depth": int(depth),
-            "lstm_layers": 2,
-            "context": context,
-            "resample": resample,
-        }
+        return (
+            klass,
+            (),
+            {
+                "sources": int(sources),
+                "audio_channels": int(first.shape[1]),
+                "channels": int(channels),
+                "depth": int(depth),
+                "lstm_layers": 2,
+                "context": context,
+                "resample": resample,
+            },
+        )
     raise ValueError(f"Cannot infer legacy Demucs architecture from state_dict-only checkpoint: {model_path}")
 
 

@@ -141,8 +141,7 @@ class ASGIClient:
         request_path = parsed.path or "/"
         query_string = parsed.query.encode("ascii")
         raw_headers = [
-            (str(key).lower().encode("latin-1"), str(value).encode("latin-1"))
-            for key, value in (headers or {}).items()
+            (str(key).lower().encode("latin-1"), str(value).encode("latin-1")) for key, value in (headers or {}).items()
         ]
         scope = {
             "type": "http",
@@ -179,10 +178,7 @@ class ASGIClient:
         for message in messages:
             if message["type"] == "http.response.start":
                 status_code = message["status"]
-                response_headers = {
-                    key.decode("latin-1"): value.decode("latin-1")
-                    for key, value in message.get("headers", [])
-                }
+                response_headers = {key.decode("latin-1"): value.decode("latin-1") for key, value in message.get("headers", [])}
             elif message["type"] == "http.response.body":
                 chunks.append(message.get("body", b""))
         return ASGIResponse(status_code, response_headers, b"".join(chunks))

@@ -29,14 +29,14 @@ ARIA2C_PATH = shutil.which("aria2c")
 
 
 class DownloadError(RuntimeError):
-    """Base exception raised when model download fails.
-    """
+    """Base exception raised when model download fails."""
+
     pass
 
 
 class DownloadValidationError(DownloadError):
-    """Exception raised when a downloaded file fails size or hash validation.
-    """
+    """Exception raised when a downloaded file fails size or hash validation."""
+
     pass
 
 
@@ -95,11 +95,7 @@ def fetch_modelscope_file_index(timeout=30):
         Any: Computed result."""
     data = _read_json_url(MS_FILES_API, timeout=timeout)
     files = data.get("Data", {}).get("Files", [])
-    return {
-        item["Path"]: item
-        for item in files
-        if item.get("Type") == "blob"
-    }
+    return {item["Path"]: item for item in files if item.get("Type") == "blob"}
 
 
 def _sha256(path):
@@ -395,7 +391,9 @@ def download_all(model_dir=None, source="modelscope", endpoint=None, supported_o
     results = []
     for entry in list_models(supported=True if supported_only else None):
         try:
-            results.append(download_model(entry.name, model_dir=model_dir, source=source, endpoint=endpoint, force=force, timeout=timeout))
+            results.append(
+                download_model(entry.name, model_dir=model_dir, source=source, endpoint=endpoint, force=force, timeout=timeout)
+            )
         except Exception as exc:
             results.append({"entry": entry, "error": str(exc)})
     return results

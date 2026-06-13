@@ -20,6 +20,7 @@ class _ProgressContext:
         done (Any, optional): Done value. Defaults to 0.
         message (str, optional): Message value. Defaults to 'Processing audio chunks'.
     """
+
     def __init__(self, pbar=False, total=1, callback=None, done=0, message="Processing audio chunks"):
         """Initialize the instance.
 
@@ -90,6 +91,7 @@ class _ProgressContext:
         if self.bar:
             self.bar.close()
 
+
 def get_model_from_config(model_type, config_path, model_kwargs_override=None):
     """Instantiate a separation model from a loaded model config.
 
@@ -103,36 +105,45 @@ def get_model_from_config(model_type, config_path, model_kwargs_override=None):
     model_kwargs_override = model_kwargs_override or {}
     config = load_config(config_path)
 
-    if model_type == 'mdx23c':
+    if model_type == "mdx23c":
         from .modules.mdx23c_tfc_tdf_v3 import TFC_TDF_net
+
         return TFC_TDF_net(config), config
-    elif model_type == 'htdemucs':
+    elif model_type == "htdemucs":
         from .modules.demucs4ht import get_model
+
         return get_model(config), config
-    elif model_type == 'mel_band_roformer':
+    elif model_type == "mel_band_roformer":
         from .modules.bs_roformer import MelBandRoformer
+
         model_kwargs = dict(config.model)
         model_kwargs.update(model_kwargs_override)
         return MelBandRoformer(**model_kwargs), config
-    elif model_type == 'bs_roformer':
+    elif model_type == "bs_roformer":
         from .modules.bs_roformer import BSRoformer
+
         return BSRoformer(**dict(config.model)), config
-    elif model_type == 'bs_roformer_hyperace':
+    elif model_type == "bs_roformer_hyperace":
         from .modules.bs_roformer import BSRoformerHyperACE
+
         return BSRoformerHyperACE(**dict(config.model)), config
-    elif model_type == 'bandit':
+    elif model_type == "bandit":
         from .modules.bandit.core.model import MultiMaskMultiSourceBandSplitRNNSimple
+
         return MultiMaskMultiSourceBandSplitRNNSimple(**config.model), config
-    elif model_type == 'bandit_v2':
+    elif model_type == "bandit_v2":
         from .modules.bandit_v2.bandit import Bandit
+
         return Bandit(**config.kwargs), config
-    elif model_type == 'scnet':
+    elif model_type == "scnet":
         from .modules.scnet import SCNet
+
         return SCNet(**config.model), config
-    elif model_type == 'apollo':
+    elif model_type == "apollo":
         from .modules.look2hear.apollo import Apollo
+
         return Apollo(**config.model), config
-    elif model_type == 'vr':
+    elif model_type == "vr":
         raise ValueError("VR models are loaded directly by MSSeparator and do not use YAML config loading")
     raise ValueError(f"Model type {model_type} not supported")
 
@@ -206,7 +217,7 @@ def _build_chunk_plan(total_length, chunk_size, step, fade_size):
         if start == 0:
             window[:fade_size] = 1
         if start + length >= total_length:
-            window[max(0, length - fade_size):length] = 1
+            window[max(0, length - fade_size) : length] = 1
         return window
 
     return starts, [window_for(start) for start in starts]
@@ -221,7 +232,7 @@ def _get_inference_step(config, chunk_size):
 
     Returns:
         Any: Computed result."""
-    overlap_size = int(config.inference.get('overlap_size', chunk_size // 2))
+    overlap_size = int(config.inference.get("overlap_size", chunk_size // 2))
     if overlap_size < 0 or overlap_size >= chunk_size:
         raise ValueError("inference.overlap_size must be >= 0 and < audio.chunk_size")
     return chunk_size - overlap_size
@@ -263,7 +274,7 @@ def _fold_windows(counter, windows, step, start_offset=0):
         kernel_size=(1, chunk_size),
         stride=(1, step),
     )
-    counter[..., start_offset:start_offset + output_length] += folded_counter.view(1, 1, output_length)
+    counter[..., start_offset : start_offset + output_length] += folded_counter.view(1, 1, output_length)
 
 
 def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
@@ -287,14 +298,12 @@ def _fold_chunk_batch(result, chunks, windows, step, start_offset=0):
     n_sources, n_channels = chunks.shape[1:3]
 
     folded = nn.functional.fold(
-        (chunks * windows[:, None, None, :]).permute(1, 2, 3, 0).reshape(
-            1, n_sources * n_channels * chunk_size, n_chunks
-        ),
+        (chunks * windows[:, None, None, :]).permute(1, 2, 3, 0).reshape(1, n_sources * n_channels * chunk_size, n_chunks),
         output_size=(1, output_length),
         kernel_size=(1, chunk_size),
         stride=(1, step),
     )
-    result[..., start_offset:start_offset + output_length] += folded.view(n_sources, n_channels, output_length)
+    result[..., start_offset : start_offset + output_length] += folded.view(n_sources, n_channels, output_length)
 
 
 def _ensure_source_dim(x, chunk_batch):
@@ -335,7 +344,7 @@ def _autocast(device, enabled):
     Returns:
         Any: Computed result."""
     device_type = torch.device(device).type
-    if enabled and device_type in ('cuda', 'mps'):
+    if enabled and device_type in ("cuda", "mps"):
         return torch.amp.autocast(device_type, dtype=torch.float16)
     return nullcontext()
 
@@ -413,7 +422,7 @@ def _prepare_mix_for_chunks(mix, border):
     length_init = mix.shape[-1]
     mix = mix.unsqueeze(0) if mix.ndim == 1 else mix
     if length_init > 2 * border and border > 0:
-        mix = nn.functional.pad(mix, (border, border), mode='reflect')
+        mix = nn.functional.pad(mix, (border, border), mode="reflect")
     return mix, length_init
 
 
@@ -430,7 +439,7 @@ def _init_overlap_buffers(config, mix, device, use_fast_path, source_indices=Non
     Returns:
         Any: Computed result."""
     req_shape = (_source_count(config, source_indices),) + tuple(mix.shape)
-    result_device = device if use_fast_path else 'cpu'
+    result_device = device if use_fast_path else "cpu"
     counter_shape = (1, 1, mix.shape[1])
     result = torch.zeros(req_shape, dtype=torch.float32, device=result_device)
     counter = torch.zeros(counter_shape, dtype=torch.float32, device=result_device)
@@ -446,7 +455,7 @@ def _model_mix(mix, device):
 
     Returns:
         Any: Computed result."""
-    return mix.to(device) if torch.device(device).type != 'cpu' else mix
+    return mix.to(device) if torch.device(device).type != "cpu" else mix
 
 
 @contextmanager
@@ -504,9 +513,7 @@ def _run_model_chunk(model, arr, chunk_size, source_indices=None):
     target = model.module if isinstance(model, nn.DataParallel) else model
     chunks = _fit_tensor_length(_ensure_source_dim(model(arr), arr).float(), chunk_size)
     already_selected = (
-        source_indices is not None
-        and hasattr(target, "_active_source_indices")
-        and chunks.shape[1] == len(source_indices)
+        source_indices is not None and hasattr(target, "_active_source_indices") and chunks.shape[1] == len(source_indices)
     )
     return _select_sources(chunks, source_indices, already_selected=already_selected)
 
@@ -522,13 +529,13 @@ def _extract_chunk(mix, start, chunk_size):
     Returns:
         Any: Computed result."""
     length = min(chunk_size, mix.shape[1] - start)
-    part = mix[:, start:start + chunk_size]
+    part = mix[:, start : start + chunk_size]
     if length == chunk_size:
         return part, length
     if length > chunk_size // 2 + 1:
-        part = nn.functional.pad(part, (0, chunk_size - length), mode='reflect')
+        part = nn.functional.pad(part, (0, chunk_size - length), mode="reflect")
     else:
-        part = nn.functional.pad(part, (0, chunk_size - length, 0, 0), mode='constant', value=0)
+        part = nn.functional.pad(part, (0, chunk_size - length, 0, 0), mode="constant", value=0)
     return part, length
 
 
@@ -547,8 +554,8 @@ def _add_weighted_chunk(result, counter, chunk, window, start, length):
         None: This callable completes for its side effects."""
     device = result.device
     window = window.to(device=device, dtype=torch.float32)[:length]
-    result[..., start:start + length] += chunk[..., :length].to(device=device, dtype=torch.float32) * window
-    counter[..., start:start + length] += window
+    result[..., start : start + length] += chunk[..., :length].to(device=device, dtype=torch.float32) * window
+    counter[..., start : start + length] += window
 
 
 def _run_complete_chunks(
@@ -707,10 +714,10 @@ def _mlx_reflect_pad_1d(x, left=0, right=0):
 
     parts = []
     if left > 0:
-        parts.append(x[..., 1:left + 1][..., ::-1])
+        parts.append(x[..., 1 : left + 1][..., ::-1])
     parts.append(x)
     if right > 0:
-        parts.append(x[..., -right - 1:-1][..., ::-1])
+        parts.append(x[..., -right - 1 : -1][..., ::-1])
     return mx.concatenate(parts, axis=-1)
 
 
@@ -797,7 +804,7 @@ def _mlx_extract_chunk(mix, start, chunk_size):
     import mlx.core as mx
 
     length = min(chunk_size, mix.shape[1] - start)
-    part = mix[:, start:start + chunk_size]
+    part = mix[:, start : start + chunk_size]
     if length == chunk_size:
         return part, length
     pad = chunk_size - length
@@ -996,10 +1003,10 @@ def demix_track(config, model, mix, device, pbar=False, source_indices=None, pro
     mix, length_init = _prepare_mix_for_chunks(mix, border)
     chunk_starts, chunk_windows = _build_chunk_plan(mix.shape[1], C, step, fade_size)
     device_type = torch.device(device).type
-    use_complete_fast_path = device_type in ('cuda', 'cpu')
+    use_complete_fast_path = device_type in ("cuda", "cpu")
     mix_device = _model_mix(mix, device)
 
-    with _autocast(device, config.training.get('use_amp', True)):
+    with _autocast(device, config.training.get("use_amp", True)):
         with torch.inference_mode():
             result, counter = _init_overlap_buffers(config, mix, device, use_complete_fast_path, source_indices)
             progress = _ProgressContext(pbar, mix.shape[1], progress_callback)
@@ -1036,7 +1043,6 @@ def demix_track(config, model, mix, device, pbar=False, source_indices=None, pro
                 )
                 progress.emit(mix.shape[1])
 
-
             progress.close()
 
             estimated_sources = _finalize_overlap(result, counter, length_init, border)
@@ -1059,7 +1065,15 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
     Returns:
         Any: Computed result."""
     if _can_demix_mlx_full(model, device):
-        return demix_track_mlx_full(config, model, mix.cpu().numpy(), device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
+        return demix_track_mlx_full(
+            config,
+            model,
+            mix.cpu().numpy(),
+            device,
+            pbar=pbar,
+            source_indices=source_indices,
+            progress_callback=progress_callback,
+        )
 
     source_indices = _normalize_source_indices(config, source_indices)
     source_names = _source_names(config)
@@ -1068,9 +1082,9 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
     batch_size = config.inference.batch_size
     step = _get_inference_step(config, C)
 
-    with _autocast(device, config.training.get('use_amp', True)):
+    with _autocast(device, config.training.get("use_amp", True)):
         with torch.inference_mode():
-            req_shape = (_source_count(config, source_indices), ) + tuple(mix.shape)
+            req_shape = (_source_count(config, source_indices),) + tuple(mix.shape)
             result = torch.zeros(req_shape, dtype=torch.float32)
             counter = torch.zeros(req_shape, dtype=torch.float32)
             i = 0
@@ -1079,21 +1093,20 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
             progress = _ProgressContext(pbar, mix.shape[1], progress_callback)
 
             while i < mix.shape[1]:
-                part = mix[:, i:i + C].to(device)
+                part = mix[:, i : i + C].to(device)
                 length = part.shape[-1]
                 if length < C:
-                    part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode='constant', value=0)
+                    part = nn.functional.pad(input=part, pad=(0, C - length, 0, 0), mode="constant", value=0)
                 batch_data.append(part)
                 batch_locations.append((i, length))
                 i += step
-
 
                 if len(batch_data) >= batch_size or (i >= mix.shape[1]):
                     arr = torch.stack(batch_data, dim=0)
                     x = _select_sources(model(arr), source_indices)
                     for j, (start, l) in enumerate(batch_locations):
-                        result[..., start:start+l] += x[j][..., :l].cpu()
-                        counter[..., start:start+l] += 1.
+                        result[..., start : start + l] += x[j][..., :l].cpu()
+                        counter[..., start : start + l] += 1.0
                     batch_data, batch_locations = [], []
 
                 if progress.bar:
@@ -1110,7 +1123,10 @@ def demix_track_demucs(config, model, mix, device, pbar=False, source_indices=No
         return estimated_sources
     return _sources_to_dict(config, estimated_sources, source_indices)
 
-def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = None, source_indices=None, progress_callback=None) -> Dict[str, NDArray]:
+
+def demix(
+    config, model, mix: NDArray, device, pbar=False, model_type: str = None, source_indices=None, progress_callback=None
+) -> Dict[str, NDArray]:
     """Run chunked model inference and return separated sources.
 
     Args:
@@ -1126,25 +1142,35 @@ def demix(config, model, mix: NDArray, device, pbar=False, model_type: str = Non
     Returns:
         Any: Computed result."""
     if _can_demix_mlx_full(model, device):
-        return demix_track_mlx_full(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
+        return demix_track_mlx_full(
+            config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback
+        )
     mix = torch.tensor(mix, dtype=torch.float32)
-    if model_type in {'demucs', 'tasnet', 'legacy_demucs', 'legacy_tasnet'}:
+    if model_type in {"demucs", "tasnet", "legacy_demucs", "legacy_tasnet"}:
         from .modules.legacy_demucs import apply_legacy_model
 
         progress = _ProgressContext(callback=progress_callback)
         progress.emit(0)
-        with _autocast(device, config.training.get('use_amp', True)):
+        with _autocast(device, config.training.get("use_amp", True)):
             with torch.inference_mode():
-                estimates = apply_legacy_model(
-                    model,
-                    mix.to(device),
-                    shifts=int(config.inference.get('shifts', 0)),
-                    split=bool(config.inference.get('split', True)),
-                    overlap=float(config.inference.get('overlap', 0.25)),
-                    progress=pbar,
-                ).cpu().numpy()
+                estimates = (
+                    apply_legacy_model(
+                        model,
+                        mix.to(device),
+                        shifts=int(config.inference.get("shifts", 0)),
+                        split=bool(config.inference.get("split", True)),
+                        overlap=float(config.inference.get("overlap", 0.25)),
+                        progress=pbar,
+                    )
+                    .cpu()
+                    .numpy()
+                )
         progress.emit(1)
         return dict(zip(config.training.instruments, estimates))
-    if model_type == 'htdemucs':
-        return demix_track_demucs(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
-    return demix_track(config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback)
+    if model_type == "htdemucs":
+        return demix_track_demucs(
+            config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback
+        )
+    return demix_track(
+        config, model, mix, device, pbar=pbar, source_indices=source_indices, progress_callback=progress_callback
+    )
