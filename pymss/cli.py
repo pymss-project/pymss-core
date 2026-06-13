@@ -157,7 +157,7 @@ def cmd_infer(args):
         Any: Computed result."""
     _ensure_model_files(args)
     logger = get_separation_logger()
-    separator = create_separator(
+    with create_separator(
         args.model,
         model_dir=args.model_dir,
         device=args.device,
@@ -175,9 +175,8 @@ def cmd_infer(args):
         logger=logger,
         debug=args.debug,
         inference_params=_parse_key_value(args.param),
-    )
-    files = separator.process_folder(args.input)
-    separator.del_cache()
+    ) as separator:
+        files = separator.process_folder(args.input)
     logger.info(f"Processed {len(files)} file(s).")
     return 0
 
