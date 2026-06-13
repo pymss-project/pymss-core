@@ -11,6 +11,13 @@ LOG_ENV_NAME = "PYMSS_LOG_FILE"
 
 
 def _safe_relpath(pathname):
+    """Implement the safe relpath helper.
+
+    Args:
+        pathname (str): Pathname value.
+
+    Returns:
+        Any: Computed result."""
     if not pathname:
         return pathname
 
@@ -25,6 +32,11 @@ def _safe_relpath(pathname):
 
 
 class ColorFormatter(logging.Formatter):
+    """Console log formatter with optional ANSI colors.
+
+    Args:
+        enable_color (Any, optional): Enable color value. Defaults to True.
+    """
     COLORS = {
         "DBG": "\033[1;36m",
         "INF": "\033[1;32m",
@@ -49,6 +61,13 @@ class ColorFormatter(logging.Formatter):
     }
 
     def __init__(self, enable_color=True):
+        """Initialize the instance.
+
+        Args:
+            enable_color (Any, optional): Enable color value. Defaults to True.
+
+        Returns:
+            None: This method completes for its side effects."""
         super().__init__(
             fmt="%(asctime)s | %(levelname)s | %(pathname)s:%(lineno)d | %(message)s",
             datefmt="%H:%M:%S",
@@ -56,6 +75,13 @@ class ColorFormatter(logging.Formatter):
         self.enable_color = enable_color
 
     def format(self, record):
+        """Format value.
+
+        Args:
+            record (Any): Record value.
+
+        Returns:
+            Any: Computed result."""
         record.pathname = _safe_relpath(record.pathname)
         original_levelname = record.levelname
         original_msg = record.msg
@@ -78,15 +104,31 @@ class ColorFormatter(logging.Formatter):
 
 
 class FileFormatter(logging.Formatter):
+    """File log formatter that writes stable relative paths.
+    """
     LEVEL_MAP = ColorFormatter.LEVEL_MAP
 
     def __init__(self):
+        """Initialize the instance.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: This method completes for its side effects."""
         super().__init__(
             fmt="%(asctime)s | %(levelname)s | %(pathname)s:%(lineno)d | %(message)s",
             datefmt="%H:%M:%S",
         )
 
     def format(self, record):
+        """Format value.
+
+        Args:
+            record (Any): Record value.
+
+        Returns:
+            Any: Computed result."""
         record.pathname = _safe_relpath(record.pathname)
         original_levelname = record.levelname
         record.levelname = self.LEVEL_MAP.get(record.levelname, record.levelname[:3])
@@ -97,6 +139,13 @@ class FileFormatter(logging.Formatter):
 
 
 def _supports_color(stream):
+    """Implement the supports color helper.
+
+    Args:
+        stream (Any): Stream value.
+
+    Returns:
+        Any: Computed result."""
     if os.environ.get("NO_COLOR"):
         return False
     if os.environ.get("PYMSS_FORCE_COLOR"):
@@ -105,6 +154,13 @@ def _supports_color(stream):
 
 
 def _compress_log_file(path):
+    """Implement the compress log file helper.
+
+    Args:
+        path (str | os.PathLike): File system path.
+
+    Returns:
+        None: This callable completes for its side effects."""
     gz_path = f"{path}.gz"
     if os.path.exists(gz_path):
         return
@@ -117,6 +173,13 @@ def _compress_log_file(path):
 
 
 def _parse_log_time(filename):
+    """Parse log time.
+
+    Args:
+        filename (str): Filename value.
+
+    Returns:
+        Any: Parsed value."""
     stem = filename
     if stem.endswith(".gz"):
         stem = stem[:-3]
@@ -131,6 +194,14 @@ def _parse_log_time(filename):
 
 
 def manage_log_files(log_dir, max_log):
+    """Compress or remove old log files according to the retention limit.
+
+    Args:
+        log_dir (Any): Log dir value.
+        max_log (int): Max log value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     try:
         log_files = [
             filename
@@ -168,6 +239,13 @@ def manage_log_files(log_dir, max_log):
 
 
 def _get_log_path(log_dir):
+    """Return log path.
+
+    Args:
+        log_dir (Any): Log dir value.
+
+    Returns:
+        Any: Computed result."""
     log_path = os.environ.get(LOG_ENV_NAME)
     if log_path:
         return log_path
@@ -179,6 +257,14 @@ def _get_log_path(log_dir):
 
 
 def set_log_level(logger, level):
+    """Set the level for every handler attached to a logger.
+
+    Args:
+        logger (logging.Logger | None): Optional logger for progress messages.
+        level (int | str): Level value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     if hasattr(logger, "console_handler"):
         logger.console_handler.setLevel(level)
 
@@ -190,6 +276,40 @@ def get_separation_logger(
     log_dir=LOG_DIR,
     enable_color=None,
 ):
+    """Create or return the shared pymss separation logger.
+
+    The logger writes concise console messages by default and can optionally
+    add a debug-level file handler. Calling this function repeatedly returns
+    the same logger and updates the console handler level.
+
+    Args:
+        console_level (int, optional): Console handler log level, such as
+            ``logging.INFO`` or ``logging.DEBUG``. Defaults to logging.INFO.
+        enable_file_log (bool, optional): Whether to add a file handler. File
+            logs are written at debug level regardless of ``console_level``.
+            Defaults to False.
+        max_log (int, optional): Maximum number of ``.log`` or ``.log.gz``
+            files to keep in ``log_dir``. Older files are compressed or
+            removed. Defaults to ``MAX_LOG``.
+        log_dir (str | os.PathLike, optional): Directory for file logs when
+            ``enable_file_log`` is true. Defaults to ``LOG_DIR``.
+        enable_color (bool | None, optional): Whether console output should use
+            ANSI colors. ``None`` auto-detects color support and respects
+            ``NO_COLOR``/``PYMSS_FORCE_COLOR``. Defaults to None.
+
+    Returns:
+        logging.Logger: Shared pymss logger. The object also stores
+        ``console_handler`` and, when enabled, ``file_handler`` attributes.
+
+    Example:
+        >>> import logging
+        >>> from pymss import get_separation_logger
+        >>> logger = get_separation_logger(console_level=logging.DEBUG)
+        >>> logger.debug("debug output is visible")
+
+    Example:
+        >>> logger = get_separation_logger(enable_file_log=True, log_dir=".logs")
+        >>> logger.info("message is written to console and log file")"""
     logger = logging.getLogger("logger")
     logger.setLevel(logging.DEBUG)
     logger.propagate = False

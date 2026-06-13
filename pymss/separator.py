@@ -67,6 +67,15 @@ OUTPUT_NORMALIZE_PEAK = 10 ** (OUTPUT_NORMALIZE_TARGET_DBFS / 20)
 
 
 def _resolve_public_device(device, inference_params, logger):
+    """Resolve public device.
+
+    Args:
+        device (Any): Device value.
+        inference_params (dict | None): Inference params value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Resolved value."""
     inference_params = dict(inference_params or {})
     requested_device = device
     if requested_device == "mlx":
@@ -82,6 +91,15 @@ def _resolve_public_device(device, inference_params, logger):
 
 
 def _select_device(device, device_ids, logger):
+    """Implement the select device helper.
+
+    Args:
+        device (Any): Device value.
+        device_ids (Any): Device ids value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Computed result."""
     if device not in ['cpu', 'cuda', 'mps']:
         if torch.cuda.is_available():
             logger.debug("CUDA is available in Torch, setting Torch device to CUDA")
@@ -97,6 +115,16 @@ def _select_device(device, device_ids, logger):
 
 
 def _prefer_mlx_for_auto(requested_device, selected_device, inference_params, logger):
+    """Implement the prefer mlx for auto helper.
+
+    Args:
+        requested_device (Any): Requested device value.
+        selected_device (Any): Selected device value.
+        inference_params (dict | None): Inference params value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Computed result."""
     if requested_device == "auto" and torch.device(selected_device).type == "mps":
         if "mps_model_backend" not in inference_params:
             inference_params["mps_model_backend"] = "mlx_full"
@@ -106,6 +134,13 @@ def _prefer_mlx_for_auto(requested_device, selected_device, inference_params, lo
 
 
 def _unwrap_state_dict(state_dict):
+    """Implement the unwrap state dict helper.
+
+    Args:
+        state_dict (Any): State dict value.
+
+    Returns:
+        Any: Computed result."""
     for key in ('state', 'state_dict', 'model_state_dict'):
         if key in state_dict:
             return state_dict[key]
@@ -113,6 +148,13 @@ def _unwrap_state_dict(state_dict):
 
 
 def _apollo_state_dict_path(model_path):
+    """Implement the apollo state dict path helper.
+
+    Args:
+        model_path (str | os.PathLike): Model path value.
+
+    Returns:
+        Any: Computed result."""
     root, ext = os.path.splitext(model_path)
     candidates = []
     if ext:
@@ -125,6 +167,15 @@ def _apollo_state_dict_path(model_path):
 
 
 def _load_state_dict(model_type, model_path, device):
+    """Load state dict.
+
+    Args:
+        model_type (Any): Model type value.
+        model_path (str | os.PathLike): Model path value.
+        device (Any): Device value.
+
+    Returns:
+        Any: Computed result."""
     if model_type == 'vr':
         return None
     map_location = "cpu"
@@ -146,6 +197,13 @@ def _load_state_dict(model_type, model_path, device):
 
 @contextmanager
 def _skip_torch_default_init():
+    """Implement the skip torch default init helper.
+
+    Args:
+        None: This callable does not accept user-provided arguments.
+
+    Returns:
+        None: This callable completes for its side effects."""
     classes = (
         torch.nn.Linear,
         torch.nn.Bilinear,
@@ -181,6 +239,13 @@ def _skip_torch_default_init():
 
 
 def _install_demucs_pickle_stubs():
+    """Implement the install demucs pickle stubs helper.
+
+    Args:
+        None: This callable does not accept user-provided arguments.
+
+    Returns:
+        Any: Computed result."""
     import sys
     import types
 
@@ -203,6 +268,13 @@ def _install_demucs_pickle_stubs():
 
 
 def _restore_modules(previous):
+    """Implement the restore modules helper.
+
+    Args:
+        previous (Any): Previous value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     import sys
 
     for name, module in previous.items():
@@ -213,10 +285,25 @@ def _restore_modules(previous):
 
 
 def _runtime_model_type(model_type, state_dict):
+    """Implement the runtime model type helper.
+
+    Args:
+        model_type (Any): Model type value.
+        state_dict (Any): State dict value.
+
+    Returns:
+        Any: Computed result."""
     return 'bs_roformer_hyperace' if model_type == 'bs_roformer' and any('.segm.' in key for key in state_dict) else model_type
 
 
 def _infer_mel_band_roformer_mlp_hidden_layers(state_dict):
+    """Implement the infer mel band roformer mlp hidden layers helper.
+
+    Args:
+        state_dict (Any): State dict value.
+
+    Returns:
+        Any: Computed result."""
     pattern = re.compile(r'(?:^|\.)mask_estimators\.0\.to_freqs\.0\.0\.(\d+)\.weight$')
     layer_indices = sorted({int(match.group(1)) for key in state_dict for match in [pattern.search(key)] if match})
     if not layer_indices:
@@ -225,6 +312,14 @@ def _infer_mel_band_roformer_mlp_hidden_layers(state_dict):
 
 
 def _store_torch_model_on_cpu_for_mlx(config, device):
+    """Implement the store torch model on cpu for mlx helper.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        device (Any): Device value.
+
+    Returns:
+        Any: Computed result."""
     return (
         torch.device(device).type == "mps"
         and config.inference.get("mps_model_backend", "torch") == "mlx_full"
@@ -232,6 +327,13 @@ def _store_torch_model_on_cpu_for_mlx(config, device):
 
 
 def _coerce_mps_float64(module):
+    """Implement the coerce mps float64 helper.
+
+    Args:
+        module (Any): Module value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     for child in module.modules():
         for name, param in list(child._parameters.items()):
             if param is not None and param.dtype == torch.float64:
@@ -242,6 +344,14 @@ def _coerce_mps_float64(module):
 
 
 def _model_is_stereo(model_type, config):
+    """Implement the model is stereo helper.
+
+    Args:
+        model_type (Any): Model type value.
+        config (AttrDict | dict): Loaded pymss configuration.
+
+    Returns:
+        Any: Computed result."""
     if model_type == 'vr':
         return True
     if model_type in ['bs_roformer', 'bs_roformer_hyperace', 'mel_band_roformer', *LEGACY_DEMUCS_MODEL_TYPES]:
@@ -250,6 +360,15 @@ def _model_is_stereo(model_type, config):
 
 
 def _prepare_mix_channels(mix, is_stereo, logger):
+    """Implement the prepare mix channels helper.
+
+    Args:
+        mix (np.ndarray): Mix value.
+        is_stereo (Any): Is stereo value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Computed result."""
     if is_stereo and len(mix.shape) == 1:
         logger.warning("Track is mono, but model is stereo, adding a second channel.")
         return np.stack([mix, mix], axis=0)
@@ -264,6 +383,15 @@ def _prepare_mix_channels(mix, is_stereo, logger):
 
 
 def _standardize_mix(mix, enabled, logger):
+    """Implement the standardize mix helper.
+
+    Args:
+        mix (np.ndarray): Mix value.
+        enabled (Any): Enabled value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Computed result."""
     if not enabled:
         return mix, None
 
@@ -275,6 +403,16 @@ def _standardize_mix(mix, enabled, logger):
 
 
 def _normalize_outputs(results, enabled, logger, target_peak=OUTPUT_NORMALIZE_PEAK):
+    """Normalize outputs.
+
+    Args:
+        results (dict): Results value.
+        enabled (Any): Enabled value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+        target_peak (Any, optional): Target peak value. Defaults to OUTPUT_NORMALIZE_PEAK.
+
+    Returns:
+        Any: Computed result."""
     if not enabled:
         return results
 
@@ -295,10 +433,27 @@ def _normalize_outputs(results, enabled, logger, target_peak=OUTPUT_NORMALIZE_PE
 
 
 def _destandardize(estimates, stats):
+    """Implement the destandardize helper.
+
+    Args:
+        estimates (Any): Estimates value.
+        stats (Any): Stats value.
+
+    Returns:
+        Any: Computed result."""
     return estimates if stats is None else estimates * stats[1] + stats[0]
 
 
 def _tta_variants(mix, use_tta, logger):
+    """Implement the tta variants helper.
+
+    Args:
+        mix (np.ndarray): Mix value.
+        use_tta (Any): Use tta value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Computed result."""
     if not use_tta:
         return [mix.copy()]
     variants = [mix.copy(), mix[::-1].copy(), -1. * mix.copy()]
@@ -307,6 +462,13 @@ def _tta_variants(mix, use_tta, logger):
 
 
 def _merge_tta_results(results):
+    """Implement the merge tta results helper.
+
+    Args:
+        results (dict): Results value.
+
+    Returns:
+        Any: Computed result."""
     waveforms = results[0]
     for index, result in enumerate(results[1:], start=1):
         for stem, audio in result.items():
@@ -318,6 +480,18 @@ def _merge_tta_results(results):
 
 
 def _build_results(waveforms, instruments, mix_orig, config, standardize_stats, logger):
+    """Build results.
+
+    Args:
+        waveforms (Any): Waveforms value.
+        instruments (Sequence[str] | None): Instruments value.
+        mix_orig (Any): Mix orig value.
+        config (AttrDict | dict): Loaded pymss configuration.
+        standardize_stats (Any): Standardize stats value.
+        logger (logging.Logger | None): Optional logger for progress messages.
+
+    Returns:
+        Any: Built value."""
     target_instrument = config.training.target_instrument
     if target_instrument is None:
         return {
@@ -339,6 +513,14 @@ def _build_results(waveforms, instruments, mix_orig, config, standardize_stats, 
 
 
 def _resolve_instruments(config, stems=None):
+    """Resolve instruments.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        stems (Sequence[str] | None, optional): Requested output stem names. Defaults to None.
+
+    Returns:
+        Any: Resolved value."""
     instruments = config.training.instruments.copy()
     if stems is None:
         source_indices = None if config.training.target_instrument is None else (0,)
@@ -363,6 +545,14 @@ def _resolve_instruments(config, stems=None):
 
 
 def _get_store_dir(store_dirs, instr):
+    """Return store dir.
+
+    Args:
+        store_dirs (Any): Store dirs value.
+        instr (Any): Instr value.
+
+    Returns:
+        Any: Computed result."""
     if instr in store_dirs:
         return store_dirs[instr]
     instr_lower = instr.lower()
@@ -373,6 +563,82 @@ def _get_store_dir(store_dirs, instr):
 
 
 class MSSeparator:
+    """Load a music source separation model and run inference.
+
+    ``MSSeparator`` is the main Python API for pymss. Prefer
+    ``MSSeparator.from_model_name(...)`` for catalog models; use the
+    constructor directly when you have custom weights, a custom YAML config,
+    or need full control over runtime parameters.
+
+    Args:
+        model_type (str): Model architecture/runtime type. Common values
+            include ``bs_roformer``, ``mel_band_roformer``, ``htdemucs``,
+            ``mdx23c``, ``bandit``, ``bandit_v2``, ``scnet``, ``apollo``,
+            ``vr``, ``legacy_demucs``, and ``legacy_tasnet``.
+        model_path (str | os.PathLike): Path to the model weights file, such
+            as a ``.ckpt``, ``.th``, ``.pth``, or VR model file.
+        config_path (str | os.PathLike | None, optional): YAML config path for
+            MSS-style models. If omitted, pymss tries ``model_path + ".yaml"``.
+            VR models use built-in metadata instead of an MSS YAML config.
+            Defaults to None.
+        device (str, optional): Runtime device. Valid values are ``auto``,
+            ``cpu``, ``cuda``, ``mps``, and ``mlx``. ``auto`` chooses CUDA
+            first, then Apple MPS, then CPU. ``mlx`` is a public shortcut for
+            Apple Silicon MLX execution through the MPS device path. Defaults
+            to ``"auto"``.
+        device_ids (list[int], optional): CUDA device IDs. Multiple IDs can
+            enable ``torch.nn.DataParallel`` for supported Torch models. This
+            does not select multiple MPS or MLX devices. Defaults to ``[0]``.
+        output_format (str, optional): Format used by ``process_folder()`` and
+            ``save_audio()``. Supported values are ``wav``, ``flac``, ``mp3``,
+            and ``m4a``. Defaults to ``"wav"``.
+        use_tta (bool, optional): Enables test-time augmentation. It can
+            improve quality for some MSS models but increases inference time.
+            Defaults to False.
+        store_dirs (str | dict, optional): Output routing for saved stems. A
+            string writes every saved stem to the same folder. A dict maps stem
+            names to a folder, a list of folders, ``None``, or an empty value.
+            Missing/empty values skip that stem. Defaults to ``"results"``.
+        audio_params (dict, optional): Encoding options used only when writing
+            files, for example ``wav_bit_depth``, ``flac_bit_depth``,
+            ``mp3_bit_rate``, ``m4a_bit_rate``, ``m4a_codec``, and
+            ``m4a_aac_at_quality``.
+        logger (logging.Logger | None, optional): Logger instance. If omitted,
+            pymss uses ``pymss.get_separation_logger()``. Defaults to None.
+        debug (bool, optional): Enables debug logging and disables some normal
+            progress-bar behavior. Defaults to False.
+        progress_callback (callable | None, optional): Optional callback used
+            by lower-level demixing code. It receives progress information
+            during long-running inference. Defaults to None.
+        inference_params (dict, optional): Runtime inference overrides. Common
+            keys include ``batch_size``, ``overlap_size``, ``chunk_size``,
+            ``stem_batch_size``, ``standardize``, ``normalize``, ``mask_mode``,
+            attention backend options, and VR-specific options such as
+            ``aggression`` and ``window_size``.
+
+    Example:
+        >>> separator = MSSeparator.from_model_name(
+        ...     "bs_roformer_voc_hyperacev2",
+        ...     download=True,
+        ...     model_dir="models",
+        ...     output_format="wav",
+        ...     inference_params={"standardize": None, "normalize": False},
+        ... )
+        >>> separator.process_folder("song.wav")
+
+    Example:
+        >>> separator = MSSeparator(
+        ...     model_type="mel_band_roformer",
+        ...     model_path="models/custom.ckpt",
+        ...     config_path="models/custom.yaml",
+        ...     device="cuda",
+        ...     store_dirs={
+        ...         "vocals": "out/vocals",
+        ...         "instrumental": ["out/instrumental", "backup/instrumental"],
+        ...         "drums": None,
+        ...     },
+        ...     inference_params={"standardize": True, "normalize": True},
+        ... )"""
     def __init__(
             self,
             model_type,
@@ -404,6 +670,54 @@ class MSSeparator:
             }
     ):
 
+        """Initialize and load a separator from explicit model files.
+
+        Args:
+            model_type (str): Runtime model family. Catalog users usually get
+                this value from ``MSSeparator.from_model_name()`` instead of
+                setting it manually.
+            model_path (str | os.PathLike): Model weights path.
+            config_path (str | os.PathLike | None, optional): YAML config path.
+                If omitted, pymss tries ``model_path + ".yaml"``. Defaults to
+                None.
+            device (str, optional): ``auto``, ``cpu``, ``cuda``, ``mps``, or
+                ``mlx``. Defaults to ``"auto"``.
+            device_ids (list[int], optional): CUDA device IDs used when CUDA
+                and DataParallel are available. Defaults to ``[0]``.
+            output_format (str, optional): Saved audio format: ``wav``,
+                ``flac``, ``mp3``, or ``m4a``. Defaults to ``"wav"``.
+            use_tta (bool, optional): Enables test-time augmentation. Defaults
+                to False.
+            store_dirs (str | dict, optional): Folder routing for saved stems.
+                For example ``"results"`` saves all stems to one folder, while
+                ``{"vocals": "out/vocals", "drums": None}`` saves only
+                vocals and skips drums. Defaults to ``"results"``.
+            audio_params (dict, optional): Encoder settings. Examples:
+                ``{"wav_bit_depth": "FLOAT"}``,
+                ``{"flac_bit_depth": "PCM_24"}``,
+                ``{"mp3_bit_rate": "320k"}``, or
+                ``{"m4a_codec": "aac", "m4a_bit_rate": "512k"}``.
+            logger (logging.Logger | None, optional): Logger to use. Defaults
+                to None.
+            debug (bool, optional): Enables verbose debug logging. Defaults to
+                False.
+            progress_callback (callable | None, optional): Progress callback
+                passed into demixing helpers. Defaults to None.
+            inference_params (dict, optional): Inference overrides. ``None``
+                values keep model config defaults. ``standardize`` controls
+                legacy input standardization, and ``normalize`` controls linked
+                output peak normalization.
+
+        Returns:
+            None: The separator is loaded and ready for inference.
+
+        Example:
+            >>> separator = MSSeparator(
+            ...     model_type="htdemucs",
+            ...     model_path="models/htdemucs.th",
+            ...     config_path="models/htdemucs.yaml",
+            ...     inference_params={"chunk_size": 485100, "normalize": True},
+            ... )"""
         if not model_type:
             raise ValueError('model_type is required')
         if not model_path:
@@ -456,6 +770,42 @@ class MSSeparator:
 
     @classmethod
     def from_model_name(cls, model_name, model_dir=None, download=False, source="modelscope", endpoint=None, **kwargs):
+        """Create a separator from a model catalog name or alias.
+
+        This resolves the model type, weights path, config path, and auxiliary
+        files from the pymss model catalog, then forwards remaining keyword
+        arguments to ``MSSeparator(...)``.
+
+        Args:
+            model_name (str): Catalog model name or alias, for example
+                ``"bs_roformer_voc_hyperacev2"``.
+            model_dir (str | os.PathLike | None, optional): Directory used to
+                find or download model files. Uses the default pymss cache when
+                omitted. Defaults to None.
+            download (bool, optional): If True, missing model files are
+                downloaded before loading. If False, missing files raise
+                ``FileNotFoundError``. Defaults to False.
+            source (str, optional): Download source passed to the downloader:
+                ``modelscope``, ``huggingface``, or ``hf-mirror``. Defaults to
+                ``"modelscope"``.
+            endpoint (str | None, optional): Optional custom file-serving
+                endpoint. Defaults to None.
+            **kwargs: Extra arguments forwarded to ``MSSeparator(...)``, such
+                as ``device``, ``output_format``, ``store_dirs``,
+                ``audio_params``, ``debug``, and ``inference_params``.
+
+        Returns:
+            MSSeparator: Loaded separator instance.
+
+        Example:
+            >>> separator = MSSeparator.from_model_name(
+            ...     "bs_roformer_voc_hyperacev2",
+            ...     download=True,
+            ...     model_dir="models",
+            ...     device="auto",
+            ...     output_format="flac",
+            ...     inference_params={"normalize": True},
+            ... )"""
         if download:
             from .model_download import download_model
 
@@ -472,6 +822,13 @@ class MSSeparator:
         )
 
     def log_system_info(self):
+        """Log runtime system information at debug level.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: Operating system, Python, and PyTorch versions are logged."""
         os_name = platform.system()
         os_version = platform.version()
         self.logger.debug(f"Operating System: {os_name} {os_version}")
@@ -483,6 +840,13 @@ class MSSeparator:
         self.logger.debug(f"PyTorch Version: {pytorch_version}")
 
     def check_ffmpeg_installed(self):
+        """Check whether the ``ffmpeg`` executable is available.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: A warning is logged when ffmpeg cannot be found."""
         try:
             ffmpeg_version_output = subprocess.check_output(["ffmpeg", "-version"], text=True)
             first_line = ffmpeg_version_output.splitlines()[0]
@@ -491,6 +855,20 @@ class MSSeparator:
             self.logger.warning("FFmpeg is not installed. Please install FFmpeg to use this package.")
 
     def load_model(self):
+        """Load model weights and build the runtime config.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            tuple[torch.nn.Module | object, AttrDict]: Loaded model runtime and
+            resolved configuration. VR models return a VR runtime object;
+            MSS-style models return a Torch module.
+
+        Notes:
+            VR models are initialized from built-in metadata. MSS-style models
+            load the YAML config, apply ``inference_params``, configure optional
+            attention/model backends, then load the state dict."""
         start_time = time()
         if self.model_type == 'vr':
             from .modules.vocal_remover.vr_models import get_vr_model_metadata
@@ -589,6 +967,18 @@ class MSSeparator:
         return model, config
 
     def _log_model_config(self, model_type, config, config_path=None, include_config_path=True):
+        """Log resolved separator, audio, and model inference settings.
+
+        Args:
+            model_type (str): Runtime model type being loaded.
+            config (AttrDict | dict): Loaded model configuration.
+            config_path (str | os.PathLike | None, optional): Config path to
+                include in logs. Defaults to None.
+            include_config_path (bool, optional): Whether to include
+                ``config_path`` in the separator log line. Defaults to True.
+
+        Returns:
+            None: Model settings are written to the logger."""
         config_path_part = f", config_path: {config_path}" if include_config_path else ""
         self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}{config_path_part}, output_folder: {self.store_dirs}")
         self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
@@ -596,6 +986,18 @@ class MSSeparator:
         self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}")
 
     def apply_model_inference_config(self, model, config):
+        """Apply config-driven runtime options to a loaded model.
+
+        Args:
+            model (torch.nn.Module): Loaded model instance.
+            config (AttrDict | dict): Loaded pymss configuration containing
+                inference options such as ``mask_mode``,
+                ``cuda_attention_backend``, ``mps_attention_backend``,
+                ``mps_mlx_min_tokens``, ``mps_model_backend``, and
+                ``mps_model_compute_dtype``.
+
+        Returns:
+            None: Supported options are applied directly to model modules."""
         if hasattr(model, 'set_mask_mode'):
             model.set_mask_mode(config.inference.get('mask_mode', 'no_segm'))
         cuda_attention_backend = config.inference.get('cuda_attention_backend', None)
@@ -621,6 +1023,31 @@ class MSSeparator:
         # public/API/CLI "standardize" controls legacy input standardization performed by _standardize_mix().
         # existing MSS YAML files still store that switch as inference.normalize, and those YAML files cannot be renamed in place without breaking compatibility.
         # public/API/CLI "normalize" is a separate output peak normalization option stored in self.output_normalize, so it must not overwrite config.inference["normalize"] here.
+        """Apply user inference overrides to a loaded config.
+
+        Args:
+            config (AttrDict | dict): Loaded model configuration. For MSS YAML
+                models, ``config.inference.normalize`` is the legacy input
+                standardization key.
+            params (dict | None): Runtime overrides. Keys with ``None`` keep
+                the model config value. ``standardize`` maps to the legacy YAML
+                ``inference.normalize`` key, while ``normalize`` is stored on
+                ``self.output_normalize`` and is not written into the YAML
+                compatibility key.
+
+        Returns:
+            AttrDict | dict: The same config object after applying overrides.
+
+        Example:
+            >>> separator.update_inference_params(
+            ...     config,
+            ...     {"batch_size": 2, "standardize": True, "normalize": True},
+            ... )
+
+        Notes:
+            ``standardize=True`` standardizes the input mix before inference and
+            restores scale afterward. ``normalize=True`` peak-normalizes the
+            selected output stems together after separation."""
         if 'normalize' not in config.inference:
             config.inference['normalize'] = False
         standardize = params.get('standardize')
@@ -639,12 +1066,32 @@ class MSSeparator:
         return config
 
     def _save_output(self, instr, audio, sr, file_name, save_dir):
+        """Save one separated stem to one output directory.
+
+        Args:
+            instr (str): Stem/instrument name appended to the output filename.
+            audio (np.ndarray): Stem audio samples.
+            sr (int): Sample rate.
+            file_name (str): Base input filename without extension.
+            save_dir (str | os.PathLike): Destination directory.
+
+        Returns:
+            None: The stem is written to disk."""
         output_format = self.output_format.lower()
         os.makedirs(save_dir, exist_ok=True)
         self.save_audio(audio, sr, f"{file_name}_{instr}", save_dir)
         self.logger.debug(f"Saved {instr} for {file_name}_{instr}.{output_format} in {save_dir}")
 
     def _wait_save_futures(self, path, futures):
+        """Wait for asynchronous save jobs and report failures.
+
+        Args:
+            path (str | os.PathLike): Input track path used in warning logs.
+            futures (Iterable[concurrent.futures.Future]): Save jobs returned
+                by the save thread pool.
+
+        Returns:
+            bool: True when every save job completed successfully."""
         save_ok = True
         for future in futures:
             try:
@@ -656,9 +1103,30 @@ class MSSeparator:
 
     @staticmethod
     def _submit_load(load_executor, paths, index, sample_rate):
+        """Submit the next audio load job to the load executor.
+
+        Args:
+            load_executor (ThreadPoolExecutor): Executor used for audio reads.
+            paths (Sequence[str | os.PathLike]): Input audio paths.
+            index (int): Index of the path to submit.
+            sample_rate (int): Target sample rate in Hz.
+
+        Returns:
+            concurrent.futures.Future | None: Future for the submitted load, or
+            None when ``index`` is outside ``paths``."""
         return None if index >= len(paths) else load_executor.submit(load_audio, paths[index], sr=sample_rate, mono=False)
 
     def _submit_save_outputs(self, save_executor, results, sr, file_name):
+        """Submit save jobs for all returned stems.
+
+        Args:
+            save_executor (ThreadPoolExecutor): Executor used for file writes.
+            results (dict[str, np.ndarray]): Mapping of stem name to audio.
+            sr (int): Sample rate.
+            file_name (str): Base input filename without extension.
+
+        Returns:
+            list[concurrent.futures.Future]: Save job futures."""
         return [
             save_executor.submit(self._save_output, instr, audio, sr, file_name, output_dir)
             for instr, audio in results.items()
@@ -668,6 +1136,14 @@ class MSSeparator:
         ]
 
     def _stems_to_save(self):
+        """Return stems that should be saved according to ``store_dirs``.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            list[str] | None: Stem names to request from separation. ``None``
+            means all stems should be separated."""
         stems = [
             instr
             for instr in self.config.training.instruments
@@ -676,6 +1152,16 @@ class MSSeparator:
         return stems or None
 
     def _stem_batches_to_save(self):
+        """Return stem groups used by ``process_folder()``.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            list[list[str] | None]: Stem groups. ``stem_batch_size`` can split
+            stems into smaller inference groups to reduce memory use. When
+            output ``normalize=True``, all saved stems are kept in one group so
+            they share the same normalization gain."""
         stems = self._stems_to_save()
         if stems is None:
             return [None]
@@ -687,6 +1173,20 @@ class MSSeparator:
         return [stems[index:index + batch_size] for index in range(0, len(stems), batch_size)]
 
     def _drain_save_queue(self, pending_saves, success_files, progress, max_pending_saves=0, record_success=True):
+        """Drain completed save batches until the queue is small enough.
+
+        Args:
+            pending_saves (collections.deque): Queue of ``(path, futures)``
+                save batches.
+            success_files (list[str]): Processed filenames to update.
+            progress (tqdm | None): Optional progress bar.
+            max_pending_saves (int, optional): Stop draining once this many
+                batches remain. Defaults to 0.
+            record_success (bool, optional): Whether to append successfully
+                saved filenames to ``success_files``. Defaults to True.
+
+        Returns:
+            bool: True when drained save batches completed successfully."""
         ok = True
         while len(pending_saves) > max_pending_saves:
             saved_path, saved_futures = pending_saves.popleft()
@@ -699,6 +1199,14 @@ class MSSeparator:
         return ok
 
     def _wait_pending_saves(self, pending_saves):
+        """Wait for every queued save batch to finish.
+
+        Args:
+            pending_saves (collections.deque): Queue of ``(path, futures)``
+                save batches.
+
+        Returns:
+            bool: True when every queued batch saved successfully."""
         ok = True
         while pending_saves:
             saved_path, saved_futures = pending_saves.popleft()
@@ -706,6 +1214,33 @@ class MSSeparator:
         return ok
 
     def process_folder(self, input_folder):
+        """Separate one audio file or every direct file in a folder.
+
+        Args:
+            input_folder (str | os.PathLike): Input audio file path or input
+                folder. Folder processing considers only direct child files and
+                does not recursively walk subfolders.
+
+        Returns:
+            list[str]: Basenames of input files that were successfully
+            separated and saved.
+
+        Example:
+            >>> success_files = separator.process_folder("songs")
+
+        Example:
+            >>> separator = MSSeparator.from_model_name(
+            ...     "some_six_stem_model",
+            ...     store_dirs={"vocals": "out/vocals", "drums": "out/drums"},
+            ...     inference_params={"normalize": True},
+            ... )
+            >>> separator.process_folder("input.wav")
+
+        Notes:
+            ``store_dirs`` controls which stems are saved. If only ``vocals``
+            and ``drums`` are routed, only those stems are requested and saved.
+            With output ``normalize=True``, those selected stems share one peak
+            normalization gain."""
         if os.path.isfile(input_folder):
             all_mixtures_path = [input_folder]
             input_label = "Input_file"
@@ -782,9 +1317,46 @@ class MSSeparator:
         return success_files
 
     def separate(self, mix, pbar=True, stems=None):
+        """Run separation on an already loaded audio array.
+
+        Args:
+            mix (np.ndarray): Input waveform. Mono and stereo arrays are
+                accepted; channel layout is adjusted to match the model.
+            pbar (bool, optional): Whether lower-level inference may display
+                progress bars. Defaults to True.
+            stems (str | Sequence[str] | None, optional): Stem name or stem
+                names to return. ``None`` returns all model stems. Defaults to
+                None.
+
+        Returns:
+            dict[str, np.ndarray]: Mapping of stem name to separated audio.
+
+        Example:
+            >>> results = separator.separate(audio, stems=["vocals", "instrumental"])
+            >>> vocals = results["vocals"]
+
+        Notes:
+            When output ``normalize=True``, the shared normalization gain is
+            computed only across the returned stems."""
         return self._separate(mix, pbar=pbar, stems=stems)
 
     def _separate(self, mix, pbar, stems=None):
+        """Internal separation implementation.
+
+        Args:
+            mix (np.ndarray): Input waveform.
+            pbar (bool): Whether progress bars are enabled.
+            stems (str | Sequence[str] | None, optional): Stem subset to
+                separate. Defaults to None.
+
+        Returns:
+            dict[str, np.ndarray]: Separated stems.
+
+        Notes:
+            This method prepares channel layout, applies legacy input
+            standardization when enabled, runs TTA variants when requested,
+            builds stem results, and finally applies linked output peak
+            normalization when ``self.output_normalize`` is true."""
         mix = _prepare_mix_channels(mix, _model_is_stereo(self.model_type, self.config), self.logger)
         if self.model_type == 'vr':
             results = self.model.separate_array(mix, self.config.audio.get('sample_rate', 44100))
@@ -819,11 +1391,37 @@ class MSSeparator:
         return results
 
     def save_audio(self, audio, sr, file_name, store_dir):
+        """Save one audio array using the separator output settings.
+
+        Args:
+            audio (np.ndarray): Audio samples to write.
+            sr (int): Sample rate in Hz.
+            file_name (str): Output filename without extension. The method
+                appends ``self.output_format``.
+            store_dir (str | os.PathLike): Output directory.
+
+        Returns:
+            None: The encoded audio file is written to disk.
+
+        Example:
+            >>> separator.output_format = "wav"
+            >>> separator.save_audio(results["vocals"], 44100, "song_vocals", "results")"""
         output_format = self.output_format.lower()
         file = os.path.join(store_dir, f"{file_name}.{output_format}")
         save_audio(file, audio, sr, output_format, self.audio_params)
 
     def close(self):
+        """Release model references and clear backend caches.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: Model references are dropped and CUDA/MPS/MLX caches are
+            cleared where available.
+
+        Example:
+            >>> separator.close()"""
         self.logger.debug("Closing separator and releasing model references...")
         model = getattr(self, "model", None)
         try:
@@ -848,6 +1446,14 @@ class MSSeparator:
             self.del_cache()
 
     def del_cache(self):
+        """Run garbage collection and clear accelerator memory caches.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: Python garbage collection runs, and CUDA or MPS/MLX caches are
+            emptied for the active device."""
         self.logger.debug("Running garbage collection...")
         gc.collect()
         if "mps" in self.device:

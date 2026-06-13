@@ -25,6 +25,15 @@ RESPONSE_FORMATS = {"json", "zip"}
 
 
 def parse_int(value, param, code="invalid_request"):
+    """Parse an integer request parameter and raise an APIError on failure.
+
+    Args:
+        value (Any): Value value.
+        param (str | None): Param value.
+        code (str, optional): Code value. Defaults to 'invalid_request'.
+
+    Returns:
+        Any: Parsed value."""
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -32,6 +41,14 @@ def parse_int(value, param, code="invalid_request"):
 
 
 def normalize_stems(value, valid_instruments):
+    """Normalize requested stem names against the loaded model instruments.
+
+    Args:
+        value (Any): Value value.
+        valid_instruments (Any): Valid instruments value.
+
+    Returns:
+        Any: Computed result."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -59,6 +76,14 @@ def normalize_stems(value, valid_instruments):
 
 
 def validate_common_options(response_format, output_audio_format):
+    """Validate response and output audio format options.
+
+    Args:
+        response_format (str): Response format value.
+        output_audio_format (str): Output audio format value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     if response_format not in RESPONSE_FORMATS:
         raise APIError(
             400,
@@ -83,6 +108,18 @@ def validate_common_options(response_format, output_audio_format):
 
 
 def decode_pcm(raw, audio_format, sample_rate, channels, expected_sample_rate, max_audio_seconds):
+    """Decode raw PCM request bytes into a channel-first float32 array.
+
+    Args:
+        raw (bytes): Raw value.
+        audio_format (Any): Audio format value.
+        sample_rate (int): Audio sample rate in Hz.
+        channels (int): Channels value.
+        expected_sample_rate (Any): Expected sample rate value.
+        max_audio_seconds (Any): Max audio seconds value.
+
+    Returns:
+        Any: Computed result."""
     if audio_format not in PCM_FORMATS:
         raise APIError(400, "invalid_audio_format", f"Unsupported audio format {audio_format!r}.", param="format")
     if channels not in (1, 2):
@@ -126,6 +163,13 @@ def decode_pcm(raw, audio_format, sample_rate, channels, expected_sample_rate, m
 
 
 def audio_to_interleaved_f32(audio):
+    """Convert channel-first audio to interleaved float32 samples.
+
+    Args:
+        audio (np.ndarray): Audio samples.
+
+    Returns:
+        Any: Computed result."""
     array = np.asarray(audio, dtype=np.float32)
     if array.ndim == 1:
         normalized = np.ascontiguousarray(array)
@@ -142,21 +186,54 @@ def audio_to_interleaved_f32(audio):
 
 
 def f32le_bytes(audio):
+    """Serialize audio as little-endian float32 PCM bytes.
+
+    Args:
+        audio (np.ndarray): Audio samples.
+
+    Returns:
+        Any: Computed result."""
     array, channels = audio_to_interleaved_f32(audio)
     return np.asarray(array, dtype="<f4").tobytes(), channels
 
 
 def _safe_slug(value):
+    """Implement the safe slug helper.
+
+    Args:
+        value (Any): Value value.
+
+    Returns:
+        Any: Computed result."""
     slug = re.sub(r"[^a-z0-9_-]+", "-", str(value).lower()).strip("-._")
     return slug or "stem"
 
 
 def _filename(index, stem, output_audio_format):
+    """Implement the filename helper.
+
+    Args:
+        index (Any): Index value.
+        stem (str): Stem value.
+        output_audio_format (str): Output audio format value.
+
+    Returns:
+        Any: Computed result."""
     extension = "f32le" if output_audio_format == "pcm_f32le" else output_audio_format
     return f"{index:04d}-{_safe_slug(stem)}.{extension}"
 
 
 def _encode_container(audio, sample_rate, output_format, audio_params):
+    """Encode container.
+
+    Args:
+        audio (np.ndarray): Audio samples.
+        sample_rate (int): Audio sample rate in Hz.
+        output_format (str | None): Output format such as wav, flac, mp3, or m4a.
+        audio_params (dict | None): Encoding options for the output audio format.
+
+    Returns:
+        Any: Computed result."""
     with tempfile.TemporaryDirectory() as tmpdir:
         path = os.path.join(tmpdir, f"audio.{output_format}")
         save_audio(path, audio, sample_rate, output_format, audio_params)
@@ -165,6 +242,15 @@ def _encode_container(audio, sample_rate, output_format, audio_params):
 
 
 def ordered_results(results, stems, instruments):
+    """Return separation results in requested stem order.
+
+    Args:
+        results (dict): Results value.
+        stems (Sequence[str] | None): Requested output stem names.
+        instruments (Sequence[str] | None): Instruments value.
+
+    Returns:
+        Any: Computed result."""
     order = stems or list(instruments)
     missing = [stem for stem in order if stem not in results]
     if missing:
@@ -178,6 +264,17 @@ def ordered_results(results, stems, instruments):
 
 
 def json_response(loaded, model, results, stems, input_seconds):
+    """Build a JSON separation response with base64 audio payloads.
+
+    Args:
+        loaded (LoadedModel): Loaded value.
+        model (str): Model value.
+        results (dict): Results value.
+        stems (Sequence[str] | None): Requested output stem names.
+        input_seconds (Any): Input seconds value.
+
+    Returns:
+        Any: Computed result."""
     outputs = []
     for stem, audio in ordered_results(results, stems, loaded.instruments):
         raw, channels = f32le_bytes(audio)
@@ -212,6 +309,18 @@ def json_response(loaded, model, results, stems, input_seconds):
 
 
 def zip_response(loaded, model, results, stems, input_seconds, output_audio_format):
+    """Build a ZIP separation response with encoded audio files.
+
+    Args:
+        loaded (LoadedModel): Loaded value.
+        model (str): Model value.
+        results (dict): Results value.
+        stems (Sequence[str] | None): Requested output stem names.
+        input_seconds (Any): Input seconds value.
+        output_audio_format (str): Output audio format value.
+
+    Returns:
+        Any: Computed result."""
     output_items = []
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:

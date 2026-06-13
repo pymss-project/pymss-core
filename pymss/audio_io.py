@@ -3,12 +3,58 @@ import av
 
 
 def _frame_to_audio(frame, mono):
+    """Implement the frame to audio helper.
+
+    Args:
+        frame (Any): Frame value.
+        mono (bool): Mono value.
+
+    Returns:
+        Any: Computed result."""
     audio = frame.to_ndarray()
     audio = audio[None, :] if audio.ndim == 1 else audio
     return (audio.mean(axis=0, keepdims=True) if mono and audio.shape[0] > 1 else audio).astype(np.float32, copy=False)
 
 
 def load_audio(path, sr=None, mono=False, offset=0.0, duration=None):
+    """Load an audio file as float32 NumPy samples.
+
+    PyAV is used for decoding and optional resampling. Stereo or multi-channel
+    output is returned channel-first as ``(channels, samples)``. Mono output is
+    returned as a one-dimensional array.
+
+    Args:
+        path (str | os.PathLike): Input audio file path. Any format supported
+            by the local FFmpeg/PyAV build can be decoded.
+        sr (int | None, optional): Target sample rate. ``None`` keeps the
+            source stream sample rate. Defaults to None.
+        mono (bool, optional): Whether to downmix multi-channel audio to mono.
+            Defaults to False.
+        offset (float, optional): Start offset in seconds. Defaults to 0.0.
+        duration (float | None, optional): Maximum duration to return in
+            seconds after ``offset``. ``None`` reads to the end. Defaults to
+            None.
+
+    Returns:
+        tuple[np.ndarray, int]: Audio samples and sample rate. The array is
+        channel-first for multi-channel audio and one-dimensional for mono
+        output.
+
+    Example:
+        >>> from pymss import load_audio
+        >>> audio, sample_rate = load_audio("song.wav", sr=44100)
+        >>> sample_rate
+        44100
+
+    Example:
+        >>> clip, sample_rate = load_audio(
+        ...     "song.wav",
+        ...     mono=True,
+        ...     offset=30.0,
+        ...     duration=10.0,
+        ... )
+        >>> clip.ndim
+        1"""
     chunks = []
     with av.open(path) as container:
         stream = container.streams.audio[0]
@@ -39,6 +85,13 @@ def load_audio(path, sr=None, mono=False, offset=0.0, duration=None):
 
 
 def _bitrate_to_int(value):
+    """Implement the bitrate to int helper.
+
+    Args:
+        value (Any): Value value.
+
+    Returns:
+        Any: Computed result."""
     if value is None:
         return None
     if isinstance(value, int):
@@ -48,6 +101,13 @@ def _bitrate_to_int(value):
 
 
 def _format_audio(audio):
+    """Format audio.
+
+    Args:
+        audio (np.ndarray): Audio samples.
+
+    Returns:
+        Any: Computed result."""
     audio = np.asarray(audio)
     audio = np.ascontiguousarray(audio[:, None] if audio.ndim == 1 else audio)
     # We can use "fltp" container for all output formats, while the final result is determined by the codec.
@@ -56,6 +116,46 @@ def _format_audio(audio):
 
 
 def save_audio(path, audio, sr, output_format, audio_params):
+    """Save a NumPy audio array to wav, flac, mp3, or m4a.
+
+    Audio is expected as sample-major data, either ``(samples,)`` for mono or
+    ``(samples, channels)`` for multi-channel audio. The output codec is chosen
+    from ``output_format`` and ``audio_params``.
+
+    Args:
+        path (str | os.PathLike): Output file path.
+        audio (np.ndarray): Audio samples. Mono arrays may be one-dimensional;
+            stereo arrays should be shaped as ``(samples, 2)``.
+        sr (int): Sample rate in Hz.
+        output_format (str): Output format. Supported values are ``wav``,
+            ``flac``, ``mp3``, and ``m4a``.
+        audio_params (dict): Encoding options. Supported keys include
+            ``wav_bit_depth`` (``FLOAT``, ``PCM_16``, ``PCM_24``),
+            ``flac_bit_depth`` (currently ``PCM_24`` uses soundfile),
+            ``mp3_bit_rate`` (for example ``"320k"``), ``m4a_bit_rate``,
+            ``m4a_codec``, and ``m4a_aac_at_quality``.
+
+    Returns:
+        None: The file is written to ``path``.
+
+    Example:
+        >>> from pymss import save_audio
+        >>> save_audio(
+        ...     "vocals.wav",
+        ...     vocals,
+        ...     44100,
+        ...     "wav",
+        ...     {"wav_bit_depth": "FLOAT"},
+        ... )
+
+    Example:
+        >>> save_audio(
+        ...     "instrumental.flac",
+        ...     instrumental,
+        ...     44100,
+        ...     "flac",
+        ...     {"flac_bit_depth": "PCM_24"},
+        ... )"""
     output_format = output_format.lower()
     audio_array = np.asarray(audio)
     layout = "stereo" if audio_array.ndim > 1 and audio_array.shape[1] == 2 else "mono"
