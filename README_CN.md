@@ -130,6 +130,21 @@ separator.process_folder("path/to/input_file_or_folder")
 
 `download=True` 会在加载前下载缺失的模型文件；如果只想使用本地已有模型，可以省略它。
 
+`MSSeparator` 也可以作为上下文管理器使用。退出 `with` 代码块时会自动调用 `separator.close()`，尽量释放模型引用并清理后端缓存。
+
+```python
+from pymss import MSSeparator
+
+with MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
+) as separator:
+    separator.process_folder("path/to/input_file_or_folder")
+```
+
 ### 手动模型路径
 
 自定义权重不在模型 catalog 中时，可以使用完整构造方式。

@@ -131,6 +131,21 @@ separator.process_folder("path/to/input_file_or_folder")
 
 `download=True` downloads missing model files before loading. Omit it for strict local-only loading.
 
+`MSSeparator` can also be used as a context manager. Leaving the `with` block automatically calls `separator.close()`, which releases model references and clears backend caches where possible.
+
+```python
+from pymss import MSSeparator
+
+with MSSeparator.from_model_name(
+    "bs_roformer_voc_hyperacev2",
+    download=True,
+    device="auto",
+    output_format="wav",
+    store_dirs="results",
+) as separator:
+    separator.process_folder("path/to/input_file_or_folder")
+```
+
 ### Manual model paths
 
 Use the full constructor for custom weights that are not in the model catalog.

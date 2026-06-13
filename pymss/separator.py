@@ -768,6 +768,41 @@ class MSSeparator:
                 self.logger.warning(f"Invalid instrument key: {key}, removing from store_dirs")
                 self.logger.warning(f"Valid instrument keys: {self.config.training.instruments}")
 
+    def __enter__(self):
+        """Return the loaded separator when entering a ``with`` block.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            MSSeparator: This separator instance.
+
+        Example:
+            >>> with MSSeparator.from_model_name("bs_roformer_voc_hyperacev2") as separator:
+            ...     separator.process_folder("song.wav")"""
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """Close the separator when leaving a ``with`` block.
+
+        Args:
+            exc_type (type[BaseException] | None): Exception type raised inside
+                the ``with`` block, or None when the block exits normally.
+            exc_value (BaseException | None): Exception instance raised inside
+                the ``with`` block, or None when the block exits normally.
+            traceback (types.TracebackType | None): Traceback for the exception,
+                or None when the block exits normally.
+
+        Returns:
+            bool: False, so exceptions raised inside the ``with`` block are not
+            suppressed.
+
+        Example:
+            >>> with MSSeparator.from_model_name("bs_roformer_voc_hyperacev2") as separator:
+            ...     results = separator.separate(audio)"""
+        self.close()
+        return False
+
     @classmethod
     def from_model_name(cls, model_name, model_dir=None, download=False, source="modelscope", endpoint=None, **kwargs):
         """Create a separator from a model catalog name or alias.
@@ -983,7 +1018,13 @@ class MSSeparator:
         self.logger.info(f"Separator params: model_type: {model_type}, model_path: {self.model_path}{config_path_part}, output_folder: {self.store_dirs}")
         self.logger.info(f"Audio params: output_format: {self.output_format}, audio_params: {self.audio_params}")
         self.logger.info(f"Model params: instruments: {config.training.get('instruments', None)}, target_instrument: {config.training.get('target_instrument', None)}")
-        self.logger.debug(f"Model params: batch_size: {config.inference.get('batch_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, chunk_size: {config.audio.get('chunk_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}")
+        self.logger.info(f"Model params: batch_size: {config.inference.get('batch_size', None)}, standardize: {config.inference.get('normalize', None)}, normalize: {self.output_normalize}, use_tta: {self.use_tta}")
+        if model_type == 'vr':
+            self.logger.info(f"VR model params: window_size: {config.inference.get('window_size', None)}, aggression: {config.inference.get('aggression', None)}, enable_tta: {config.inference.get('enable_tta', None)}, enable_post_process: {config.inference.get('enable_post_process', None)}, post_process_threshold: {config.inference.get('post_process_threshold', None)}, high_end_process: {config.inference.get('high_end_process', None)}")
+            self.logger.debug(f"VR model params: use_amp: {config.inference.get('use_amp', None)}, fuse_conv_bn: {config.inference.get('fuse_conv_bn', None)}, use_channels_last: {config.inference.get('use_channels_last', None)}")
+        else:
+            self.logger.info(f"MSS model params: chunk_size: {config.inference.get('chunk_size', None)}, overlap_size: {config.inference.get('overlap_size', None)}, stem_batch_size: {config.inference.get('stem_batch_size', None)}")
+            self.logger.debug(f"MSS model params: mask_mode: {config.inference.get('mask_mode', None)}, cuda_attention_backend: {config.inference.get('cuda_attention_backend', None)}, mps_attention_backend: {config.inference.get('mps_attention_backend', None)}, mps_mlx_min_tokens: {config.inference.get('mps_mlx_min_tokens', None)}, mps_model_backend: {config.inference.get('mps_model_backend', None)}, mps_model_compute_dtype: {config.inference.get('mps_model_compute_dtype', None)}")
 
     def apply_model_inference_config(self, model, config):
         """Apply config-driven runtime options to a loaded model.
