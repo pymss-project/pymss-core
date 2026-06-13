@@ -33,16 +33,37 @@ VR_SUPPORTED_PARAMETERS = {
 
 
 class InferenceParameterError(ValueError):
+    """Exception raised for unsupported inference parameters.
+    """
     pass
 
 
 class RequestLimiter:
+    """Async request limiter backed by a semaphore.
+
+    Args:
+        limit (int): Limit value.
+    """
     def __init__(self, limit):
+        """Initialize the instance.
+
+        Args:
+            limit (int): Limit value.
+
+        Returns:
+            None: This method completes for its side effects."""
         self.limit = max(1, int(limit))
         self.active = 0
         self.lock = asyncio.Lock()
 
     async def acquire(self):
+        """Acquire value.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            Any: Computed result."""
         async with self.lock:
             if self.active >= self.limit:
                 return False
@@ -50,12 +71,21 @@ class RequestLimiter:
             return True
 
     async def release(self):
+        """Release value.
+
+        Args:
+            None: This callable does not accept user-provided arguments.
+
+        Returns:
+            None: This callable completes for its side effects."""
         async with self.lock:
             self.active = max(0, self.active - 1)
 
 
 @dataclass
 class LoadedModel:
+    """Container for one loaded separator and its metadata.
+    """
     separator: object
     entry: object
     resolved: dict
@@ -69,11 +99,20 @@ class LoadedModel:
     audio_params: dict = field(default_factory=dict)
 
     def is_model_id(self, model):
+        """Return whether model ID.
+
+        Args:
+            model (str): Model value.
+
+        Returns:
+            bool: True when the condition is satisfied."""
         return str(model or "") == self.model_id
 
 
 @dataclass
 class ServerState:
+    """Mutable server state for the currently loaded model.
+    """
     config: ServerConfig
     logger: object
     operation_lock: asyncio.Lock
@@ -88,10 +127,25 @@ class ServerState:
     model_downloading_target: str | None = None
 
     def is_loaded_model(self, model):
+        """Return whether loaded model.
+
+        Args:
+            model (str): Model value.
+
+        Returns:
+            bool: True when the condition is satisfied."""
         return self.loaded is not None and self.loaded.is_model_id(model)
 
 
 def _section(config, section):
+    """Implement the section helper.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        section (Mapping | None): Section value.
+
+    Returns:
+        Any: Computed result."""
     if config is None:
         return None
     if isinstance(config, dict):
@@ -100,6 +154,14 @@ def _section(config, section):
 
 
 def _contains(section, key):
+    """Implement the contains helper.
+
+    Args:
+        section (Mapping | None): Section value.
+        key (str): Key value.
+
+    Returns:
+        Any: Computed result."""
     if section is None:
         return False
     if isinstance(section, dict):
@@ -108,6 +170,16 @@ def _contains(section, key):
 
 
 def _is_parameter_supported(config, model_type, key, section_name):
+    """Return whether parameter supported.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        model_type (Any): Model type value.
+        key (str): Key value.
+        section_name (str): Section name value.
+
+    Returns:
+        bool: True when the condition is satisfied."""
     if model_type == "vr" and key in VR_SUPPORTED_PARAMETERS:
         return True
     # standardize is legacy input standardization backed by MSS YAML inference.normalize.
@@ -117,6 +189,14 @@ def _is_parameter_supported(config, model_type, key, section_name):
 
 
 def supported_parameters(config, model_type):
+    """Return inference parameters supported by a loaded model config.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        model_type (Any): Model type value.
+
+    Returns:
+        Any: Computed result."""
     grouped: dict[str, list[str]] = {}
     for key, section_name in INFERENCE_PARAM_TARGETS.items():
         if not _is_parameter_supported(config, model_type, key, section_name):
@@ -126,6 +206,15 @@ def supported_parameters(config, model_type):
 
 
 def validate_inference_params(params, config, model_type):
+    """Validate user-provided inference parameters for a model.
+
+    Args:
+        params (dict | None): Inference parameter overrides.
+        config (AttrDict | dict): Loaded pymss configuration.
+        model_type (Any): Model type value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     for key, value in params.items():
         section_name = INFERENCE_PARAM_TARGETS.get(key)
         if section_name is None:
@@ -141,6 +230,13 @@ def validate_inference_params(params, config, model_type):
 
 
 def _preload_config(resolved):
+    """Implement the preload config helper.
+
+    Args:
+        resolved (Any): Resolved value.
+
+    Returns:
+        Any: Computed result."""
     model_type = resolved["model_type"]
     if model_type == "vr":
         return None
@@ -149,6 +245,16 @@ def _preload_config(resolved):
 
 
 def _resolve_existing_or_download(model, model_dir, source, endpoint):
+    """Resolve existing or download.
+
+    Args:
+        model (str): Model value.
+        model_dir (str | os.PathLike | None): Local model cache directory. Uses the package default when None.
+        source (str): Download source name.
+        endpoint (str | None): Optional custom download endpoint.
+
+    Returns:
+        Any: Resolved value."""
     try:
         return resolve_model(model, model_dir=model_dir, require_supported=True, require_exists=True)
     except FileNotFoundError:
@@ -157,6 +263,17 @@ def _resolve_existing_or_download(model, model_dir, source, endpoint):
 
 
 def load_model(config, model, source=None, endpoint=DEFAULT_ENDPOINT, inference_params=None):
+    """Resolve and load a model into server state.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+        model (str): Model value.
+        source (str, optional): Download source name. Defaults to "modelscope".
+        endpoint (str | None, optional): Optional custom download endpoint. Defaults to None.
+        inference_params (dict | None, optional): Inference params value. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     source = source or config.source
     endpoint = config.endpoint if endpoint is DEFAULT_ENDPOINT else endpoint
     params = dict(config.inference_params or {})
@@ -198,6 +315,13 @@ def load_model(config, model, source=None, endpoint=DEFAULT_ENDPOINT, inference_
 
 
 def close_loaded_model(loaded):
+    """Close and release resources held by a loaded model.
+
+    Args:
+        loaded (LoadedModel): Loaded value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     if loaded is None:
         return
     separator = loaded.separator
@@ -207,6 +331,13 @@ def close_loaded_model(loaded):
 
 
 def load_state(config):
+    """Create the initial server state.
+
+    Args:
+        config (AttrDict | dict): Loaded pymss configuration.
+
+    Returns:
+        Any: Computed result."""
     logger = get_separation_logger()
     state = ServerState(
         config=config,
@@ -223,6 +354,13 @@ def load_state(config):
 
 
 def model_card(loaded):
+    """Build metadata for the currently loaded model.
+
+    Args:
+        loaded (LoadedModel): Loaded value.
+
+    Returns:
+        Any: Computed result."""
     entry = loaded.entry
     return {
         "id": loaded.model_id,

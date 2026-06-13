@@ -2,13 +2,20 @@ import argparse
 import json
 import sys
 
-from .ensemble import ENSEMBLE_ALGORITHMS, audio_ensemble
+from .ensemble import ENSEMBLE_ALGORITHMS, save_ensemble_audio
 from .logger import get_separation_logger
 from .model_download import download_all, download_model
 from .model_registry import create_separator, list_models, resolve_model
 
 
 def _parse_key_value(values):
+    """Parse key value.
+
+    Args:
+        values (Any): Values value.
+
+    Returns:
+        Any: Parsed value."""
     result = {}
     for value in values or []:
         if "=" not in value:
@@ -29,6 +36,13 @@ def _parse_key_value(values):
 
 
 def cmd_list(args):
+    """Implement the cmd list helper.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
     rows = list_models(category=args.category, supported=None if args.all else True)
     if args.json:
         print(json.dumps([item.__dict__ for item in rows], ensure_ascii=False, indent=2))
@@ -41,6 +55,13 @@ def cmd_list(args):
 
 
 def cmd_info(args):
+    """Implement the cmd info helper.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
     resolved = resolve_model(args.model, model_dir=args.model_dir, require_supported=False, require_exists=False)
     entry = resolved["entry"]
     data = {
@@ -61,6 +82,13 @@ def cmd_info(args):
 
 
 def cmd_download(args):
+    """Implement the cmd download helper.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
     if args.model == "all":
         results = download_all(
             model_dir=args.model_dir,
@@ -87,6 +115,13 @@ def cmd_download(args):
 
 
 def _print_download_result(result):
+    """Print download result.
+
+    Args:
+        result (Any): Result value.
+
+    Returns:
+        None: This callable completes for its side effects."""
     for path in result["skipped"]:
         print(f"exists {path}")
     for path in result["downloaded"]:
@@ -94,6 +129,13 @@ def _print_download_result(result):
 
 
 def _ensure_model_files(args):
+    """Ensure model files.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        None: This callable completes for its side effects."""
     try:
         resolve_model(args.model, model_dir=args.model_dir, require_supported=True, require_exists=True)
     except FileNotFoundError:
@@ -106,6 +148,13 @@ def _ensure_model_files(args):
 
 
 def cmd_infer(args):
+    """Implement the cmd infer helper.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
     _ensure_model_files(args)
     logger = get_separation_logger()
     separator = create_separator(
@@ -129,11 +178,47 @@ def cmd_infer(args):
     )
     files = separator.process_folder(args.input)
     separator.del_cache()
-    print(f"Processed {len(files)} file(s).")
+    logger.info(f"Processed {len(files)} file(s).")
+    return 0
+
+
+def cmd_ensemble(args):
+    """Run the ensemble CLI command.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
+    logger = get_separation_logger()
+    output_path = save_ensemble_audio(
+        args.files,
+        args.output,
+        algorithm=args.algorithm,
+        weights=args.weights,
+        output_format=args.output_format,
+        audio_params={
+            "wav_bit_depth": args.wav_bit_depth,
+            "flac_bit_depth": args.flac_bit_depth,
+            "mp3_bit_rate": args.mp3_bit_rate,
+            "m4a_bit_rate": args.m4a_bit_rate,
+            "m4a_codec": args.m4a_codec,
+            "m4a_aac_at_quality": args.m4a_aac_at_quality,
+        },
+        logger=logger,
+    )
+    logger.info(f"Saved ensemble audio to {output_path}")
     return 0
 
 
 def cmd_serve(args):
+    """Implement the cmd serve helper.
+
+    Args:
+        args (argparse.Namespace): Parsed command-line arguments.
+
+    Returns:
+        Any: Computed result."""
     from .server import ServerConfig, run_server
 
     config = ServerConfig(
@@ -159,6 +244,13 @@ def cmd_serve(args):
 
 
 def build_parser():
+    """Build the pymss command-line parser.
+
+    Args:
+        None: This callable does not accept user-provided arguments.
+
+    Returns:
+        argparse.ArgumentParser: Configured CLI parser."""
     parser = argparse.ArgumentParser(
         prog="pymss",
         description="Command-line interface for the pymss music source separation package.",
@@ -280,7 +372,7 @@ def build_parser():
     ensemble_parser.add_argument("--m4a-bit-rate", default="512k")
     ensemble_parser.add_argument("--m4a-codec", default="aac")
     ensemble_parser.add_argument("--m4a-aac-at-quality", default=2, type=int)
-    ensemble_parser.set_defaults(func=audio_ensemble)
+    ensemble_parser.set_defaults(func=cmd_ensemble)
 
     # ==========================
     # Server
@@ -326,6 +418,13 @@ def build_parser():
 
 
 def main(argv=None):
+    """Run the pymss command-line interface.
+
+    Args:
+        argv (Sequence[str] | None, optional): Command-line arguments. Uses sys.argv when None. Defaults to None.
+
+    Returns:
+        int: Process exit code."""
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

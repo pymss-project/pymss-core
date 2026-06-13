@@ -3,6 +3,8 @@ from dataclasses import dataclass, field
 
 @dataclass
 class ServerConfig:
+    """Runtime configuration for the pymss HTTP server.
+    """
     model: str | None = None
     model_dir: str | None = None
     source: str = "modelscope"

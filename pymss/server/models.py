@@ -12,6 +12,14 @@ from ..model_registry import (
 
 
 def _bool_query(value, *, default=False):
+    """Implement the bool query helper.
+
+    Args:
+        value (Any): Value value.
+        default (Any, optional): Default value. Defaults to False.
+
+    Returns:
+        Any: Computed result."""
     if value is None:
         return default
     value = str(value).strip().lower()
@@ -23,6 +31,13 @@ def _bool_query(value, *, default=False):
 
 
 def parse_supported_filter(value):
+    """Parse the model catalog supported filter.
+
+    Args:
+        value (Any): Value value.
+
+    Returns:
+        Any: Parsed value."""
     if value is None:
         return True
     value = str(value).strip().lower()
@@ -36,6 +51,13 @@ def parse_supported_filter(value):
 
 
 def parse_local_filter(value):
+    """Parse the model catalog local-file filter.
+
+    Args:
+        value (Any): Value value.
+
+    Returns:
+        Any: Parsed value."""
     if value is None:
         return "all"
     value = str(value).strip().lower()
@@ -45,10 +67,25 @@ def parse_local_filter(value):
 
 
 def parse_include_files(value):
+    """Parse whether model file metadata should be included.
+
+    Args:
+        value (Any): Value value.
+
+    Returns:
+        Any: Parsed value."""
     return _bool_query(value, default=False)
 
 
 def _entry_file_specs(entry, model_dir=None):
+    """Implement the entry file specs helper.
+
+    Args:
+        entry (ModelEntry): Entry value.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     specs = [("model", entry.relpath, model_path_for(entry, model_dir))]
     config_path = config_path_for(entry, model_dir)
     if entry.config_relpath and config_path is not None:
@@ -61,6 +98,14 @@ def _entry_file_specs(entry, model_dir=None):
 
 
 def local_file_status(entry, model_dir=None):
+    """Report whether a catalog model exists in the local model directory.
+
+    Args:
+        entry (ModelEntry): Entry value.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     specs = _entry_file_specs(entry, model_dir)
     missing = [relpath for _role, relpath, path in specs if not path.is_file()]
     return {
@@ -70,6 +115,16 @@ def local_file_status(entry, model_dir=None):
 
 
 def catalog_model_files(entry, model_dir=None, source="modelscope", endpoint=None):
+    """Build file metadata for a catalog model.
+
+    Args:
+        entry (ModelEntry): Entry value.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+        source (str, optional): Download source name. Defaults to "modelscope".
+        endpoint (str | None, optional): Optional custom download endpoint. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     files = []
     for role, relpath, path in _entry_file_specs(entry, model_dir):
         exists = path.is_file()
@@ -91,6 +146,17 @@ def catalog_model_files(entry, model_dir=None, source="modelscope", endpoint=Non
 
 
 def catalog_model_card(entry, model_dir=None, source="modelscope", endpoint=None, include_files=False):
+    """Build a summary card for a catalog model.
+
+    Args:
+        entry (ModelEntry): Entry value.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+        source (str, optional): Download source name. Defaults to "modelscope".
+        endpoint (str | None, optional): Optional custom download endpoint. Defaults to None.
+        include_files (Any, optional): Include files value. Defaults to False.
+
+    Returns:
+        Any: Computed result."""
     category = entry.category_path or entry.primary_category
     pymss = {
         "name": entry.name,
@@ -122,11 +188,32 @@ def catalog_model_card(entry, model_dir=None, source="modelscope", endpoint=None
 
 
 def catalog_model_detail(model, model_dir=None, source="modelscope", endpoint=None):
+    """Build the detailed response for one catalog model.
+
+    Args:
+        model (str): Model value.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+        source (str, optional): Download source name. Defaults to "modelscope".
+        endpoint (str | None, optional): Optional custom download endpoint. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     entry = get_model_entry(model)
     return catalog_model_card(entry, model_dir=model_dir, source=source, endpoint=endpoint, include_files=True)
 
 
 def filter_catalog_models(category=None, supported=True, local="all", q=None, model_dir=None):
+    """Filter catalog models by category, support, local files, and text query.
+
+    Args:
+        category (Any, optional): Category value. Defaults to None.
+        supported (bool | None, optional): Optional support-status filter. Defaults to None.
+        local (Any, optional): Local value. Defaults to 'all'.
+        q (Any, optional): Q value. Defaults to None.
+        model_dir (str | os.PathLike | None, optional): Local model cache directory. Uses the package default when None. Defaults to None.
+
+    Returns:
+        Any: Computed result."""
     rows = list_models(category=category, supported=supported)
     query = str(q or "").strip().lower()
     if query:
