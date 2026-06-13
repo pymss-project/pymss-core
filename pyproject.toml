@@ -3,9 +3,9 @@ requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pymss"
-version = "2.0.6"
-description = "Python package for music source separation."
+name = "pymss-core"
+version = "0.1.0"
+description = "Core model, configuration, and checkpoint package for music source separation."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
 license = "MIT"
@@ -36,46 +36,32 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "av>=14",
-    "librosa>=0.10.2",
     "numpy>=1.26",
     "pyyaml>=6.0.1",
     "torch>=2.7.1",
-    "tqdm>=4.60",
-    "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.optional-dependencies]
-server = [
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
+mlx = [
+    "mlx>=0.31.0; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8",
-    "fastapi>=0.115",
-    "uvicorn[standard]>=0.30",
 ]
 
-[project.scripts]
-pymss = "pymss.cli:main"
-
 [project.urls]
-"Bug Tracker" = "https://github.com/pymss-project/pymss/issues"
-"Source Code" = "https://github.com/pymss-project/pymss"
-Documentation = "https://github.com/pymss-project/pymss/blob/main/README.md"
+"Bug Tracker" = "https://github.com/pymss-project/pymss-core/issues"
+"Source Code" = "https://github.com/pymss-project/pymss-core"
+Documentation = "https://github.com/pymss-project/pymss-core/blob/main/README.md"
 
 [tool.setuptools.packages.find]
-include = ["pymss*"]
+include = ["pymss_core*"]
 
 [tool.setuptools.package-data]
-pymss = [
-    "resources/model_catalog.json",
+pymss_core = [
     "resources/vr_modelparams/*.json",
-    "server/webui_static/.gitkeep",
-    "server/webui_static/index.html",
-    "server/webui_static/assets/*",
 ]
 
 [tool.uv]
@@ -94,7 +80,7 @@ target-version = "py310"
 line-length = 128
 
 [tool.pytest.ini_options]
-testpaths = ["test"]
+testpaths = ["tests"]
 python_files = ["test_*.py"]
 markers = [
     "integration: tests that require local model, config, and audio assets",
