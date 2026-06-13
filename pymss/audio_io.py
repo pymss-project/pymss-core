@@ -67,9 +67,11 @@ def save_audio(path, audio, sr, output_format, audio_params):
     elif output_format == "flac":
         # PyAV's FLAC encoder only exposes a single "flac" codec in the current version.
         # In the current version, without access to bits_per_raw_sample in PyAV, PCM_24 may still be encoded as 16-bit.
-        # Use a dedicated FLAC writer if strict 24-bit FLAC is required.
-        flac_codecs = {"PCM_16": "flac", "PCM_24": "flac"}
-        codec = flac_codecs.get(audio_params.get("flac_bit_depth", "PCM_24"), flac_codecs["PCM_24"])
+        # Use soundfile to save 24-bit FLAC
+        codec = "flac"
+        if audio_params.get("flac_bit_depth", "PCM_24") == "PCM_24":
+            import soundfile as sf
+            return sf.write(path, audio_array, int(sr), format="FLAC", subtype="PCM_24")
     else:
         wav_codecs = {"PCM_16": "pcm_s16le", "PCM_24": "pcm_s24le", "FLOAT": "pcm_f32le"}
         codec = wav_codecs.get(audio_params.get("wav_bit_depth", "FLOAT"), wav_codecs["FLOAT"])
