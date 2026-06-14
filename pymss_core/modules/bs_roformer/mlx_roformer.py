@@ -116,6 +116,8 @@ def _istft_roformer(module, stft_repr, context, length):
     stft_repr = stft_repr.reshape(b, n, freq_bins, channels, t, 2)
     stft_repr = mx.transpose(stft_repr, (0, 1, 3, 2, 4, 5)).reshape(b * n * channels, freq_bins, t, 2)
     complex_stft = stft_repr[..., 0] + (1j * stft_repr[..., 1])
+    if getattr(module, "zero_dc", False):
+        complex_stft = complex_stft.at[:, 0, :].set(0)
     complex_stft = mx.moveaxis(complex_stft, -2, -1)
     if normalized:
         complex_stft = complex_stft * np.sqrt(n_fft)

@@ -42,6 +42,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         stft_win_length=2048,
         stft_normalized=False,
         stft_window_fn: Optional[Callable] = None,
+        zero_dc=True,
         mask_estimator_depth=1,
         match_input_audio_length=False,
         mlp_expansion_factor=4,
@@ -116,6 +117,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             mask_estimator_kwargs={"mlp_hidden_layers": mlp_hidden_layers},
         )
 
+        self.zero_dc = zero_dc
         self.match_input_audio_length = match_input_audio_length
 
     def _forward_mask_core(self, selected_stft_repr):
