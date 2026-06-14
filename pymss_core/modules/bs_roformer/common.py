@@ -175,7 +175,15 @@ def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stf
 
 
 def roformer_stft_freq_bins(module, window_length):
-    return int(module.stft_kwargs["n_fft"]) // 2 + 1
+    # The original training code computed this shape through torch.stft on a
+    # random probe tensor during model construction. Preserve that RNG-consuming
+    # behavior so scratch initialization remains seed-compatible.
+    return torch.stft(
+        torch.randn(1, 4096),
+        **module.stft_kwargs,
+        window=torch.ones(window_length),
+        return_complex=True,
+    ).shape[1]
 
 
 def roformer_freqs_per_bands_with_complex(module, freqs_per_bands, freqs):
@@ -354,6 +362,8 @@ def istft_roformer(module, stft_repr, context, length):
         .permute(0, 1, 3, 2, 4)
         .reshape(b * n * context.channels, context.freq_bins, t)
     )
+    if getattr(module, "zero_dc", False):
+        stft_repr = stft_repr.index_fill(1, torch.tensor(0, device=stft_repr.device), 0.0)
 
     try:
         recon_audio = torch.istft(
