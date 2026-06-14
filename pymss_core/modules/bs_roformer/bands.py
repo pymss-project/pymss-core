@@ -1,3 +1,4 @@
+import os
 from collections import defaultdict
 from itertools import accumulate
 from typing import Tuple
@@ -8,6 +9,22 @@ from torch.nn import Module, ModuleList
 import torch.nn.functional as F
 
 from .transformer import RMSNorm
+
+
+EXPERIMENTAL_TRAIN_GROUPED_BANDS_ENV = "PYMSS_CORE_EXPERIMENTAL_TRAIN_GROUPED_BANDS"
+EXPERIMENTAL_DEEP_MASK_GROUPING_ENV = "PYMSS_CORE_EXPERIMENTAL_DEEP_MASK_GROUPING"
+
+
+def experimental_train_grouped_bands():
+    return os.environ.get(EXPERIMENTAL_TRAIN_GROUPED_BANDS_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def experimental_deep_mask_grouping():
+    return os.environ.get(EXPERIMENTAL_DEEP_MASK_GROUPING_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def should_use_grouped_forward(module):
+    return module.use_grouped_forward and (not module.training or experimental_train_grouped_bands())
 
 
 def default(v, d):
@@ -59,9 +76,11 @@ class BandSplit(Module):
 
     def _get_group_params(self, start, end, device, dtype):
         key = (start, end, device.type, device.index, dtype)
-        cached = self._group_cache.get(key)
-        if cached is not None:
-            return cached
+        use_cache = not self.training
+        if use_cache:
+            cached = self._group_cache.get(key)
+            if cached is not None:
+                return cached
 
         norms = [self.to_features[i][0] for i in range(start, end)]
         linears = [self.to_features[i][1] for i in range(start, end)]
@@ -74,7 +93,8 @@ class BandSplit(Module):
             if linears[0].bias is not None
             else None,
         )
-        self._group_cache[key] = cached
+        if use_cache:
+            self._group_cache[key] = cached
         return cached
 
     def _forward_grouped(self, x):
@@ -89,11 +109,13 @@ class BandSplit(Module):
         return torch.cat([forward_group(start, end, dim_in) for start, end, dim_in in self._dim_groups], dim=-2)
 
     def warm_group_cache(self, device, dtype):
+        if self.training:
+            return
         for start, end, _ in self._dim_groups:
             self._get_group_params(start, end, device, dtype)
 
     def forward(self, x):
-        if not self.training and self.use_grouped_forward:
+        if should_use_grouped_forward(self):
             return self._forward_grouped(x)
 
         return torch.stack(
@@ -209,18 +231,21 @@ class MaskEstimator(Module):
         return self._band_signatures_cache
 
     def _layer_grouping_plan(self):
-        if self._layer_group_plan_ready:
+        allow_deep_grouping = self.training and experimental_deep_mask_grouping()
+        if self._layer_group_plan_ready and getattr(self, "_layer_group_plan_allow_deep", False) == allow_deep_grouping:
             return self._layer_group_plan
 
         band_layers = self._band_groupable_layers()
         if any(layers is None for layers in band_layers):
             self._layer_group_plan_ready = True
+            self._layer_group_plan_allow_deep = allow_deep_grouping
             self._layer_group_plan = None
             return None
 
         layer_count = len(band_layers[0])
         if any(len(layers) != layer_count for layers in band_layers):
             self._layer_group_plan_ready = True
+            self._layer_group_plan_allow_deep = allow_deep_grouping
             self._layer_group_plan = None
             return None
 
@@ -230,6 +255,7 @@ class MaskEstimator(Module):
             if first_kind == "tanh":
                 if any(layers[layer_index][0] != "tanh" for layers in band_layers):
                     self._layer_group_plan_ready = True
+                    self._layer_group_plan_allow_deep = allow_deep_grouping
                     self._layer_group_plan = None
                     return None
                 plan.append(("tanh", None))
@@ -237,6 +263,7 @@ class MaskEstimator(Module):
 
             if first_kind != "linear":
                 self._layer_group_plan_ready = True
+                self._layer_group_plan_allow_deep = allow_deep_grouping
                 self._layer_group_plan = None
                 return None
 
@@ -245,6 +272,7 @@ class MaskEstimator(Module):
                 kind, layer = layers[layer_index]
                 if kind != "linear":
                     self._layer_group_plan_ready = True
+                    self._layer_group_plan_allow_deep = allow_deep_grouping
                     self._layer_group_plan = None
                     return None
                 signature = (layer.in_features, layer.out_features, layer.bias is not None)
@@ -255,12 +283,14 @@ class MaskEstimator(Module):
         # Extra hidden layers in MBR produce large per-band hidden->hidden
         # batched GEMMs. On CUDA those are slower than the existing addmm
         # loop, so keep this fast path to the common two-linear mask heads.
-        if sum(1 for kind, _ in plan if kind == "linear") > 2:
+        if sum(1 for kind, _ in plan if kind == "linear") > 2 and not allow_deep_grouping:
             self._layer_group_plan_ready = True
+            self._layer_group_plan_allow_deep = allow_deep_grouping
             self._layer_group_plan = None
             return None
 
         self._layer_group_plan_ready = True
+        self._layer_group_plan_allow_deep = allow_deep_grouping
         self._layer_group_plan = tuple(plan)
         return self._layer_group_plan
 
@@ -282,9 +312,11 @@ class MaskEstimator(Module):
 
     def _get_group_params(self, start, end, device, dtype):
         key = (start, end, device.type, device.index, dtype)
-        cached = self._group_cache.get(key)
-        if cached is not None:
-            return cached
+        use_cache = not self.training
+        if use_cache:
+            cached = self._group_cache.get(key)
+            if cached is not None:
+                return cached
 
         grouped_layers = []
         band_layers = self._band_groupable_layers()
@@ -302,14 +334,17 @@ class MaskEstimator(Module):
             grouped_layers.append(("linear", weight, bias))
 
         cached = tuple(grouped_layers)
-        self._group_cache[key] = cached
+        if use_cache:
+            self._group_cache[key] = cached
         return cached
 
     def _get_layer_group_params(self, layer_index, signature, indices, device, dtype):
         key = (layer_index, signature, indices, device.type, device.index, dtype)
-        cached = self._layer_group_cache.get(key)
-        if cached is not None:
-            return cached
+        use_cache = not self.training
+        if use_cache:
+            cached = self._layer_group_cache.get(key)
+            if cached is not None:
+                return cached
 
         band_layers = self._band_groupable_layers()
         linears = [band_layers[i][layer_index][1] for i in indices]
@@ -319,15 +354,18 @@ class MaskEstimator(Module):
             bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
 
         cached = (weight, bias)
-        self._layer_group_cache[key] = cached
+        if use_cache:
+            self._layer_group_cache[key] = cached
         return cached
 
     def _get_packed_layer_group_params(self, estimators, layer_index, signature, indices, device, dtype):
         estimator_ids = tuple(id(estimator) for estimator in estimators)
         key = (estimator_ids, layer_index, signature, indices, device.type, device.index, dtype)
-        cached = self._packed_layer_group_cache.get(key)
-        if cached is not None:
-            return cached
+        use_cache = not any(estimator.training for estimator in estimators)
+        if use_cache:
+            cached = self._packed_layer_group_cache.get(key)
+            if cached is not None:
+                return cached
 
         linears = [
             estimator._band_groupable_layers()[band_index][layer_index][1] for estimator in estimators for band_index in indices
@@ -338,7 +376,8 @@ class MaskEstimator(Module):
             bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
 
         cached = (weight, bias)
-        self._packed_layer_group_cache[key] = cached
+        if use_cache:
+            self._packed_layer_group_cache[key] = cached
         return cached
 
     @staticmethod
@@ -350,7 +389,7 @@ class MaskEstimator(Module):
         first = estimators[0]
         if not isinstance(first, MaskEstimator):
             return False
-        if first.training or not first.use_grouped_forward:
+        if not should_use_grouped_forward(first):
             return False
 
         first_signatures = first._band_layer_signatures()
@@ -360,7 +399,7 @@ class MaskEstimator(Module):
         for estimator in estimators[1:]:
             if type(estimator) is not type(first):
                 return False
-            if estimator.training or not estimator.use_grouped_forward:
+            if not should_use_grouped_forward(estimator):
                 return False
             if estimator.dim_inputs != first.dim_inputs:
                 return False
@@ -447,7 +486,7 @@ class MaskEstimator(Module):
         first = estimators[0]
         if not isinstance(first, MaskEstimator):
             return False
-        if first.training or not first.use_grouped_forward:
+        if not should_use_grouped_forward(first):
             return False
 
         first_plan = first._layer_grouping_plan()
@@ -457,7 +496,7 @@ class MaskEstimator(Module):
         for estimator in estimators[1:]:
             if type(estimator) is not type(first):
                 return False
-            if estimator.training or not estimator.use_grouped_forward:
+            if not should_use_grouped_forward(estimator):
                 return False
             if estimator.dim_inputs != first.dim_inputs:
                 return False
@@ -608,7 +647,7 @@ class MaskEstimator(Module):
         return result
 
     def forward(self, x):
-        if not self.training and self.use_grouped_forward:
+        if should_use_grouped_forward(self):
             if self._can_group_mlp():
                 return self._forward_grouped_mlp(x)
             grouped = self._forward_layer_grouped_mlp(x)
@@ -621,6 +660,8 @@ class MaskEstimator(Module):
         return torch.cat([mlp(band_features) for band_features, mlp in zip(x.unbind(dim=-2), self.to_freqs)], dim=-1)
 
     def warm_group_cache(self, device, dtype):
+        if self.training:
+            return
         if self._can_group_mlp():
             for start, end, _ in self._dim_groups:
                 self._get_group_params(start, end, device, dtype)
@@ -639,6 +680,8 @@ class MaskEstimator(Module):
     def warm_packed_estimators(estimators, device, dtype):
         estimators = tuple(estimators)
         if not estimators:
+            return
+        if any(estimator.training for estimator in estimators):
             return
         if not MaskEstimator._packable_estimators(estimators):
             MaskEstimator._warm_packed_estimators_by_band(estimators, device, dtype)
