@@ -78,9 +78,7 @@ TRAINING_LOSS_KWARGS = frozenset(
         "multi_stft_window_fn",
     }
 )
-REMOVED_ROFORMER_KWARGS = frozenset(
-    {"linear_transformer_depth", "use_torch_checkpoint", "skip_connection", "attention_layout", "dim_freqs_in"}
-)
+REMOVED_ROFORMER_KWARGS = frozenset({"linear_transformer_depth", "use_torch_checkpoint", "attention_layout", "dim_freqs_in"})
 
 
 def ignore_roformer_training_kwargs(kwargs):
@@ -89,10 +87,11 @@ def ignore_roformer_training_kwargs(kwargs):
         raise TypeError(f"unexpected RoFormer config keys: {sorted(unexpected)}")
 
 
-def init_roformer_runtime(module, stereo, num_stems):
+def init_roformer_runtime(module, stereo, num_stems, skip_connection=False):
     module.stereo = stereo
     module.audio_channels = 2 if stereo else 1
     module.num_stems = num_stems
+    module.skip_connection = bool(skip_connection)
 
 
 def init_roformer_shared_bias(module, dim, heads, dim_head, use_shared_bias):
@@ -309,10 +308,17 @@ def forward_roformer_mask_core(module, stft_repr):
     x = stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
     x = module.band_split(x)
 
+    residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
+        if residual_store is not None:
+            for residual in residual_store:
+                x = x + residual
+
         b, t, f, d = x.shape
         x = time_transformer(x.permute(0, 2, 1, 3).reshape(b * f, t, d)).reshape(b, f, t, d).permute(0, 2, 1, 3)
         x = freq_transformer(x.reshape(b * t, f, d)).reshape(b, t, f, d)
+        if residual_store is not None:
+            residual_store.append(x)
 
     return mask_to_complex_shape(module._estimate_masks(module.final_norm(x)), complex_dim=2)
 
