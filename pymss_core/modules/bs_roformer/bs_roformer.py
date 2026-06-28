@@ -47,11 +47,12 @@ class BSRoformer(RoformerRuntimeMixin, Module):
         mask_estimator_depth=2,
         mlp_expansion_factor=4,
         use_shared_bias=False,
+        skip_connection=False,
         **kwargs,
     ):
         super().__init__()
         ignore_roformer_training_kwargs(kwargs)
-        init_roformer_runtime(self, stereo, num_stems)
+        init_roformer_runtime(self, stereo, num_stems, skip_connection=skip_connection)
 
         shared_qkv_bias, shared_out_bias = init_roformer_shared_bias(
             self,
