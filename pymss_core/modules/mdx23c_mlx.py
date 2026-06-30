@@ -10,6 +10,7 @@ from .bs_roformer.mlx_attention import (
     mlx_to_torch_mps,
 )
 from .mdx23c_tfc_tdf_v3 import Downscale, TFC_TDF, Upscale
+from .progress import progress_stepper
 
 
 def torch_to_mlx_input(tensor, dtype):
@@ -260,20 +261,35 @@ def _tfc_tdf(module, x, dtype):
     return x
 
 
-def _forward_core(module, x, dtype):
+def _forward_core(module, x, dtype, progress=None):
     import mlx.core as mx
 
     encoder_outputs = []
     for block in module.encoder_blocks:
         x = _tfc_tdf(block.tfc_tdf, x, dtype)
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
         encoder_outputs.append(x)
         x = _module_forward(block.downscale, x, dtype)
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
 
     x = _tfc_tdf(module.bottleneck_block, x, dtype)
+    if progress is not None:
+        mx.eval(x)
+        progress.step()
 
     for block in module.decoder_blocks:
         x = _module_forward(block.upscale, x, dtype)
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
         x = _tfc_tdf(block.tfc_tdf, mx.concatenate((x, encoder_outputs.pop()), axis=1), dtype)
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
 
     return x
 
@@ -284,18 +300,28 @@ def mlx_forward_mdx23c_mx(module, raw_audio, dtype=torch.float16):
     if dtype not in (torch.float16, torch.float32):
         raise TypeError("MLX full MDX23C supports torch.float16 or torch.float32 compute dtype")
     mx_dtype = _mlx_dtype(dtype)
+    progress = progress_stepper(module, 5 + 2 * len(module.encoder_blocks) + 1 + 2 * len(module.decoder_blocks))
 
     x, context = _subband_stft(module, raw_audio.astype(mx_dtype), mx_dtype)
+    mx.eval(x)
+    progress.step()
     mix = x = _cac_to_cws_mx(x, module.num_subbands)
     first_conv_out = x = _conv2d_nchw(module.first_conv, x, dtype)
-    x = _forward_core(module, x.transpose(0, 1, 3, 2), dtype).transpose(0, 1, 3, 2)
+    mx.eval(x)
+    progress.step()
+    x = _forward_core(module, x.transpose(0, 1, 3, 2), dtype, progress).transpose(0, 1, 3, 2)
     x = x * first_conv_out
     x = _module_forward(module.final_conv, mx.concatenate((mix, x), axis=1), dtype)
+    mx.eval(x)
+    progress.step()
     x = _cws_to_cac_mx(x, module.num_subbands)
     if module.num_target_instruments > 1:
         batch, channels, freq_bins, time_bins = x.shape
         x = x.reshape(batch, module.num_target_instruments, channels // module.num_target_instruments, freq_bins, time_bins)
-    return _subband_istft(module, x, context)
+    audio = _subband_istft(module, x, context)
+    mx.eval(audio)
+    progress.step()
+    return audio
 
 
 def mlx_forward_mdx23c(module, raw_audio, dtype=torch.float16):

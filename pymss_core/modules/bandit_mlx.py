@@ -4,6 +4,7 @@ import torch
 from .mlx_utils import mlx_periodic_hann_window
 from .bandit.tfmodel import ResidualRNN, Transpose
 from .bs_roformer.mlx_attention import _gelu, _linear, _mlx_dtype, _torch_to_mlx_array, mlx_to_torch_mps
+from .progress import progress_stepper
 
 
 def torch_to_mlx_input(tensor, dtype):
@@ -392,22 +393,42 @@ def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     if dtype not in (torch.float16, torch.float32):
         raise TypeError("MLX full Bandit supports torch.float16 or torch.float32 compute dtype")
     mx_dtype = _mlx_dtype(dtype)
+    progress = progress_stepper(module, 5 + len(getattr(module, "mask_estim", {})))
     init_shape = raw_audio.shape
     mono = raw_audio.reshape(-1, 1, raw_audio.shape[-1]).astype(mx_dtype)
     x, context = _spectral_stft(module.stft, mono, mx_dtype)
+    mx.eval(x)
+    progress.step()
     length = mono.shape[-1]
 
     if hasattr(module, "bsrnn"):
         specs = _bsrnn_core(module.bsrnn, x, dtype)
+        mx.eval(*specs)
+        progress.step(2)
         stems = module.stems
     else:
-        q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype)
-        specs = [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]
+        q = _band_split(module.band_split, x, dtype)
+        mx.eval(q)
+        progress.step()
+        q = _tf_model(module.tf_model, q, dtype)
+        mx.eval(q)
+        progress.step()
+        specs = []
+        for mask_estimator in module.mask_estim.values():
+            spec = _mask_estimator(mask_estimator, q, dtype) * x
+            mx.eval(spec)
+            progress.step()
+            specs.append(spec)
         stems = module.stems
 
     estimates = [_spectral_istft(module.istft, spec, context, length) for spec in specs]
+    mx.eval(*estimates)
+    progress.step()
     estimates = [estimate.reshape(-1, init_shape[1], init_shape[2]) for estimate in estimates]
-    return mx.stack(estimates, axis=1)
+    result = mx.stack(estimates, axis=1)
+    mx.eval(result)
+    progress.step()
+    return result
 
 
 def mlx_forward_bandit(module, raw_audio, dtype=torch.float16):

@@ -4,6 +4,7 @@ import torch
 
 from .mlx_utils import mlx_periodic_hann_window
 from .bs_roformer.mlx_attention import _gelu, _linear, _mlx_dtype, _torch_to_mlx_array, mlx_to_torch_mps
+from .progress import progress_stepper
 from .scnet.scnet import Swish
 
 
@@ -371,6 +372,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     if dtype not in (torch.float16, torch.float32):
         raise TypeError("MLX full SCNet supports torch.float16 or torch.float32 compute dtype")
     mx_dtype = _mlx_dtype(dtype)
+    progress = progress_stepper(module, 4 + len(module.encoder) + 1 + len(module.decoder))
     x = raw_audio.astype(mx_dtype)
     batch = x.shape[0]
     padding = module.hop_length - x.shape[-1] % module.hop_length
@@ -380,6 +382,8 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
 
     length = x.shape[-1]
     spec, context = _stft_scnet(module, x.reshape(-1, length), mx_dtype)
+    mx.eval(spec)
+    progress.step()
     ri = mx.stack((spec.real, spec.imag), axis=-1)
     x = ri.transpose(0, 3, 1, 2).reshape(
         ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2]
@@ -389,21 +393,32 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     saved = []
     for sd_layer in module.encoder:
         x, skip, lengths, original_lengths = _sdblock(sd_layer, x, dtype)
+        mx.eval(x)
+        progress.step()
         saved.append((skip, lengths, original_lengths))
 
     x = _separation_net(module.separation_net, x, dtype)
+    mx.eval(x)
+    progress.step()
 
     for decoder in module.decoder:
         fusion_layer, su_layer = decoder
         skip, lengths, original_lengths = saved.pop()
         x = _sulayer(su_layer, _fusion_layer(fusion_layer, x, skip, dtype), lengths, original_lengths, dtype)
+        mx.eval(x)
+        progress.step()
 
     n = module.dims[0]
     x = x.reshape(batch, n, -1, freq_bins, time_bins).reshape(-1, 2, freq_bins, time_bins).transpose(0, 2, 3, 1)
     spec_out = x[..., 0] + (1j * x[..., 1])
     audio = _istft_scnet(module, spec_out, context, length)
+    mx.eval(audio)
+    progress.step()
     audio = audio.reshape(batch, len(module.sources), module.audio_channels, -1)
-    return audio[:, :, :, :-padding] if padding > 0 else audio
+    audio = audio[:, :, :, :-padding] if padding > 0 else audio
+    mx.eval(audio)
+    progress.step()
+    return audio
 
 
 def mlx_forward_scnet(module, raw_audio, dtype=torch.float16):
