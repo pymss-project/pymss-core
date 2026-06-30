@@ -5,6 +5,7 @@ from ..mlx_utils import mlx_periodic_hann_window
 from .bands import contiguous_dim_groups, dim_input_offsets
 from .bs_roformer_hyperace import BSRoformerHyperACE
 from . import hyperace_segm
+from .common import _roformer_mask_progress_steps
 from .mel_band_roformer import MelBandRoformer
 from .mlx_attention import (
     _COMPUTE_DTYPE,
@@ -194,10 +195,18 @@ def _band_split(module, x, dtype):
     return mx.concatenate(outs, axis=-2)
 
 
-def _transformer(module, x, dtype):
+def _transformer(module, x, dtype, progress=None):
+    import mlx.core as mx
+
     for attn, ff in module.layers:
         x = _mlx_attention(attn, x, dtype) + x
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
         x = _mlx_feed_forward(ff, x, dtype) + x
+        if progress is not None:
+            mx.eval(x)
+            progress.step()
     return _mlx_output_norm(module.norm, x, dtype)
 
 
@@ -602,17 +611,28 @@ def _mask_to_complex_shape(mask):
 
 
 def _forward_mask_core(module, stft_repr, dtype):
+    import mlx.core as mx
+
+    progress = module._progress_stepper(_roformer_mask_progress_steps(module), start=0.05, end=0.9)
     b, fs, model_t, complex_dim = stft_repr.shape
     x = stft_repr.transpose(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
     x = _band_split(module, x, dtype)
+    mx.eval(x)
+    progress.step()
 
     for time_transformer, freq_transformer in module.layers:
         b, t, f, d = x.shape
-        x = _transformer(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
+        x = _transformer(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype, progress)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
-        x = _transformer(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
+        x = _transformer(freq_transformer, x.reshape(b * t, f, d), dtype, progress).reshape(b, t, f, d)
 
-    return _mask_to_complex_shape(_estimate_masks(module, _final_norm(module, x, dtype), dtype))
+    x = _final_norm(module, x, dtype)
+    mx.eval(x)
+    progress.step()
+    mask = _mask_to_complex_shape(_estimate_masks(module, x, dtype))
+    mx.eval(mask)
+    progress.step()
+    return mask
 
 
 def _complex_from_ri(x):
@@ -655,13 +675,20 @@ def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
 
     mx_dtype = _mlx_dtype(dtype)
     stft_repr, context = _stft_roformer(module, raw_audio.astype(mx_dtype), mx_dtype)
+    import mlx.core as mx
+
+    mx.eval(stft_repr)
+    module._emit_progress_fraction(0.05)
     if isinstance(module, MelBandRoformer):
         masked = _mask_stft_repr_mbr(module, stft_repr, context, dtype)
         length = context["audio_length"] if module.match_input_audio_length else None
     else:
         masked = _mask_stft_repr_bsr(module, stft_repr, dtype)
         length = context["audio_length"]
-    return _istft_roformer(module, _ri_from_complex(masked), context, length)
+    result = _istft_roformer(module, _ri_from_complex(masked), context, length)
+    mx.eval(result)
+    module._emit_progress_fraction(1.0)
+    return result
 
 
 def mlx_forward_roformer(module, raw_audio, dtype=_COMPUTE_DTYPE):

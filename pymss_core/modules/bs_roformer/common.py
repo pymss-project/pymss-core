@@ -4,6 +4,7 @@ from typing import NamedTuple
 import torch
 from torch import nn
 
+from ..progress import ProgressStepper
 from .bands import BandSplit, MaskEstimator
 from .transformer import RMSNorm, Transformer
 
@@ -271,6 +272,14 @@ class RoformerRuntimeMixin:
         indices = self._active_source_indices()
         return len(self.mask_estimators) if indices is None else len(indices)
 
+    def _emit_progress_fraction(self, fraction):
+        callback = getattr(self, "_pymss_progress_fraction_callback", None)
+        if callback is not None:
+            callback(float(fraction))
+
+    def _progress_stepper(self, total_steps, start=0.0, end=1.0):
+        return ProgressStepper(self._emit_progress_fraction, total_steps, start, end)
+
     def _warm_group_cache(self, tensor):
         key = (tensor.device.type, tensor.device.index, tensor.dtype)
         if getattr(self, "_pymss_group_cache_warm_key", None) == key:
@@ -304,17 +313,45 @@ class RoformerRuntimeMixin:
         return stft_repr * mask
 
 
+def _roformer_mask_progress_steps(module):
+    steps = 1
+    steps += sum(max(1, len(time_transformer.layers)) * 2 for time_transformer, _ in module.layers)
+    steps += sum(max(1, len(freq_transformer.layers)) * 2 for _, freq_transformer in module.layers)
+    steps += 2
+    return steps
+
+
 def forward_roformer_mask_core(module, stft_repr):
+    progress = module._progress_stepper(_roformer_mask_progress_steps(module), start=0.05, end=0.9)
     b, fs, model_t, complex_dim = stft_repr.shape
     x = stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
     x = module.band_split(x)
+    progress.step()
 
     for time_transformer, freq_transformer in module.layers:
         b, t, f, d = x.shape
-        x = time_transformer(x.permute(0, 2, 1, 3).reshape(b * f, t, d)).reshape(b, f, t, d).permute(0, 2, 1, 3)
-        x = freq_transformer(x.reshape(b * t, f, d)).reshape(b, t, f, d)
+        time_x = x.permute(0, 2, 1, 3).reshape(b * f, t, d)
+        for attn, ff in time_transformer.layers:
+            time_x = attn(time_x) + time_x
+            progress.step()
+            time_x = ff(time_x) + time_x
+            progress.step()
+        time_x = time_transformer.norm(time_x)
+        x = time_x.reshape(b, f, t, d).permute(0, 2, 1, 3)
 
-    return mask_to_complex_shape(module._estimate_masks(module.final_norm(x)), complex_dim=2)
+        freq_x = x.reshape(b * t, f, d)
+        for attn, ff in freq_transformer.layers:
+            freq_x = attn(freq_x) + freq_x
+            progress.step()
+            freq_x = ff(freq_x) + freq_x
+            progress.step()
+        x = freq_transformer.norm(freq_x).reshape(b, t, f, d)
+
+    x = module.final_norm(x)
+    progress.step()
+    mask = mask_to_complex_shape(module._estimate_masks(x), complex_dim=2)
+    progress.step()
+    return mask
 
 
 def stft_roformer(module, raw_audio):
@@ -384,9 +421,12 @@ def istft_roformer(module, stft_repr, context, length):
 
 def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True):
     stft_repr, context = stft_roformer(module, raw_audio)
-    return istft_roformer(
+    module._emit_progress_fraction(0.05)
+    result = istft_roformer(
         module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None
     )
+    module._emit_progress_fraction(1.0)
+    return result
 
 
 def forward_bandsplit_roformer(module, raw_audio):
