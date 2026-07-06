@@ -606,11 +606,18 @@ def _forward_mask_core(module, stft_repr, dtype):
     x = stft_repr.transpose(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
     x = _band_split(module, x, dtype)
 
+    residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
+        if residual_store is not None:
+            for residual in residual_store:
+                x = x + residual
+
         b, t, f, d = x.shape
         x = _transformer(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
         x = _transformer(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
+        if residual_store is not None:
+            residual_store.append(x)
 
     return _mask_to_complex_shape(_estimate_masks(module, _final_norm(module, x, dtype), dtype))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import torch
 
 import pymss_core
@@ -119,6 +120,54 @@ def test_roformer_mask_core_applies_configured_skip_connection():
     module = DummyModule(skip_connection=False)
 
     output = forward_roformer_mask_core(module, torch.ones(1, 1, 1, 1))
+
+    assert output.shape == (1, 1, 1, 1, 2)
+    assert module.time_1.inputs[0].item() == 111
+    assert module.final_x.item() == 11111
+
+
+def test_mlx_roformer_mask_core_applies_configured_skip_connection(monkeypatch):
+    from pymss_core.modules.bs_roformer import mlx_roformer
+
+    class AddModule:
+        def __init__(self, value):
+            self.value = value
+            self.inputs = []
+
+    class DummyModule:
+        def __init__(self, skip_connection):
+            self.skip_connection = skip_connection
+            self.time_0 = AddModule(10)
+            self.freq_0 = AddModule(100)
+            self.time_1 = AddModule(1000)
+            self.freq_1 = AddModule(10000)
+            self.layers = [(self.time_0, self.freq_0), (self.time_1, self.freq_1)]
+            self.final_x = None
+
+    def fake_transformer(module, x, dtype):
+        module.inputs.append(x.copy())
+        return x + module.value
+
+    def fake_estimate_masks(module, x, dtype):
+        module.final_x = x.copy()
+        return np.ones((1, 1, 1, 2), dtype=np.float32)
+
+    monkeypatch.setattr(mlx_roformer, "_band_split", lambda module, x, dtype: x.reshape(1, 1, 1, 1))
+    monkeypatch.setattr(mlx_roformer, "_transformer", fake_transformer)
+    monkeypatch.setattr(mlx_roformer, "_final_norm", lambda module, x, dtype: x)
+    monkeypatch.setattr(mlx_roformer, "_estimate_masks", fake_estimate_masks)
+
+    module = DummyModule(skip_connection=True)
+
+    output = mlx_roformer._forward_mask_core(module, np.ones((1, 1, 1, 1), dtype=np.float32), np.float32)
+
+    assert output.shape == (1, 1, 1, 1, 2)
+    assert module.time_1.inputs[0].item() == 222
+    assert module.final_x.item() == 11222
+
+    module = DummyModule(skip_connection=False)
+
+    output = mlx_roformer._forward_mask_core(module, np.ones((1, 1, 1, 1), dtype=np.float32), np.float32)
 
     assert output.shape == (1, 1, 1, 1, 2)
     assert module.time_1.inputs[0].item() == 111
