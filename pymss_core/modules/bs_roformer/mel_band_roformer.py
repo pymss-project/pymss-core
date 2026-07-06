@@ -47,11 +47,12 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         match_input_audio_length=False,
         mlp_expansion_factor=4,
         mlp_hidden_layers=None,
+        skip_connection=False,
         **kwargs,
     ):
         super().__init__()
         ignore_roformer_training_kwargs(kwargs)
-        init_roformer_runtime(self, stereo, num_stems)
+        init_roformer_runtime(self, stereo, num_stems, skip_connection=skip_connection)
 
         transformer_kwargs = roformer_transformer_kwargs(
             dim=dim,
