@@ -32,7 +32,7 @@ _SDPA_BACKEND_ENUM_NAMES = {
 
 
 def normalize_cuda_attention_backend(backend):
-    backend = str(backend or "cudnn").lower().replace("-", "_")
+    backend = str(backend or default_cuda_attention_backend()).lower().replace("-", "_")
     if backend not in _CUDA_ATTENTION_BACKEND_ALIASES:
         raise ValueError("cuda_attention_backend must be one of: auto, default, flash, cudnn, efficient, math, xformers")
     return _CUDA_ATTENTION_BACKEND_ALIASES[backend]
@@ -46,7 +46,17 @@ def _sdpa_backend_enum(backend):
 
 
 def default_cuda_attention_backend():
+    if _is_rocm_build():
+        return "default"
     return "cudnn" if _sdpa_backend_enum("cudnn") is not None else "default"
+
+
+def _is_rocm_build():
+    return bool(getattr(torch.version, "hip", None))
+
+
+def _auto_cuda_attention_backend_candidates():
+    return ("efficient",) if _is_rocm_build() else ("cudnn", "efficient")
 
 
 def _sdpa_with_backend(q, k, v, dropout_p, backend):
@@ -226,7 +236,7 @@ class Attention(Module):
             return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 
         if backend == "auto":
-            for candidate in ("cudnn", "efficient"):
+            for candidate in _auto_cuda_attention_backend_candidates():
                 if candidate in self._disabled_cuda_attention_backends:
                     continue
                 try:

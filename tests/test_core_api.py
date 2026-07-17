@@ -7,6 +7,7 @@ import pymss_core
 from pymss_core import AttrDict, load_config, unwrap_state_dict
 from pymss_core.modules._dsp import mel_filterbank
 from pymss_core.modules.bs_roformer.common import SpectralContext, forward_roformer_mask_core, istft_roformer
+from pymss_core.modules.bs_roformer.transformer import default_cuda_attention_backend, normalize_cuda_attention_backend
 
 
 def test_public_api_exports_core_functions():
@@ -216,3 +217,15 @@ def test_vr_network_structures_remain_importable():
     assert CascadedASPPNet is not None
     assert CascadedNet is not None
     assert ModelParameters is not None
+
+
+def test_roformer_default_attention_backend_uses_default_on_rocm(monkeypatch):
+    monkeypatch.setattr("torch.version.hip", "7.2.1", raising=False)
+
+    assert default_cuda_attention_backend() == "default"
+
+
+def test_roformer_normalize_attention_backend_uses_runtime_default(monkeypatch):
+    monkeypatch.setattr("torch.version.hip", "7.2.1", raising=False)
+
+    assert normalize_cuda_attention_backend(None) == "default"
