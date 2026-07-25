@@ -175,7 +175,7 @@ def test_mlx_roformer_mask_core_applies_configured_skip_connection(monkeypatch):
 
 
 def test_roformer_constructors_preserve_skip_connection_flag():
-    from pymss_core.modules.bs_roformer import BSRoformer, MelBandRoformer
+    from pymss_core.modules.bs_roformer import BSConformer, BSRoformer, MelBandConformer, MelBandRoformer
 
     bs_roformer = BSRoformer(
         dim=4,
@@ -205,9 +205,99 @@ def test_roformer_constructors_preserve_skip_connection_flag():
         mask_estimator_depth=1,
         skip_connection=True,
     )
+    bs_conformer = BSConformer(
+        dim=4,
+        depth=1,
+        stereo=False,
+        num_stems=1,
+        time_conformer_depth=1,
+        freq_conformer_depth=1,
+        freqs_per_bands=(1,) * 9,
+        heads=1,
+        dim_head=4,
+        stft_n_fft=16,
+        stft_hop_length=4,
+        stft_win_length=16,
+        mask_estimator_depth=1,
+        conv_kernel_size=7,
+        skip_connection=True,
+    )
+    mel_band_conformer = MelBandConformer(
+        dim=4,
+        depth=1,
+        stereo=False,
+        num_stems=1,
+        time_conformer_depth=1,
+        freq_conformer_depth=1,
+        heads=1,
+        dim_head=4,
+        mask_estimator_depth=1,
+        conv_kernel_size=7,
+        skip_connection=True,
+    )
 
     assert bs_roformer.skip_connection is True
     assert mel_band_roformer.skip_connection is True
+    assert bs_conformer.skip_connection is True
+    assert mel_band_conformer.skip_connection is True
+
+
+def test_mlx_conformer_forward_matches_torch_on_mps():
+    pytest = __import__("pytest")
+    torch = __import__("torch")
+
+    if not torch.backends.mps.is_available():
+        pytest.skip("MPS required for MLX conformer parity check")
+    try:
+        import mlx.core as mx  # noqa: F401
+    except ImportError:
+        pytest.skip("mlx not installed")
+
+    from pymss_core.modules.bs_roformer import BSConformer, MelBandConformer
+    from pymss_core.modules.bs_roformer.mlx_roformer import mlx_forward_roformer
+
+    bands = (2, 1, 1, 1, 1, 1, 1, 1)
+    audio = torch.randn(1, 1, 64, device="mps")
+    common = dict(
+        dim=8,
+        depth=1,
+        stereo=False,
+        num_stems=1,
+        time_conformer_depth=1,
+        freq_conformer_depth=1,
+        dim_head=4,
+        heads=1,
+        flash_attn=False,
+        stft_n_fft=16,
+        stft_hop_length=4,
+        stft_win_length=16,
+        mask_estimator_depth=1,
+        conv_kernel_size=7,
+        zero_dc=True,
+    )
+
+    cases = [
+        ("bs", BSConformer(freqs_per_bands=bands, **common)),
+        ("mel", MelBandConformer(num_bands=4, sample_rate=16000, **common)),
+    ]
+    for name, model in cases:
+        model = model.to("mps").eval()
+        with torch.no_grad():
+            cpu_model = type(model)(
+                **(
+                    {**common, "freqs_per_bands": bands}
+                    if name == "bs"
+                    else {**common, "num_bands": 4, "sample_rate": 16000}
+                )
+            ).eval()
+            cpu_model.load_state_dict(model.state_dict())
+            ref = cpu_model(audio.cpu()).float()
+            out = mlx_forward_roformer(model, audio, torch.float32).float().cpu()
+            model.set_mps_model_backend("mlx_full", "float32")
+            fwd = model(audio).float().cpu()
+            assert model.mps_model_backend == "mlx_full", getattr(model, "_pymss_mlx_full_backend_error", None)
+        assert (ref - out).abs().max().item() < 5e-2, name
+        assert (ref - fwd).abs().max().item() < 5e-2, name
 
 
 def test_vr_network_structures_remain_importable():

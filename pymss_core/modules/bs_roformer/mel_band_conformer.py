@@ -156,6 +156,14 @@ class MelBandConformer(RoformerRuntimeMixin, Module):
         return stft_repr * (masks_summed / self.num_bands_per_channel_freq.clamp(min=1e-8))
 
     def forward(self, raw_audio):
+        if self._use_mlx_full_forward(raw_audio):
+            try:
+                from .mlx_roformer import mlx_forward_roformer
+
+                return mlx_forward_roformer(self, raw_audio, self.mps_model_compute_dtype)
+            except Exception as exc:
+                self._pymss_mlx_full_backend_error = repr(exc)
+                self.mps_model_backend = "torch"
         return forward_spectral_roformer(
             self,
             raw_audio,
