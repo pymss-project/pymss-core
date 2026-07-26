@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 from .bands import BandSplit, MaskEstimator
+from .conformer import Conformer
 from .transformer import RMSNorm, Transformer
 
 
@@ -17,6 +18,7 @@ __all__ = (
     "forward_roformer_mask_core",
     "forward_spectral_roformer",
     "ignore_roformer_training_kwargs",
+    "init_conformer_layers",
     "init_roformer_band_modules",
     "init_roformer_layers",
     "init_roformer_runtime",
@@ -78,7 +80,17 @@ TRAINING_LOSS_KWARGS = frozenset(
         "multi_stft_window_fn",
     }
 )
-REMOVED_ROFORMER_KWARGS = frozenset({"linear_transformer_depth", "use_torch_checkpoint", "attention_layout", "dim_freqs_in"})
+REMOVED_ROFORMER_KWARGS = frozenset(
+    {
+        "linear_transformer_depth",
+        "linear_conformer_depth",
+        "use_torch_checkpoint",
+        "attention_layout",
+        "dim_freqs_in",
+        "sage_attention",
+        "conv_dropout",
+    }
+)
 
 
 def ignore_roformer_training_kwargs(kwargs):
@@ -155,6 +167,39 @@ def init_roformer_layers(
                 [
                     Transformer(depth=time_transformer_depth, rotary_embed=time_rotary_embed, **transformer_kwargs),
                     Transformer(depth=freq_transformer_depth, rotary_embed=freq_rotary_embed, **transformer_kwargs),
+                ]
+            )
+            for _ in range(depth)
+        ]
+    )
+
+
+def init_conformer_layers(
+    module,
+    *,
+    depth,
+    time_conformer_depth,
+    freq_conformer_depth,
+    dim_head,
+    transformer_kwargs,
+    ff_mult=4,
+    conv_expansion_factor=2,
+    conv_kernel_size=31,
+):
+    time_rotary_embed = RotaryEmbedding(dim=dim_head)
+    freq_rotary_embed = RotaryEmbedding(dim=dim_head)
+    conformer_kwargs = dict(
+        ff_mult=ff_mult,
+        conv_expansion_factor=conv_expansion_factor,
+        conv_kernel_size=conv_kernel_size,
+        **transformer_kwargs,
+    )
+    module.layers = nn.ModuleList(
+        [
+            nn.ModuleList(
+                [
+                    Conformer(depth=time_conformer_depth, rotary_embed=time_rotary_embed, **conformer_kwargs),
+                    Conformer(depth=freq_conformer_depth, rotary_embed=freq_rotary_embed, **conformer_kwargs),
                 ]
             )
             for _ in range(depth)
