@@ -4,7 +4,9 @@ import torch
 from ..mlx_utils import mlx_periodic_hann_window
 from .bands import contiguous_dim_groups, dim_input_offsets
 from .bs_roformer_hyperace import BSRoformerHyperACE
+from .conformer import Conformer
 from . import hyperace_segm
+from .mel_band_conformer import MelBandConformer
 from .mel_band_roformer import MelBandRoformer
 from .mlx_attention import (
     _COMPUTE_DTYPE,
@@ -117,7 +119,7 @@ def _istft_roformer(module, stft_repr, context, length):
     stft_repr = mx.transpose(stft_repr, (0, 1, 3, 2, 4, 5)).reshape(b * n * channels, freq_bins, t, 2)
     complex_stft = stft_repr[..., 0] + (1j * stft_repr[..., 1])
     if getattr(module, "zero_dc", False):
-        complex_stft = complex_stft.at[:, 0, :].set(0)
+        complex_stft = complex_stft.at[:, 0, :].multiply(0)
     complex_stft = mx.moveaxis(complex_stft, -2, -1)
     if normalized:
         complex_stft = complex_stft * np.sqrt(n_fft)
@@ -199,6 +201,77 @@ def _transformer(module, x, dtype):
         x = _mlx_attention(attn, x, dtype) + x
         x = _mlx_feed_forward(ff, x, dtype) + x
     return _mlx_output_norm(module.norm, x, dtype)
+
+
+def _conv1d_ncl(conv, x, dtype):
+    import mlx.core as mx
+
+    weight = _mlx_param(conv, "weight", conv.weight, dtype).transpose(0, 2, 1)
+    y = mx.conv1d(
+        x.transpose(0, 2, 1),
+        weight,
+        stride=conv.stride[0],
+        padding=conv.padding[0],
+        dilation=conv.dilation[0],
+        groups=conv.groups,
+    )
+    if conv.bias is not None:
+        y = y + _mlx_param(conv, "bias", conv.bias, dtype)
+    return y.transpose(0, 2, 1)
+
+
+def _batch_norm1d(module, x, dtype):
+    import mlx.core as mx
+
+    if module.training:
+        raise TypeError("MLX Conformer BatchNorm1d supports eval mode only")
+    y = x.astype(mx.float32)
+    mean = _torch_to_mlx_array(module.running_mean, torch.float32).reshape(1, -1, 1)
+    var = _torch_to_mlx_array(module.running_var, torch.float32).reshape(1, -1, 1)
+    y = (y - mean) * mx.rsqrt(var + module.eps)
+    if module.affine:
+        weight = _mlx_param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
+        bias = _mlx_param(module, "bias", module.bias, dtype).reshape(1, -1, 1)
+        y = y.astype(x.dtype) * weight + bias
+    return y.astype(x.dtype)
+
+
+def _macaron_ff(module, x, dtype):
+    return _mlx_feed_forward(module.ff, x, dtype) * module.scale
+
+
+def _conformer_conv(module, x, dtype):
+    # Sequential indices match ConformerConvModule / MSST checkpoints.
+    norm, _, pointwise_in, _, depthwise, batch_norm, _, pointwise_out, _, _ = module.net
+    y = _rms_norm(x, _mlx_param(norm, "gamma", norm.gamma, dtype))
+    y = y.transpose(0, 2, 1)
+    y = _conv1d_ncl(pointwise_in, y, dtype)
+    y = _glu(y, axis=1)
+    y = _conv1d_ncl(depthwise, y, dtype)
+    y = _batch_norm1d(batch_norm, y, dtype)
+    y = _silu(y)
+    y = _conv1d_ncl(pointwise_out, y, dtype)
+    return y.transpose(0, 2, 1)
+
+
+def _conformer_block(block, x, dtype):
+    x = x + _macaron_ff(block.ff1, x, dtype)
+    x = x + _mlx_attention(block.attn, x, dtype)
+    x = x + _conformer_conv(block.conv, x, dtype)
+    x = x + _macaron_ff(block.ff2, x, dtype)
+    return _mlx_output_norm(block.out_norm, x, dtype)
+
+
+def _conformer(module, x, dtype):
+    for block in module.layers:
+        x = _conformer_block(block, x, dtype)
+    return _mlx_output_norm(module.norm, x, dtype)
+
+
+def _sequence_model(module, x, dtype):
+    if isinstance(module, Conformer):
+        return _conformer(module, x, dtype)
+    return _transformer(module, x, dtype)
 
 
 def _final_norm(module, x, dtype):
@@ -613,9 +686,9 @@ def _forward_mask_core(module, stft_repr, dtype):
                 x = x + residual
 
         b, t, f, d = x.shape
-        x = _transformer(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
+        x = _sequence_model(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
-        x = _transformer(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
+        x = _sequence_model(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
         if residual_store is not None:
             residual_store.append(x)
 
@@ -662,7 +735,7 @@ def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
 
     mx_dtype = _mlx_dtype(dtype)
     stft_repr, context = _stft_roformer(module, raw_audio.astype(mx_dtype), mx_dtype)
-    if isinstance(module, MelBandRoformer):
+    if isinstance(module, (MelBandRoformer, MelBandConformer)):
         masked = _mask_stft_repr_mbr(module, stft_repr, context, dtype)
         length = context["audio_length"] if module.match_input_audio_length else None
     else:

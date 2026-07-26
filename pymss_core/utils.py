@@ -24,10 +24,20 @@ def get_model_from_config(model_type, config_path, model_kwargs_override=None):
         model_kwargs = dict(config.model)
         model_kwargs.update(model_kwargs_override)
         return MelBandRoformer(**model_kwargs), config
+    if model_type == "mel_band_conformer":
+        from .modules.bs_roformer import MelBandConformer
+
+        model_kwargs = dict(config.model)
+        model_kwargs.update(model_kwargs_override)
+        return MelBandConformer(**model_kwargs), config
     if model_type == "bs_roformer":
         from .modules.bs_roformer import BSRoformer
 
         return BSRoformer(**dict(config.model)), config
+    if model_type == "bs_conformer":
+        from .modules.bs_roformer import BSConformer
+
+        return BSConformer(**dict(config.model)), config
     if model_type == "bs_roformer_hyperace":
         from .modules.bs_roformer import BSRoformerHyperACE
 
