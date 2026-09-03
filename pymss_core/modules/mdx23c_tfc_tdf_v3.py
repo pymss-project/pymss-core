@@ -47,8 +47,7 @@ class TFC_TDF_net(MpsBackendMixin, nn.Module):
         norm, act = get_norm(norm_type=config.model.norm), get_activation(config.model.act)
         self.num_target_instruments = 1 if config.training.target_instrument else len(config.training.instruments)
         self.num_subbands = config.model.num_subbands
-        dim_c = self.num_subbands * config.audio.num_channels * 2
-        m = config.model
+        dim_c, m = self.num_subbands * config.audio.num_channels * 2, config.model
         n, scale, l, c, g, bn = m.num_scales, m.scale, m.num_blocks_per_scale, m.num_channels, m.growth, m.bottleneck_factor
         f = config.audio.dim_f // self.num_subbands
         self.first_conv = nn.Conv2d(dim_c, c, 1, 1, 0, bias=False)

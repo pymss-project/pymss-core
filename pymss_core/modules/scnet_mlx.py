@@ -129,8 +129,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     check_dtype(dtype, "SCNet")
     dtype = mx_dtype(dtype)
     x = raw_audio.astype(dtype)
-    batch = x.shape[0]
-    padding = module.hop_length - x.shape[-1] % module.hop_length
+    batch, padding = x.shape[0], module.hop_length - x.shape[-1] % module.hop_length
     if (x.shape[-1] + padding) // module.hop_length % 2 == 0:
         padding += module.hop_length
     x = mx.pad(x, [(0, 0), (0, 0), (0, padding)])

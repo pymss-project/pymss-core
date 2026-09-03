@@ -215,9 +215,7 @@ def _dsconv_block(module, x, dtype):
 
 def _resize_positions(in_size, out_size):
     import mlx.core as mx
-    pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5
-    lower = mx.floor(pos)
-    weight = pos - lower
+    pos,lower,weight = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5, mx.floor(pos), pos - lower
     return (mx.clip(lower, 0, in_size - 1).astype(mx.int32), mx.clip(lower + 1, 0, in_size - 1).astype(mx.int32), weight)
 
 def _resize_bilinear_nchw(x, size):

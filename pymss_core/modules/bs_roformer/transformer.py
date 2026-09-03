@@ -101,9 +101,7 @@ class RotaryEmbedding(nn.Module):
 class RMSNorm(Module):
     def __init__(self, dim):
         super().__init__()
-        self.scale = dim**0.5
-        self.gamma = nn.Parameter(torch.ones(dim))
-        self._gamma_dtype_cache = {}
+        self.scale,self.gamma,self._gamma_dtype_cache = dim**0.5, nn.Parameter(torch.ones(dim)), {}
     def forward(self, x):
         if not self.training and x.dtype in (torch.float16, torch.bfloat16):
             key = (x.device.type, x.device.index, x.dtype, self.gamma.data_ptr(), self.gamma._version)

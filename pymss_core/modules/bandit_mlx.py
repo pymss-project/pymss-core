@@ -160,8 +160,7 @@ def _bsrnn_core(module, x, dtype):
 def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     check_dtype(dtype, "Bandit")
     dtype = mx_dtype(dtype)
-    init_shape = raw_audio.shape
-    mono = raw_audio.reshape(-1, 1, raw_audio.shape[-1]).astype(dtype)
+    init_shape, mono = raw_audio.shape, raw_audio.reshape(-1, 1, raw_audio.shape[-1]).astype(dtype)
     x, context = _spectral_stft(module.stft, mono, dtype)
     length = mono.shape[-1]
     if hasattr(module, "bsrnn"):

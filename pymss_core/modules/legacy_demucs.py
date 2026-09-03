@@ -16,9 +16,7 @@ from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
 from .demucs_local import _freq_dconv as _dconv_freq
 from .demucs_local import rescale_module as _rescale_module
 
-LEGACY_STEMS_4 = ["drums", "bass", "other", "vocals"]
-LEGACY_STEMS_2 = ["vocals", "non_vocals"]
-EPS = 1e-8
+LEGACY_STEMS_4,LEGACY_STEMS_2,EPS = ["drums", "bass", "other", "vocals"], ["vocals", "non_vocals"], 1e-8
 
 def center_trim(tensor, reference):
     if hasattr(reference, "size"):
@@ -389,9 +387,7 @@ class LegacyHDemucs(nn.Module):
             inject = None
             if self.hybrid and index < len(self.tencoder):
                 lengths_t.append(xt.shape[-1])
-                tenc = self.tencoder[index]
-                xt = tenc(xt)
-                inject = xt if tenc.empty else None
+                tenc,xt,inject = self.tencoder[index], tenc(xt), xt if tenc.empty else None
                 if not tenc.empty:
                     saved_t.append(xt)
             x = encode(x, inject)
@@ -620,9 +616,7 @@ def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transitio
             sum_weight[offset : offset + segment] += weight[:chunk_length]
         return out / sum_weight
     if shifts:
-        max_shift = int(0.5 * model.samplerate)
-        padded_mix = tensor_chunk(mix).padded(length + 2 * max_shift)
-        out = 0.0
+        max_shift,padded_mix,out = int(0.5 * model.samplerate), tensor_chunk(mix).padded(length + 2 * max_shift), 0.0
         for _ in range(shifts):
             offset = random.randint(0, max_shift)
             shifted = TensorChunk(padded_mix, offset, length + max_shift - offset)

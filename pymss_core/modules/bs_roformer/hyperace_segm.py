@@ -132,9 +132,7 @@ class Backbone(nn.Module):
         self.p5 = nn.Sequential(DSConv(c5, c6, k=3, s=2, p=1), DS_C3k2(c6, c6, n=base_depth))
         self.out_channels = [c3, c4, c5, c6]
     def forward(self, x):
-        x2 = self.p2(self.stem(x))
-        x3 = self.p3(x2)
-        x4 = self.p4(x3)
+        x2,x3,x4 = self.p2(self.stem(x)), self.p3(x2), self.p4(x3)
         return [x2, x3, x4, self.p5(x4)]
 
 class Decoder(nn.Module):

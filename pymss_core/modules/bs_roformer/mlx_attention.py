@@ -12,9 +12,7 @@ from ..mlx_backend import (to_mx as _torch_to_mlx_array,)
 from ..mlx_backend import (to_mx_raw as torch_mps_to_mlx,)
 from ..mlx_backend import (to_torch as mlx_to_torch_mps,)
 
-_COMPUTE_DTYPE = torch.float16
-_ROTARY_METAL_KERNEL = None
-_ROTARY_METAL_UNAVAILABLE = False
+_COMPUTE_DTYPE,_ROTARY_METAL_KERNEL,_ROTARY_METAL_UNAVAILABLE = torch.float16, None, False
 
 def mlx_bridge_sdpa(q, k, v):
     import mlx.core as mx

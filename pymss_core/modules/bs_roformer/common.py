@@ -59,9 +59,7 @@ def ignore_roformer_training_kwargs(kwargs):
 
 def init_roformer_runtime(module, stereo, num_stems, skip_connection=False):
     module.stereo = stereo
-    module.audio_channels = 2 if stereo else 1
-    module.num_stems = num_stems
-    module.skip_connection = bool(skip_connection)
+    module.audio_channels,module.num_stems,module.skip_connection = 2 if stereo else 1, num_stems, bool(skip_connection)
 
 def init_roformer_shared_bias(module, dim, heads, dim_head, use_shared_bias):
     if not use_shared_bias: return None, None

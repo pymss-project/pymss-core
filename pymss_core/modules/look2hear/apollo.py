@@ -170,8 +170,7 @@ class Apollo(MpsBackendMixin, nn.Module):
         return _complex_div_by_real(this_spec, power), power
     def _cached_packed_modules(self, name, modules, count):
         conv = modules[0][1]
-        key = (name, count, conv.weight.device, conv.weight.dtype)
-        cached = self._packed_cache.get(name)
+        key, cached = (name, count, conv.weight.device, conv.weight.dtype), self._packed_cache.get(name)
         if cached is not None and cached["key"] == key:
             return cached["norm_weight"], cached["conv_weight"], cached["conv_bias"], cached["groups"], cached["eps"]
         modules = list(modules[:count])

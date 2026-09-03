@@ -159,9 +159,7 @@ class MaskEstimator(Module):
             )
         return self._band_signatures_cache
     def _plan_bail(self, allow_deep_grouping):
-        self._layer_group_plan_ready = True
-        self._layer_group_plan_allow_deep = allow_deep_grouping
-        self._layer_group_plan = None
+        self._layer_group_plan_ready,self._layer_group_plan_allow_deep,self._layer_group_plan = True, allow_deep_grouping, None
     def _layer_grouping_plan(self):
         allow_deep_grouping = self.training and experimental_deep_mask_grouping()
         if self._layer_group_plan_ready and getattr(self, "_layer_group_plan_allow_deep", False) == allow_deep_grouping:
@@ -210,8 +208,7 @@ class MaskEstimator(Module):
         if use_cache:
             cached = self._group_cache.get(key)
             if cached is not None: return cached
-        grouped_layers = []
-        band_layers = self._band_groupable_layers()
+        grouped_layers, band_layers = [], self._band_groupable_layers()
         first_layers = band_layers[start]
         for layer_index, (kind, _) in enumerate(first_layers):
             if kind == "tanh":
@@ -334,9 +331,7 @@ class MaskEstimator(Module):
     @staticmethod
     def _forward_packed_estimators_two_layer_stream(estimators, x, plan):
         if len(plan) != 3 or plan[0][0] != "linear" or plan[1][0] != "tanh" or plan[2][0] != "linear": return None
-        first = estimators[0]
-        first_groups = plan[0][1]
-        final_groups = plan[2][1]
+        first,first_groups,final_groups = estimators[0], plan[0][1], plan[2][1]
         if len(first_groups) != 1: return None
         first_signature, _ = first_groups[0]
         stem_count = len(estimators)
@@ -370,9 +365,7 @@ class MaskEstimator(Module):
         plan = first._layer_grouping_plan()
         streamed = MaskEstimator._forward_packed_estimators_two_layer_stream(estimators, x, plan)
         if streamed is not None: return streamed
-        stem_count = len(estimators)
-        band_count = len(first.to_freqs)
-        group_x = x
+        stem_count,band_count,group_x = len(estimators), len(first.to_freqs), x
         for layer_index, (kind, groups) in enumerate(plan):
             if kind == "tanh":
                 group_x = inference_tanh(group_x)

@@ -10,9 +10,7 @@ from torch.nn import functional as F
 def pad1d(x, paddings, mode="constant", value=0.0):
     x0, (left, right), length = x, paddings, x.shape[-1]
     if mode == "reflect" and length <= max(left, right):  # torch reflect pad breaks past half window: overpad then crop
-        extra = max(left, right) - length + 1
-        extra_right = min(right, extra)
-        extra_left = extra - extra_right
+        extra,extra_right,extra_left = max(left, right) - length + 1, min(right, extra), extra - extra_right
         paddings, x = (left - extra_left, right - extra_right), F.pad(x, (extra_left, extra_right))
     out = F.pad(x, paddings, mode, value)
     assert out.shape[-1] == length + left + right and (out[..., left : left + length] == x0).all()

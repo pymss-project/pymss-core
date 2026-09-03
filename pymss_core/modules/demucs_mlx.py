@@ -237,9 +237,7 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     _validate_supported(module)
     check_dtype(dtype, "HTDemucs")
     dtype = mx_dtype(dtype)
-    mix = mix.astype(dtype)
-    length = mix.shape[-1]
-    length_pre_pad = None
+    mix, length, length_pre_pad = mix.astype(dtype), mix.shape[-1], None
     if module.use_train_segment:
         training_length = int(module.segment * module.samplerate)
         if mix.shape[-1] < training_length:

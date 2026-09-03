@@ -290,9 +290,7 @@ def _rnn_params(rnn, suffix, dtype):
 def lstm(rnn, x, dtype):
     import mlx.core as mx
     def run(p, reverse=False):
-        h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype)
-        c = mx.zeros_like(h)
-        outs = []
+        h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype); c, outs = mx.zeros_like(h), []
         for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]):
             gates = linear(x[:, t], p["weight_ih"], p.get("bias_ih")) + linear(h, p["weight_hh"], p.get("bias_hh"))
             i, f, g, o = mx.split(gates, 4, axis=-1)
