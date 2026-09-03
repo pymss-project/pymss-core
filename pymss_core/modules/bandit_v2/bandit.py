@@ -33,8 +33,7 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
                 self._pymss_mlx_full_backend_error = repr(exc)
                 self.mps_model_backend = "torch"
         init_shape = batch.shape
-        if not isinstance(batch, dict):
-            batch = {"mixture": {"audio": batch.view(-1, 1, batch.shape[-1])}}
+        if not isinstance(batch, dict): batch = {'mixture': {'audio': batch.view(-1, 1, batch.shape[-1])}}
         with torch.no_grad():
             mixture = batch["mixture"]["audio"]
             batch["mixture"]["spectrogram"] = self.stft(mixture)

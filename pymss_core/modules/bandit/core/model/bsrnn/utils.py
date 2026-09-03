@@ -74,8 +74,7 @@ class PerceptualBandsplitSpecification(BandsplitSpecification):
         self.freq_weights, self.band_specs = [], []
         for i in range(n_bands):
             active = torch.nonzero(self.filterbank[i, :]).squeeze().tolist()
-            if isinstance(active, int):
-                active = (active, active)
+            if isinstance(active, int): active = (active, active)
             if len(active) == 0: continue
             self.band_specs.append((active[0], active[-1] + 1))
             self.freq_weights.append(normalized_fb[i, active[0]:active[-1] + 1])

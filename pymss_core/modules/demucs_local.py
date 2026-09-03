@@ -20,8 +20,7 @@ def pad1d(x, paddings, mode="constant", value=0.0):
 
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
-    if x.device.type == "mps":
-        x = x.cpu()
+    if x.device.type == "mps": x = x.cpu()
     z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
 
@@ -29,8 +28,7 @@ def ispectro(z, hop_length=None, length=None, pad=0):
     *other, freqs, frames = z.shape
     n_fft = 2 * freqs - 2
     win_length = n_fft // (1 + pad)
-    if z.device.type == "mps":
-        z = z.cpu()
+    if z.device.type == "mps": z = z.cpu()
     x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(win_length).to(z.real), win_length=win_length, normalized=True, length=length, center=True)
     return x.view(*other, x.shape[-1])
 
@@ -39,8 +37,7 @@ def rescale_module(module, reference):
         if isinstance(sub, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
             scale = (sub.weight.std().detach() / reference) ** 0.5
             sub.weight.data /= scale
-            if sub.bias is not None:
-                sub.bias.data /= scale
+            if sub.bias is not None: sub.bias.data /= scale
 
 def _freq_dconv(dconv, y): b, c, fr, t = y.shape; return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
 
@@ -55,11 +52,7 @@ class BLSTM(nn.Module):
             nframes, framed = frames.shape[2], True
             x = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
         x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
-        if framed:
-            # frame reassembly: index 0 keeps only the right overlap trim, even when nframes == 1
-            frames = x.reshape(batch, -1, channels, width)
-            limit = stride // 2
-            x = torch.cat([frames[:, i, :, (limit if i else 0) : (-limit if (i < nframes - 1 or not i) else None)] for i in range(nframes)], -1)[..., :length]
+        if framed: frames = x.reshape(batch, -1, channels, width); limit = stride // 2; x = torch.cat([frames[:, i, :, limit if i else 0:-limit if i < nframes - 1 or not i else None] for i in range(nframes)], -1)[..., :length]
         return x + y if self.skip else x
 
 class LegacyLayerScale(nn.Module):
@@ -83,8 +76,7 @@ class DConv(nn.Module):
             if legacy and attn:
                 from .legacy_demucs import LegacyLocalState
                 mods.insert(3, LegacyLocalState(hidden, heads=heads, ndecay=ndecay))
-            if legacy and lstm:
-                mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
+            if legacy and lstm: mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
             self.layers.append(nn.Sequential(*mods))
     def forward(self, x):
         for layer in self.layers: x = x + layer(x)
@@ -116,21 +108,16 @@ class HEncLayer(nn.Module):
         if empty: return
         self.norm1 = norm_fn(chout)
         self.rewrite = klass(chout, 2 * chout, 1 + 2 * context, 1, context) if rewrite else None
-        if rewrite:
-            self.norm2 = norm_fn(2 * chout)
+        if rewrite: self.norm2 = norm_fn(2 * chout)
         self.dconv = DConv(chout, **(dconv_kw or {})) if dconv else None
     def forward(self, x, inject=None):
-        if not self.freq and x.dim() == 4:
-            x = x.view(x.shape[0], -1, x.shape[-1])
-        if not self.freq and x.shape[-1] % self.stride:
-            x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
+        if not self.freq and x.dim() == 4: x = x.view(x.shape[0], -1, x.shape[-1])
+        if not self.freq and x.shape[-1] % self.stride: x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
         y = self.conv(x)
         if self.empty: return y
-        if inject is not None:
-            y = y + (inject[:, :, None] if inject.dim() == 3 and y.dim() == 4 else inject)
+        if inject is not None: y = y + (inject[:, :, None] if inject.dim() == 3 and y.dim() == 4 else inject)
         y = F.gelu(self.norm1(y))
-        if self.dconv:
-            y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
+        if self.dconv: y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
 
 class HDecLayer(nn.Module):
@@ -146,19 +133,15 @@ class HDecLayer(nn.Module):
         self.norm2 = norm_fn(chout)
         if empty: return
         self.rewrite = None
-        if rewrite:
-            self.rewrite = (klass(chin, 2 * chin, 1 + 2 * context, 1, context) if context_freq else klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context]))
-            self.norm1 = norm_fn(2 * chin)
+        if rewrite: self.rewrite = klass(chin, 2 * chin, 1 + 2 * context, 1, context) if context_freq else klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context]); self.norm1 = norm_fn(2 * chin)
         self.dconv = DConv(chin, **(dconv_kw or {})) if dconv else None
     def forward(self, x, skip, length):
-        if self.freq and x.dim() == 3:
-            x = x.view(x.shape[0], self.chin, -1, x.shape[-1])
+        if self.freq and x.dim() == 3: x = x.view(x.shape[0], self.chin, -1, x.shape[-1])
         if self.empty:
             y = x
         else:
             y = F.glu(self.norm1(self.rewrite(x + skip)), dim=1) if self.rewrite else x + skip
-            if self.dconv:
-                y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
+            if self.dconv: y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
             z = z[..., self.pad : -self.pad, :]
@@ -178,8 +161,7 @@ class MultiWrap(nn.Module):
             else:
                 lay.pad = False
             for m in lay.modules():
-                if hasattr(m, "reset_parameters"):
-                    m.reset_parameters()
+                if hasattr(m, "reset_parameters"): m.reset_parameters()
             return lay
         self.layers = nn.ModuleList([new_layer() for _ in range(len(split_ratios) + 1)])
     def forward(self, x, skip=None, length=None):
@@ -188,28 +170,19 @@ class MultiWrap(nn.Module):
         for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
             if self.conv:
                 pad, limit = layer.kernel_size // 4, fr if ratio == 1 else round(fr * ratio)
-                if ratio != 1:
-                    le = limit - start + (pad if start == 0 else 0)
-                    limit = start + (round((le - layer.kernel_size) / layer.stride + 1) - 1) * layer.stride \
-                        + layer.kernel_size - (pad if start == 0 else 0)
+                if ratio != 1: le = limit - start + (pad if start == 0 else 0); limit = start + (round((le - layer.kernel_size) / layer.stride + 1) - 1) * layer.stride + layer.kernel_size - (pad if start == 0 else 0)
                 y = x[:, :, start:limit, :]
-                if start == 0:
-                    y = F.pad(y, (0, 0, pad, 0))
-                if ratio == 1:
-                    y = F.pad(y, (0, 0, 0, pad))
+                if start == 0: y = F.pad(y, (0, 0, pad, 0))
+                if ratio == 1: y = F.pad(y, (0, 0, 0, pad))
                 outs.append(layer(y))
                 start = limit - layer.kernel_size + layer.stride
             else:
                 limit, last = fr if ratio == 1 else round(fr * ratio), layer.last
                 layer.last = True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], None)
-                if outs:
-                    outs[-1][:, :, -layer.stride :] += out[:, :, : layer.stride] - layer.conv_tr.bias.view(1, -1, 1, 1)
-                    out = out[:, :, layer.stride :]
-                if ratio == 1:
-                    out = out[:, :, : -layer.stride // 2, :]
-                if start == 0:
-                    out = out[:, :, layer.stride // 2 :, :]
+                if outs: outs[-1][:, :, -layer.stride:] += out[:, :, :layer.stride] - layer.conv_tr.bias.view(1, -1, 1, 1); out = out[:, :, layer.stride:]
+                if ratio == 1: out = out[:, :, :-layer.stride // 2, :]
+                if start == 0: out = out[:, :, layer.stride // 2:, :]
                 outs.append(out)
                 layer.last = last
                 start = limit
@@ -231,8 +204,7 @@ def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=100
 
 def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, max_global_shift=0.0, max_local_shift=0.0, max_scale=1.0, device="cpu", max_period=10000.0):
     pos = torch.arange(length).view(-1, 1, 1).float().repeat(1, batch_size, 1)
-    if mean_normalize:
-        pos -= torch.nanmean(pos, dim=0, keepdim=True)
+    if mean_normalize: pos -= torch.nanmean(pos, dim=0, keepdim=True)
     if augment:  # train-only CAPE jitter: global/local shift + log-scale stretch
         pos = (pos + np.random.uniform(-max_global_shift, max_global_shift, (1, batch_size, 1)) + np.random.uniform(-max_local_shift, max_local_shift, (length, batch_size, 1)))
         pos = pos * np.exp(np.random.uniform(-np.log(max_scale), np.log(max_scale), (1, batch_size, 1)))
@@ -247,17 +219,13 @@ class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu, group_norm=0, norm_first=False, norm_out=False, layer_norm_eps=1e-5, layer_scale=False, init_values=1e-4, batch_first=False, sparse=False, **kwargs):
         if sparse: raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation, layer_norm_eps=layer_norm_eps, batch_first=batch_first, norm_first=norm_first, device=kwargs.get("device"), dtype=kwargs.get("dtype"))
-        if group_norm:
-            self.norm1, self.norm2 = MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps), MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)
+        if group_norm: self.norm1, self.norm2 = (MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps), MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps))
         self.norm_out = MyGroupNorm(int(norm_out), d_model) if self.norm_first & norm_out else None
         self.gamma_1 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.gamma_2 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
         x = src
-        if self.norm_first:
-            x = x + self.gamma_1(self._sa_block(self.norm1(x), src_mask, src_key_padding_mask))
-            x = x + self.gamma_2(self._ff_block(self.norm2(x)))
-            return self.norm_out(x) if self.norm_out else x
+        if self.norm_first: x = x + self.gamma_1(self._sa_block(self.norm1(x), src_mask, src_key_padding_mask)); x = x + self.gamma_2(self._ff_block(self.norm2(x))); return self.norm_out(x) if self.norm_out else x
         x = self.norm1(x + self.gamma_1(self._sa_block(x, src_mask, src_key_padding_mask)))
         return self.norm2(x + self.gamma_2(self._ff_block(x)))
 
@@ -303,8 +271,7 @@ class CrossTransformerEncoder(nn.Module):
         self.weight_pos_embed, self.sin_random_shift = weight_pos_embed, sin_random_shift
         self.cape_mean_normalize, self.cape_augment = cape_mean_normalize, cape_augment
         self.cape_glob_loc_scale = cape_glob_loc_scale or [5000.0, 1.0, 1.4]
-        if emb == "scaled":
-            self.position_embeddings = PositionEmbedding(max_positions, dim, scale=0.2)
+        if emb == "scaled": self.position_embeddings = PositionEmbedding(max_positions, dim, scale=0.2)
         if norm_in:
             norm_fn = lambda: nn.LayerNorm(dim)
         elif norm_in_group:
@@ -317,9 +284,7 @@ class CrossTransformerEncoder(nn.Module):
         for idx in range(num_layers): klass = MyTransformerEncoderLayer if idx % 2 == self.classic_parity else CrossTransformerEncoderLayer; sparse = sparse_self_attn if klass is MyTransformerEncoderLayer else sparse_cross_attn; self.layers.append(klass(**common, sparse=sparse)); self.layers_t.append(klass(**common, sparse=sparse))
     def _get_pos_embedding(self, t, b, c, device):
         if self.emb == "sin": return create_sin_embedding(t, c, random.randrange(self.sin_random_shift + 1), device, self.max_period)
-        if self.emb == "cape":
-            s = self.cape_glob_loc_scale
-            return create_sin_embedding_cape(t, c, b, self.cape_mean_normalize, self.training and self.cape_augment, s[0], s[1], s[2], device, self.max_period)
+        if self.emb == "cape": s = self.cape_glob_loc_scale; return create_sin_embedding_cape(t, c, b, self.cape_mean_normalize, self.training and self.cape_augment, s[0], s[1], s[2], device, self.max_period)
         if self.emb == "scaled": return self.position_embeddings(torch.arange(t, device=device))[:, None]
         raise ValueError(f"unsupported Demucs positional embedding: {self.emb}")
     def forward(self, x, xt):
@@ -338,6 +303,5 @@ class CrossTransformerEncoder(nn.Module):
         return x.reshape(b, t1, fr, c).permute(0, 3, 2, 1), xt.permute(0, 2, 1)
     def make_optim_group(self):
         group = {"params": list(self.parameters()), "weight_decay": self.weight_decay}
-        if self.lr is not None:
-            group["lr"] = self.lr
+        if self.lr is not None: group['lr'] = self.lr
         return group

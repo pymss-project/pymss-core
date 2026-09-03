@@ -28,10 +28,8 @@ class BandSplitModuleBase(nn.Module):
     def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
         check_nonzero_bandwidth(band_specs)
-        if require_no_gap:
-            check_no_gap(band_specs)
-        if require_no_overlap:
-            check_no_overlap(band_specs)
+        if require_no_gap: check_no_gap(band_specs)
+        if require_no_overlap: check_no_overlap(band_specs)
         self.band_specs, self.band_widths, self.n_bands = band_specs, band_widths_from_specs(band_specs), len(band_specs)
         self.emb_dim, self.complex_order, self.flatten_input = emb_dim, complex_order, flatten_input
         self.norm_fc_modules = nn.ModuleList([ norm_fc_cls(emb_dim=emb_dim, bandwidth=bw, in_channels=in_channels, normalize_channel_independently=normalize_channel_independently, treat_channel_as_feature=treat_channel_as_feature) for bw in self.band_widths])

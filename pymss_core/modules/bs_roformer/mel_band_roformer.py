@@ -32,8 +32,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         freqs_per_band = mel_filter_bank > 0
         assert freqs_per_band.any(dim=0).all(), "all frequencies need to be covered by all bands for now"
         freq_indices = torch.arange(freqs).expand(num_bands, -1)[freqs_per_band]
-        if stereo:
-            freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).flatten()
+        if stereo: freq_indices = (freq_indices[:, None] * 2 + torch.arange(2)).flatten()
         self.register_buffer("freq_indices", freq_indices, persistent=False)
         self.register_buffer("freqs_per_band", freqs_per_band, persistent=False)
         num_freqs_per_band, num_bands_per_freq = freqs_per_band.sum(dim=1), freqs_per_band.sum(dim=0)

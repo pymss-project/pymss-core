@@ -20,9 +20,7 @@ def _rotary_metal_kernel():
     global _ROTARY_METAL_KERNEL, _ROTARY_METAL_UNAVAILABLE
     if _ROTARY_METAL_KERNEL is not None or _ROTARY_METAL_UNAVAILABLE: return _ROTARY_METAL_KERNEL
     metal_kernel = getattr(getattr(__import__("mlx.core", fromlist=["fast"]), "fast", None), "metal_kernel", None)
-    if metal_kernel is None:
-        _ROTARY_METAL_UNAVAILABLE = True
-        return None
+    if metal_kernel is None: _ROTARY_METAL_UNAVAILABLE = True; return None
     try:
         _ROTARY_METAL_KERNEL = metal_kernel(
             name="pymss_rotary_qk",
@@ -65,8 +63,7 @@ def _apply_rotary_metal(q, k, cos, sin, dtype):
 def _rotary_cos_sin(rotary_embed, seq_len, dtype):
     import mlx.core as mx
     cache = getattr(rotary_embed, "_pymss_mlx_cos_sin_cache", None)
-    if cache is None:
-        rotary_embed._pymss_mlx_cos_sin_cache = cache = {}
+    if cache is None: rotary_embed._pymss_mlx_cos_sin_cache = cache = {}
     key = (seq_len, dtype, rotary_embed.freqs.data_ptr(), rotary_embed.freqs._version)
     if key not in cache:
         freqs = _torch_to_mlx_array(rotary_embed.freqs, torch.float32)
@@ -119,8 +116,7 @@ def _mlx_attention(module, x, dtype):
     b, n, _ = qkv.shape
     qkv = qkv.reshape(b, n, 3, module.heads, -1)
     q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
-    if module.rotary_embed is not None:
-        q, k = _apply_rotary(q, k, module.rotary_embed, dtype)
+    if module.rotary_embed is not None: q, k = _apply_rotary(q, k, module.rotary_embed, dtype)
     q, k, v = mx.swapaxes(q, 1, 2), mx.swapaxes(k, 1, 2), mx.swapaxes(v, 1, 2)
     out = mx.fast.scaled_dot_product_attention(q, k, v, scale=q.shape[-1] ** -0.5)
     out = mx.swapaxes(out, 1, 2)
@@ -175,8 +171,7 @@ def _mlx_feed_forward_fallback(x, cache): x = _rms_norm(x, cache["norm_gamma"]);
 def _mlx_feed_forward_compiled(module, x, dtype, cache):
     import mlx.core as mx
     compiled_cache = getattr(module, "_pymss_mlx_compiled_feed_forward_cache", None)
-    if compiled_cache is None:
-        module._pymss_mlx_compiled_feed_forward_cache = compiled_cache = {}
+    if compiled_cache is None: module._pymss_mlx_compiled_feed_forward_cache = compiled_cache = {}
     has_in_bias, has_out_bias = cache["linear_in_bias"] is not None, cache["linear_out_bias"] is not None
     key = (tuple(x.shape), dtype, has_in_bias, has_out_bias, cache["key"])
     fn = compiled_cache.get(key)

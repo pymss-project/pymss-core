@@ -24,8 +24,7 @@ def _padded_window(win_length, n_fft, dtype):
 def _stft_roformer(module, raw_audio, dtype):
     import mlx.core as mx
     import numpy as np
-    if raw_audio.ndim == 2:
-        raw_audio = raw_audio[:, None, :]
+    if raw_audio.ndim == 2: raw_audio = raw_audio[:, None, :]
     batch, channels, audio_length = raw_audio.shape
     if (module.stereo and channels != 2) or (not module.stereo and channels != 1): raise ValueError("raw_audio channel count does not match RoFormer stereo setting")
     kw = module.stft_kwargs
@@ -36,8 +35,7 @@ def _stft_roformer(module, raw_audio, dtype):
     framed = mx.as_strided(flat, shape=(flat.shape[0], frames, n_fft), strides=(flat.shape[-1], hop, 1))
     window = _padded_window(win_length, n_fft, dtype)
     stft = mx.fft.rfft(framed * window, n=n_fft, axis=-1)
-    if normalized:
-        stft = stft / np.sqrt(n_fft)
+    if normalized: stft = stft / np.sqrt(n_fft)
     stft = mx.moveaxis(stft, -1, -2)  # (n, T, F) -> (n, F, T)
     ri = mx.stack((stft.real, stft.imag), axis=-1)
     freq_bins = ri.shape[-3]
@@ -50,10 +48,8 @@ def _istft_roformer(module, stft_repr, context, length):
     channels, freq_bins, n_fft, hop, dtype = context["channels"], context["freq_bins"], context["n_fft"], context["hop"], context["dtype"]
     ri = mx.transpose(stft_repr.reshape(b, n, freq_bins, channels, t, 2), (0, 1, 3, 2, 4, 5)).reshape(b * n * channels, freq_bins, t, 2)
     complex_stft = ri[..., 0] + (1j * ri[..., 1])
-    if getattr(module, "zero_dc", False):
-        complex_stft = complex_stft.at[:, 0, :].multiply(0)
-    if context["normalized"]:
-        complex_stft = complex_stft * context["n_fft"] ** 0.5
+    if getattr(module, "zero_dc", False): complex_stft = complex_stft.at[:, 0, :].multiply(0)
+    if context["normalized"]: complex_stft = complex_stft * context['n_fft'] ** 0.5
     frames = mx.fft.irfft(mx.moveaxis(complex_stft, -2, -1), n=n_fft, axis=-1).astype(dtype) * context["window"]
     audio = overlap_add(frames, context["window"], hop)
     pad = n_fft // 2
@@ -110,9 +106,7 @@ def batch_norm1d(module, x, dtype):
     mean = to_mx(module.running_mean, torch.float32).reshape(1, -1, 1)
     var = to_mx(module.running_var, torch.float32).reshape(1, -1, 1)
     y = (y - mean) * mx.rsqrt(var + module.eps)
-    if module.affine:
-        y = y.astype(x.dtype) * param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
-        y = y + param(module, "bias", module.bias, dtype).reshape(1, -1, 1)
+    if module.affine: y = y.astype(x.dtype) * param(module, 'weight', module.weight, dtype).reshape(1, -1, 1); y = y + param(module, 'bias', module.bias, dtype).reshape(1, -1, 1)
     return y.astype(x.dtype)
 
 def _sequence_model(module, x, dtype): return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
@@ -242,8 +236,7 @@ def _progressive_upsample_head(module, x, dtype):
     x = _freq_pixel_shuffle(module.block2, x, dtype)
     x = _freq_pixel_shuffle(module.block3, x, dtype)
     x = _freq_pixel_shuffle(module.block4, x, dtype)
-    if x.shape[-1] != module.target_bins:
-        x = _resize_bilinear_nchw(x, (x.shape[2], module.target_bins))
+    if x.shape[-1] != module.target_bins: x = _resize_bilinear_nchw(x, (x.shape[2], module.target_bins))
     return conv2d(module.final_conv, x, dtype)
 
 def _segm_model(module, x, dtype): enc_feats = _backbone(module.backbone, x, dtype); dec_feat = _decoder(module.decoder, enc_feats, _hyperace(module.hyperace, enc_feats, dtype), dtype); dec_feat = _resize_bilinear_nchw(dec_feat, (x.shape[2], dec_feat.shape[-1])); return _progressive_upsample_head(module.upsample_head, dec_feat, dtype)
@@ -280,8 +273,7 @@ def _forward_mask_core(module, stft_repr, dtype):
         x = _sequence_model(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
         x = _sequence_model(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
-        if residual_store is not None:
-            residual_store.append(x)
+        if residual_store is not None: residual_store.append(x)
     return _mask_to_complex_shape(_estimate_masks(module, _final_norm(module, x, dtype), dtype))
 
 def _complex_from_ri(x): return x[..., 0] + (1j * x[..., 1])

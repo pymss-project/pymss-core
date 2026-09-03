@@ -24,8 +24,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         t_mask_type="diag", t_mask_random_seed=42, t_sparse_attn_window=500, t_global_window=100, t_sparsity=0.95,
         t_auto_sparsity=False, t_cross_first=False, rescale=0.1, samplerate=44100, segment=10, use_train_segment=False,
     ):
-        if t_cape_glob_loc_scale is None:
-            t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
+        if t_cape_glob_loc_scale is None: t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
         super().__init__()
         self.num_subbands, self.cac, self.wiener_residual, self.audio_channels, self.sources = (num_subbands, cac, wiener_residual, audio_channels, sources)
         self.kernel_size, self.context, self.stride, self.depth, self.bottom_channels = kernel_size, context, stride, depth, bottom_channels
@@ -51,38 +50,23 @@ class HTDemucs(MpsBackendMixin, nn.Module):
             kwt = dict(kw, freq=0, kernel_size=kernel_size, stride=stride, pad=True)  # time branch
             kw_dec = dict(kw)
             multi = bool(multi_freqs and index < multi_freqs_depth)
-            if multi:
-                kw_dec["context_freq"] = False
-            if last_freq:
-                chout_z = max(chout, chout_z); chout = chout_z
+            if multi: kw_dec['context_freq'] = False
+            if last_freq: chout_z = max(chout, chout_z); chout = chout_z
             enc = HEncLayer(chin_z, chout_z, dconv=dconv_mode & 1, context=context_enc, **kw)
-            if freq:
-                self.tencoder.append(HEncLayer(chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt))
-            if multi:
-                enc = MultiWrap(enc, multi_freqs)
+            if freq: self.tencoder.append(HEncLayer(chin, chout, dconv=dconv_mode & 1, context=context_enc, empty=last_freq, **kwt))
+            if multi: enc = MultiWrap(enc, multi_freqs)
             self.encoder.append(enc)
-            if index == 0:
-                chin = self.audio_channels * len(self.sources)
-                chin_z = chin * zmul
+            if index == 0: chin = self.audio_channels * len(self.sources); chin_z = chin * zmul
             dec = HDecLayer(chout_z, chin_z, dconv=dconv_mode & 2, last=index == 0, context=context, **kw_dec)
-            if multi:
-                dec = MultiWrap(dec, multi_freqs)
-            if freq:
-                self.tdecoder.insert(0, HDecLayer(chout, chin, dconv=dconv_mode & 2, empty=last_freq, last=index == 0, context=context, **kwt))
+            if multi: dec = MultiWrap(dec, multi_freqs)
+            if freq: self.tdecoder.insert(0, HDecLayer(chout, chin, dconv=dconv_mode & 2, empty=last_freq, last=index == 0, context=context, **kwt))
             self.decoder.insert(0, dec)
             chin, chin_z, chout, chout_z = chout, chout_z, int(growth * chout), int(growth * chout_z)
-            if freq:
-                freqs = 1 if freqs <= kernel_size else freqs // stride
-            if index == 0 and freq_emb:
-                self.freq_emb = ScaledEmbedding(freqs, chin_z, smooth=emb_smooth, scale=emb_scale)
-                self.freq_emb_scale = freq_emb
-        if rescale:
-            rescale_module(self, reference=rescale)
+            if freq: freqs = 1 if freqs <= kernel_size else freqs // stride
+            if index == 0 and freq_emb: self.freq_emb = ScaledEmbedding(freqs, chin_z, smooth=emb_smooth, scale=emb_scale); self.freq_emb_scale = freq_emb
+        if rescale: rescale_module(self, reference=rescale)
         transformer_channels = channels * growth ** (depth - 1)
-        if bottom_channels:
-            self.channel_upsampler, self.channel_downsampler = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1))
-            self.channel_upsampler_t, self.channel_downsampler_t = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1))
-            transformer_channels = bottom_channels
+        if bottom_channels: self.channel_upsampler, self.channel_downsampler = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1)); self.channel_upsampler_t, self.channel_downsampler_t = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1)); transformer_channels = bottom_channels
         if t_layers > 0:
             self.crosstransformer = CrossTransformerEncoder(
                 dim=transformer_channels, emb=t_emb, hidden_scale=t_hidden_scale, num_heads=t_heads, num_layers=t_layers,
@@ -109,18 +93,12 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         return z[..., 2 : 2 + le]
     def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = F.pad(F.pad(z, (0, 0, 0, 1)), (2, 2)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
     def _magnitude(self, z):
-        if self.cac:
-            B, C, Fr, T = z.shape
-            return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(B, C * 2, Fr, T)
+        if self.cac: B, C, Fr, T = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(B, C * 2, Fr, T)
         return z.abs()
     def _mask(self, z, m):
         niters = self.end_iters if self.training else self.wiener_iters
-        if self.cac:
-            B, S, _C, Fr, T = m.shape
-            return torch.view_as_complex(m.view(B, S, -1, 2, Fr, T).permute(0, 1, 2, 4, 5, 3).contiguous())
-        if niters < 0:
-            z = z[:, None]
-            return z / (1e-8 + z.abs()) * m
+        if self.cac: B, S, _C, Fr, T = m.shape; return torch.view_as_complex(m.view(B, S, -1, 2, Fr, T).permute(0, 1, 2, 4, 5, 3).contiguous())
+        if niters < 0: z = z[:, None]; return z / (1e-08 + z.abs()) * m
         return self._wiener(m, z, niters)
     def _wiener(self, mag_out, mix_stft, niters): raise NotImplementedError("non-CaC Wiener Demucs is not supported by the dependency-free path")
     def valid_length(self, length):
@@ -145,9 +123,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 self.segment = Fraction(mix.shape[-1], self.samplerate)
             else:
                 training_length = int(self.segment * self.samplerate)
-                if mix.shape[-1] < training_length:
-                    length_pre_pad = mix.shape[-1]
-                    mix = F.pad(mix, (0, training_length - length_pre_pad))
+                if mix.shape[-1] < training_length: length_pre_pad = mix.shape[-1]; mix = F.pad(mix, (0, training_length - length_pre_pad))
         z = self._spec(mix)
         x = self._magnitude(z) if self.num_subbands <= 1 else self.cac2cws(self._magnitude(z))
         B, _, Fq, T = x.shape
@@ -168,20 +144,12 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 else:
                     saved_t.append(xt)
             x = encode(x, inject)
-            if idx == 0 and self.freq_emb is not None:
-                frs = torch.arange(x.shape[-2], device=x.device)
-                x = x + self.freq_emb_scale * self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+            if idx == 0 and self.freq_emb is not None: frs = torch.arange(x.shape[-2], device=x.device); x = x + self.freq_emb_scale * self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
             saved.append((x, skip_length))
         if self.crosstransformer:
-            if self.bottom_channels:
-                b, c, f, t = x.shape
-                x = self.channel_upsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t)
-                xt = self.channel_upsampler_t(xt)
+            if self.bottom_channels: b, c, f, t = x.shape; x = self.channel_upsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t); xt = self.channel_upsampler_t(xt)
             x, xt = self.crosstransformer(x, xt)
-            if self.bottom_channels:
-                b, c, f, t = x.shape
-                x = self.channel_downsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t)
-                xt = self.channel_downsampler_t(xt)
+            if self.bottom_channels: b, c, f, t = x.shape; x = self.channel_downsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t); xt = self.channel_downsampler_t(xt)
         for idx, decode in enumerate(self.decoder):
             skip, skip_length = saved.pop(-1)
             x, pre = decode(x, skip, skip_length)
@@ -196,15 +164,13 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                     xt, _ = tdec(xt, saved_t.pop(-1), length_t)
         assert len(saved) == len(lengths_t) == len(saved_t) == 0
         S = len(self.sources)
-        if self.num_subbands > 1:
-            x = self.cws2cac(x.view(B, -1, Fq, T))
+        if self.num_subbands > 1: x = self.cws2cac(x.view(B, -1, Fq, T))
         x = x.view(B, S, -1, Fq * self.num_subbands, T) * std[:, None] + mean[:, None]
         zout = self._mask(z, x)
         x = self._ispec(zout, length if not self.use_train_segment or self.training else training_length)
         xt = xt.view(B, S, -1, length if not self.use_train_segment or self.training else training_length)
         x = xt * stdt[:, None] + meant[:, None] + x
-        if length_pre_pad:
-            x = x[..., :length_pre_pad]
+        if length_pre_pad: x = x[..., :length_pre_pad]
         return x
 
 def get_model(args):

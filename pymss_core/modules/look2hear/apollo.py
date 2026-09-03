@@ -23,9 +23,7 @@ def pointwise_conv1d(input, conv):
     # 1x1 conv1d -> linear: faster on CUDA fp16/bf16 inference
     if (conv.kernel_size, conv.stride, conv.padding, conv.dilation, conv.groups) != ((1,), (1,), (0,), (1,), 1): return conv(input)
     weight, bias = conv.weight[:, :, 0], conv.bias
-    if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16) and not torch.is_grad_enabled():
-        weight = _cached_inference_tensor(conv, "pointwise_weight", weight, input, conv.weight._version)
-        bias = _cached_inference_tensor(conv, "pointwise_bias", bias, input, bias._version) if bias is not None else None
+    if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16) and not torch.is_grad_enabled(): weight = _cached_inference_tensor(conv, 'pointwise_weight', weight, input, conv.weight._version); bias = _cached_inference_tensor(conv, 'pointwise_bias', bias, input, bias._version) if bias is not None else None
     return F.linear(input.transpose(1, 2), weight, bias).transpose(1, 2)
 
 class RMSNorm(nn.Module):
@@ -38,9 +36,7 @@ class RMSNorm(nn.Module):
         assert N % self.groups == 0
         if self.groups == 1 and not torch.is_grad_enabled():
             x = input.transpose(1, 2)
-            if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16):
-                weight = _cached_inference_tensor(self, "rms_weight", self.weight, input, self.weight._version)
-                return F.rms_norm(x, (N,), weight, self.eps).transpose(1, 2)
+            if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16): weight = _cached_inference_tensor(self, 'rms_weight', self.weight, input, self.weight._version); return F.rms_norm(x, (N,), weight, self.eps).transpose(1, 2)
             return F.rms_norm(x, (N,), None, self.eps).transpose(1, 2).type_as(input) * self.weight.reshape(1, -1, 1)
         x = input.reshape(B, self.groups, -1, T).float()
         return (x * torch.rsqrt(x.pow(2).mean(-2, keepdim=True) + self.eps)).type_as(input).reshape(B, N, T) * self.weight.reshape(1, -1, 1)

@@ -22,8 +22,7 @@ def _subband_istft(module, x, context):
     _channels, freq_bins, time_bins = x.shape[-3:]
     n_fft = context["n_fft"]
     full_freq_bins = n_fft // 2 + 1
-    if freq_bins < full_freq_bins:
-        x = mx.pad(x, [(0, 0)] * (x.ndim - 2) + [(0, full_freq_bins - freq_bins), (0, 0)])
+    if freq_bins < full_freq_bins: x = mx.pad(x, [(0, 0)] * (x.ndim - 2) + [(0, full_freq_bins - freq_bins), (0, 0)])
     x = x.reshape(-1, 2, full_freq_bins, time_bins).transpose(0, 2, 3, 1)
     spec = x[..., 0] + (1j * x[..., 1])  # (n, F, T)
     audio = istft(spec, context["window"], context["hop"], context["audio_length"], context["dtype"], n_fft=context["n_fft"])
@@ -62,8 +61,7 @@ def mlx_forward_mdx23c_mx(module, raw_audio, dtype=torch.float16):
     x = _module_forward(module.final_conv, mx.concatenate((mix, x), axis=1), dtype)
     batch, channels, freq_bins, time_bins = x.shape
     x = mx.reshape(x, (batch, channels // n_sub, freq_bins * n_sub, time_bins))  # cws -> cac
-    if module.num_target_instruments > 1:
-        x = x.reshape(batch, module.num_target_instruments, -1, freq_bins * n_sub, time_bins)
+    if module.num_target_instruments > 1: x = x.reshape(batch, module.num_target_instruments, -1, freq_bins * n_sub, time_bins)
     return _subband_istft(module, x, context)
 
 def mlx_forward_mdx23c(module, raw_audio, dtype=torch.float16): return to_torch(mlx_forward_mdx23c_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

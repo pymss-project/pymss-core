@@ -21,9 +21,7 @@ def _spectral_istft(istft_module, spec, context, length): return istft(spec, con
 _activation = generic_activation
 
 def _norm_fc(module, xb, dtype):
-    if hasattr(module, "combined"):
-        xb = layer_norm(module.combined[0], xb, dtype)
-        return linear(xb, param(module.combined[1], "weight", module.combined[1].weight, dtype), param(module.combined[1], "bias", module.combined[1].bias, dtype))
+    if hasattr(module, "combined"): xb = layer_norm(module.combined[0], xb, dtype); return linear(xb, param(module.combined[1], 'weight', module.combined[1].weight, dtype), param(module.combined[1], 'bias', module.combined[1].bias, dtype))
     batch, n_time, in_channels, ribw = xb.shape
     xb = layer_norm(module.norm, xb.reshape(batch, n_time, in_channels * ribw), dtype)
     w = param(module.fc, "weight", module.fc.weight, dtype)
@@ -112,9 +110,7 @@ def _mask_estimator(module, q, dtype, cond=None):
     for band_index, nmlp in enumerate(module.norm_mlp):
         fstart, fend = module.band_specs[band_index]
         mask = _norm_mlp(nmlp, q[:, band_index], dtype)
-        if module.use_freq_weights:
-            fw = to_mx(module.get_buffer(f"freq_weights/{band_index}"), dtype)
-            mask = mask * fw.reshape(1, 1, -1, 1)
+        if module.use_freq_weights: fw = to_mx(module.get_buffer(f'freq_weights/{band_index}'), dtype); mask = mask * fw.reshape(1, 1, -1, 1)
         padding = [(0, 0), (0, 0), (fstart, module.n_freq - fend), (0, 0)]
         mask_real = mask_real + mx.pad(mask.real.astype(mask_real.dtype), padding)
         mask_imag = mask_imag + mx.pad(mask.imag.astype(mask_imag.dtype), padding)

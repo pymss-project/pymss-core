@@ -33,8 +33,7 @@ class RotaryEmbedding(nn.Module):
         if cache_key in self.cache: return self.cache[cache_key]
         t = t() if callable(t) else t
         freqs = (t.to(self.freqs.dtype)[:, None] * self.freqs[None]).repeat_interleave(2, -1)
-        if cache_key is not None:
-            self.cache[cache_key] = freqs
+        if cache_key is not None: self.cache[cache_key] = freqs
         return freqs
 
 def default(v, d): return v if v is not None else d
@@ -90,9 +89,7 @@ class RoformerRuntimeMixin(MpsBackendMixin):
     def stft_window(self, device):
         key = (device.type, device.index, torch.float32)
         window = self._stft_window_cache.get(key)
-        if window is None or window.device != device:
-            window = self.stft_window_fn(device=device)
-            self._stft_window_cache[key] = window
+        if window is None or window.device != device: window = self.stft_window_fn(device=device); self._stft_window_cache[key] = window
         return window
     def _active_source_indices(self): indices = getattr(self, "_pymss_source_indices", None); return None if indices is None else tuple(int(index) for index in indices)
     def _active_mask_estimators(self): indices = self._active_source_indices(); return tuple(self.mask_estimators) if indices is None else tuple(self.mask_estimators[i] for i in indices)
@@ -111,9 +108,7 @@ class RoformerRuntimeMixin(MpsBackendMixin):
         use_packed = getattr(self, "_packed_mask_estimators_available", None)
         if use_packed is not False:
             packed = MaskEstimator.forward_packed_estimators(estimators, x)
-            if packed is not None:
-                self._packed_mask_estimators_available = True
-                return packed
+            if packed is not None: self._packed_mask_estimators_available = True; return packed
             self._packed_mask_estimators_available = False
         return torch.stack([fn(x) for fn in estimators], dim=1)
     def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1)); return stft_repr * torch.view_as_complex(mask).type(stft_repr.dtype)
@@ -128,14 +123,12 @@ def forward_roformer_mask_core(module, stft_repr):
         b, t, f, d = x.shape
         x = time_transformer(x.permute(0, 2, 1, 3).reshape(b * f, t, d)).reshape(b, f, t, d).permute(0, 2, 1, 3)
         x = freq_transformer(x.reshape(b * t, f, d)).reshape(b, t, f, d)
-        if residual_store is not None:
-            residual_store.append(x)
+        if residual_store is not None: residual_store.append(x)
     return mask_to_complex_shape(module._estimate_masks(module.final_norm(x)), complex_dim=2)
 
 def stft_roformer(module, raw_audio):
     device, x_is_mps = raw_audio.device, raw_audio.device.type == "mps"
-    if raw_audio.ndim == 2:
-        raw_audio = raw_audio.unsqueeze(1)
+    if raw_audio.ndim == 2: raw_audio = raw_audio.unsqueeze(1)
     batch, audio_channels, audio_length = raw_audio.shape
     assert (not module.stereo and audio_channels == 1) or (module.stereo and audio_channels == 2), ("stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). " "also need to be False if mono (channel dimension of 1)")
     stft_window = module.stft_window(device)
@@ -151,8 +144,7 @@ def stft_roformer(module, raw_audio):
 def istft_roformer(module, stft_repr, context, length):
     b, n, _, t = stft_repr.shape
     stft_repr = (stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(0, 1, 3, 2, 4) .reshape(b * n * context.channels, context.freq_bins, t))
-    if getattr(module, "zero_dc", False):
-        stft_repr = stft_repr.index_fill(1, torch.tensor(0, device=stft_repr.device), 0.0)
+    if getattr(module, "zero_dc", False): stft_repr = stft_repr.index_fill(1, torch.tensor(0, device=stft_repr.device), 0.0)
     try:
         recon_audio = torch.istft(stft_repr, **module.stft_kwargs, window=context.stft_window, return_complex=False, length=length)
     except RuntimeError:  # older MPS torch.istft: fall back to CPU

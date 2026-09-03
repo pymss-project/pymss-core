@@ -60,34 +60,27 @@ def _freq_dconv(module, y, dtype): b, c, fr, t = y.shape; return _dconv(module.d
 
 def _henc_layer(module, x, inject, dtype):
     import mlx.core as mx
-    if not module.freq and x.ndim == 4:
-        x = x.reshape(x.shape[0], -1, x.shape[-1])
-    if not module.freq and x.shape[-1] % module.stride:
-        x = mx.pad(x, [(0, 0), (0, 0), (0, module.stride - x.shape[-1] % module.stride)])
+    if not module.freq and x.ndim == 4: x = x.reshape(x.shape[0], -1, x.shape[-1])
+    if not module.freq and x.shape[-1] % module.stride: x = mx.pad(x, [(0, 0), (0, 0), (0, module.stride - x.shape[-1] % module.stride)])
     y = _module_forward(module.conv, x, dtype)
     if module.empty: return y
-    if inject is not None:
-        y = y + (inject[:, :, None] if inject.ndim == 3 and y.ndim == 4 else inject)
+    if inject is not None: y = y + (inject[:, :, None] if inject.ndim == 3 and y.ndim == 4 else inject)
     y = gelu(_norm(module.norm1, y, dtype))
-    if module.dconv:
-        y = _freq_dconv(module, y, dtype) if module.freq else _dconv(module.dconv, y, dtype)
+    if module.dconv: y = _freq_dconv(module, y, dtype) if module.freq else _dconv(module.dconv, y, dtype)
     return glu(_norm(module.norm2, _module_forward(module.rewrite, y, dtype), dtype), axis=1) if module.rewrite else y
 
 def _hdec_layer(module, x, skip, length, dtype):
 
-    if module.freq and x.ndim == 3:
-        x = x.reshape(x.shape[0], module.chin, -1, x.shape[-1])
+    if module.freq and x.ndim == 3: x = x.reshape(x.shape[0], module.chin, -1, x.shape[-1])
     if module.empty:
         y = x
     else:
         y = glu(_norm(module.norm1, _module_forward(module.rewrite, x + skip, dtype), dtype), axis=1) if module.rewrite else x + skip
-        if module.dconv:
-            y = _freq_dconv(module, y, dtype) if module.freq else _dconv(module.dconv, y, dtype)
+        if module.dconv: y = _freq_dconv(module, y, dtype) if module.freq else _dconv(module.dconv, y, dtype)
     z = _norm(module.norm2, _module_forward(module.conv_tr, y, dtype), dtype)
     if module.freq and module.pad:
         z = z[..., module.pad : -module.pad, :]
-    elif not module.freq:
-        z = z[..., module.pad : module.pad + length]
+    elif not module.freq: z = z[..., module.pad:module.pad + length]
     return (z if module.last else gelu(z)), y
 
 def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
@@ -124,10 +117,7 @@ def _cross_attention(mha, q_in, k_in, dtype):
 def _ffn(module, x, dtype): return _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, x, dtype)), dtype)
 
 def _transformer_encoder_layer(module, x, dtype):
-    if module.norm_first:
-        x = x + _layer_scale(module.gamma_1, _self_attention(module.self_attn, _norm(module.norm1, x, dtype), dtype), dtype)
-        x = x + _layer_scale(module.gamma_2, _ffn(module, _norm(module.norm2, x, dtype), dtype), dtype)
-        return _norm(module.norm_out, x, dtype) if module.norm_out else x
+    if module.norm_first: x = x + _layer_scale(module.gamma_1, _self_attention(module.self_attn, _norm(module.norm1, x, dtype), dtype), dtype); x = x + _layer_scale(module.gamma_2, _ffn(module, _norm(module.norm2, x, dtype), dtype), dtype); return _norm(module.norm_out, x, dtype) if module.norm_out else x
     x = _norm(module.norm1, x + _layer_scale(module.gamma_1, _self_attention(module.self_attn, x, dtype), dtype), dtype)
     return _norm(module.norm2, x + _layer_scale(module.gamma_2, _ffn(module, x, dtype), dtype), dtype)
 
@@ -177,9 +167,7 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     mix, length, length_pre_pad = mix.astype(dtype), mix.shape[-1], None
     if module.use_train_segment:
         training_length = int(module.segment * module.samplerate)
-        if mix.shape[-1] < training_length:
-            length_pre_pad = mix.shape[-1]
-            mix = mx.pad(mix, [(0, 0), (0, 0), (0, training_length - length_pre_pad)])
+        if mix.shape[-1] < training_length: length_pre_pad = mix.shape[-1]; mix = mx.pad(mix, [(0, 0), (0, 0), (0, training_length - length_pre_pad)])
     z = _demucs_spec(module, mix, dtype)
     b, c, fr, t = z.shape
     x = mx.stack((z.real, z.imag), axis=2).reshape(b, c * 2, fr, t)
@@ -201,20 +189,12 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
             else:
                 inject = xt
         x = _henc_layer(encode, x, inject, dtype)
-        if idx == 0 and module.freq_emb is not None:
-            weight = param(module.freq_emb.embedding, "weight", module.freq_emb.embedding.weight, dtype) * module.freq_emb.scale
-            x = x + module.freq_emb_scale * weight[: x.shape[-2]].transpose(1, 0)[None, :, :, None]
+        if idx == 0 and module.freq_emb is not None: weight = param(module.freq_emb.embedding, 'weight', module.freq_emb.embedding.weight, dtype) * module.freq_emb.scale; x = x + module.freq_emb_scale * weight[:x.shape[-2]].transpose(1, 0)[None, :, :, None]
         saved.append((x, skip_length))
     if module.crosstransformer:
-        if module.bottom_channels:
-            b, c, f, t = x.shape
-            x = conv1d(module.channel_upsampler, x.reshape(b, c, f * t), dtype).reshape(b, -1, f, t)
-            xt = conv1d(module.channel_upsampler_t, xt, dtype)
+        if module.bottom_channels: b, c, f, t = x.shape; x = conv1d(module.channel_upsampler, x.reshape(b, c, f * t), dtype).reshape(b, -1, f, t); xt = conv1d(module.channel_upsampler_t, xt, dtype)
         x, xt = _cross_transformer(module.crosstransformer, x, xt, dtype)
-        if module.bottom_channels:
-            b, c, f, t = x.shape
-            x = conv1d(module.channel_downsampler, x.reshape(b, c, f * t), dtype).reshape(b, -1, f, t)
-            xt = conv1d(module.channel_downsampler_t, xt, dtype)
+        if module.bottom_channels: b, c, f, t = x.shape; x = conv1d(module.channel_downsampler, x.reshape(b, c, f * t), dtype).reshape(b, -1, f, t); xt = conv1d(module.channel_downsampler_t, xt, dtype)
     for idx, decode in enumerate(module.decoder):
         skip, skip_length = saved.pop()
         x, pre = _hdec_layer(decode, x, skip, skip_length, dtype)

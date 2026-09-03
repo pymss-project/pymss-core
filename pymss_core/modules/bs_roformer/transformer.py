@@ -28,8 +28,7 @@ def set_mps_attention_backend(module, backend=None, min_tokens=128, children=(),
 
 def set_cuda_attention_backend(module, backend=None, children=()):
     module.cuda_attention_backend = normalize_cuda_attention_backend(backend)
-    if hasattr(module, "_disabled_cuda_attention_backends"):
-        module._disabled_cuda_attention_backends.clear()
+    if hasattr(module, "_disabled_cuda_attention_backends"): module._disabled_cuda_attention_backends.clear()
     for child in children: child.set_cuda_attention_backend(module.cuda_attention_backend)
 
 def _sdpa_with_backend(q, k, v, dropout_p, backend):
@@ -42,10 +41,7 @@ def _sdpa_with_backend(q, k, v, dropout_p, backend):
 def _xformers_attention(q, k, v, dropout_p): import xformers.ops as xops; return xops.memory_efficient_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), p=dropout_p).transpose(1, 2)
 
 def apply_rotary_emb_fast(cos, sin, t):
-    if t.is_cuda and t.dtype == torch.float16:
-        rot = torch.complex(cos[..., ::2], sin[..., ::2])
-        rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot
-        return torch.view_as_real(rotated).reshape_as(t)
+    if t.is_cuda and t.dtype == torch.float16: rot = torch.complex(cos[..., ::2], sin[..., ::2]); rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot; return torch.view_as_real(rotated).reshape_as(t)
     cos, sin, t_even, t_odd = cos[..., ::2], sin[..., ::2], t[..., ::2], t[..., 1::2]
     out = torch.empty_like(t)
     out[..., ::2] = t_even * cos - t_odd * sin
@@ -54,8 +50,7 @@ def apply_rotary_emb_fast(cos, sin, t):
 
 def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     cache = getattr(rotary_embed, "_pymss_cos_sin_cache", None)
-    if cache is None:
-        rotary_embed._pymss_cos_sin_cache = cache = {}
+    if cache is None: rotary_embed._pymss_cos_sin_cache = cache = {}
     key = (seq_len, device.type, device.index, dtype)
     if (cached := cache.get(key)) is not None: return cached
     freqs = rotary_embed.forward(lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=dtype, offset=0), cache_key=f"freqs:{seq_len}|offset:0")[None, :, None, :].to(device=device, dtype=dtype)
@@ -72,10 +67,7 @@ class RMSNorm(Module):
         if not self.training and x.dtype in (torch.float16, torch.bfloat16):
             key = (x.device.type, x.device.index, x.dtype, self.gamma.data_ptr(), self.gamma._version)
             gamma = self._gamma_dtype_cache.get(key)
-            if gamma is None:
-                gamma = self.gamma.detach().to(device=x.device, dtype=x.dtype)
-                self._gamma_dtype_cache.clear()
-                self._gamma_dtype_cache[key] = gamma
+            if gamma is None: gamma = self.gamma.detach().to(device=x.device, dtype=x.dtype); self._gamma_dtype_cache.clear(); self._gamma_dtype_cache[key] = gamma
             return F.rms_norm(x, (x.shape[-1],), gamma, eps=1e-12)
         return F.normalize(x, dim=-1) * self.scale * self.gamma
 
@@ -91,12 +83,10 @@ class Attention(Module):
         self.cuda_attention_backend, self._disabled_cuda_attention_backends = default_cuda_attention_backend(), set()
         self.attend, self.norm = Attend(flash=False, dropout=dropout), RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, heads * dim_head * 3, bias=(shared_qkv_bias is not None))
-        if shared_qkv_bias is not None:
-            self.to_qkv.bias = shared_qkv_bias
+        if shared_qkv_bias is not None: self.to_qkv.bias = shared_qkv_bias
         self.to_gates = nn.Linear(dim, heads)
         self.to_out = nn.Sequential(nn.Linear(heads * dim_head, dim, bias=(shared_out_bias is not None)), nn.Dropout(dropout))
-        if shared_out_bias is not None:
-            self.to_out[0].bias = shared_out_bias
+        if shared_out_bias is not None: self.to_out[0].bias = shared_out_bias
     def set_mps_attention_backend(self, backend=None, min_tokens=128): set_mps_attention_backend(self, backend, min_tokens)
     def set_cuda_attention_backend(self, backend=None): set_cuda_attention_backend(self, backend)
     def _use_mlx_attention_layer(self, x): return (self.flash and not self.training and self.mps_attention_backend == "mlx_attention" and x.device.type == "mps" and (x.dtype == torch.float16 or torch.is_autocast_enabled("mps")) and x.shape[-2] >= self.mps_mlx_min_tokens)
@@ -145,8 +135,7 @@ class Attention(Module):
                 self.mps_attention_backend = "torch"
         x = self.norm(x)
         q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
-        if self.rotary_embed is not None:
-            q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
+        if self.rotary_embed is not None: q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         out = self._attention(q, k, v)
         return self.to_out((out.transpose(1, 2) * self.to_gates(x).unsqueeze(-1).sigmoid()).flatten(start_dim=-2))

@@ -25,13 +25,11 @@ class NormMLP(BaseNormMLP):
         super().__init__(emb_dim, mlp_dim, bandwidth, in_channels, in_channel, hidden_activation, hidden_activation_kwargs, complex_mask)
         self.output = nn.Sequential(nn.Linear(mlp_dim, self.bandwidth * self.in_channels * self.reim * 2), nn.GLU(dim=-1))
         self.use_checkpoint = use_checkpoint
-        if use_combined:
-            self.combined = nn.Sequential(self.norm, self.hidden, self.output)
+        if use_combined: self.combined = nn.Sequential(self.norm, self.hidden, self.output)
     def reshape_output(self, mb):
         b, t = mb.shape[:2]
         mb = mb.reshape(b, t, self.in_channels, self.bandwidth, self.reim)
-        if self.complex_mask:
-            mb = torch.view_as_complex(mb.contiguous())
+        if self.complex_mask: mb = torch.view_as_complex(mb.contiguous())
         return mb.permute(0, 2, 3, 1)
     def forward(self, qb):
         from torch.utils.checkpoint import checkpoint_sequential
@@ -89,8 +87,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
         for im in range(n_bands):
             fstart, fend = self.band_specs[im]
             mask = mask_list[im] if mask_list is not None else self.compute_mask(q, im)
-            if self.use_freq_weights:
-                mask = mask * self.get_buffer(f"freq_weights/{im}")[:, None]
+            if self.use_freq_weights: mask = mask * self.get_buffer(f'freq_weights/{im}')[:, None]
             masks[:, :, fstart:fend, :] += mask
         return masks
 

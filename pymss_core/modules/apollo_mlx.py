@@ -17,9 +17,7 @@ def _module_forward(module, x, dtype):
     if isinstance(module, torch.nn.Conv1d): return conv1d(module, x, dtype)
     if isinstance(module, RMSNorm): return _rms_norm(module, x, dtype)
     if isinstance(module, torch.nn.SiLU): return silu(x)
-    if isinstance(module, torch.nn.GLU):
-        a, b = mx.split(x, 2, axis=module.dim)
-        return a * mx.sigmoid(b)
+    if isinstance(module, torch.nn.GLU): a, b = mx.split(x, 2, axis=module.dim); return a * mx.sigmoid(b)
     if isinstance(module, ConvActNorm1d): return _conv_act_norm(module, x, dtype)
     if isinstance(module, ICB): return _module_forward(module.blocks, x, dtype)
     if isinstance(module, BSNet): return _bsnet(module, x, dtype)
@@ -30,8 +28,7 @@ def _conv_act_norm(module, x, dtype):
     y = _rms_norm(module.conv[1], y, dtype)
     y = silu(conv1d(module.conv[2], y, dtype))
     y = conv1d(module.conv[4], y, dtype)
-    if module.causal:
-        y = y[..., : -module.kernel + 1]
+    if module.causal: y = y[..., :-module.kernel + 1]
     return x + y
 
 def _apply_rope(module, x, dtype): import mlx.core as mx; seq_len = x.shape[-2]; cos = to_mx(module.cos_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); sin = to_mx(module.sin_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); even, odd = x[..., 0::2], x[..., 1::2]; out = mx.zeros_like(x); out = out.at[..., 0::2].add(even * cos[..., 0::2] - odd * sin[..., 0::2]); return out.at[..., 1::2].add(odd * cos[..., 0::2] + even * sin[..., 0::2])

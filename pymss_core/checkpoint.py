@@ -23,8 +23,7 @@ def _install_demucs_pickle_stubs():
         module = sys.modules.setdefault(f"demucs.{module_name}", types.ModuleType(f"demucs.{module_name}"))
         setattr(package, module_name, module)
         for class_name in class_names:
-            if not hasattr(module, class_name):
-                setattr(module, class_name, type(class_name, (), {"__module__": f"demucs.{module_name}"}))
+            if not hasattr(module, class_name): setattr(module, class_name, type(class_name, (), {'__module__': f'demucs.{module_name}'}))
     return previous
 
 def _restore_modules(previous):
@@ -37,8 +36,7 @@ def _restore_modules(previous):
 
 def _torch_load(path, *, map_location="cpu", weights_only=None, mmap=True):
     kwargs = {"map_location": map_location}
-    if weights_only is not None:
-        kwargs["weights_only"] = weights_only
+    if weights_only is not None: kwargs['weights_only'] = weights_only
     kwargs["mmap"] = mmap
     for _ in range(2):  # older torch builds lack mmap / weights_only
         try:
@@ -56,8 +54,7 @@ def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=N
             return _torch_load(path, map_location=map_location, weights_only=False, mmap=mmap)
         finally:
             _restore_modules(previous)
-    if model_type == "apollo":
-        weights_only = False if weights_only is None else weights_only
+    if model_type == "apollo": weights_only = False if weights_only is None else weights_only
     return _torch_load(path, map_location=map_location, weights_only=weights_only, mmap=mmap)
 
 def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True): """Load and unwrap the model state dict from a checkpoint file."""; return unwrap_state_dict(load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))

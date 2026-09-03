@@ -18,9 +18,7 @@ def _stft_scnet(module, raw_audio, dtype):
 def mx_pad_window(win_length, n_fft, dtype):
     import mlx.core as mx
     window = mx.ones((win_length,), dtype=dtype)
-    if win_length < n_fft:
-        left = (n_fft - win_length) // 2
-        window = mx.pad(window, [(left, n_fft - win_length - left)])
+    if win_length < n_fft: left = (n_fft - win_length) // 2; window = mx.pad(window, [(left, n_fft - win_length - left)])
     return window
 
 def _istft_scnet(module, spec, context, length): return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"], center=context["center"], normalized=context["normalized"])
@@ -69,9 +67,7 @@ def _dual_path_rnn(module, x, dtype):
 def _feature_conversion(module, x):
     import mlx.core as mx
     x = x.astype(mx.float32)
-    if module.inverse:
-        half = module.channels // 2
-        return mx.fft.irfft(x[:, :half] + (1j * x[:, half:]), n=(x.shape[3] - 1) * 2, axis=3, norm="ortho")
+    if module.inverse: half = module.channels // 2; return mx.fft.irfft(x[:, :half] + 1j * x[:, half:], n=(x.shape[3] - 1) * 2, axis=3, norm='ortho')
     x = mx.fft.rfft(x, axis=3, norm="ortho")
     return mx.concatenate((x.real, x.imag), axis=1)
 
@@ -81,8 +77,7 @@ def _separation_net(module, x, dtype):
 
 def _fusion_layer(module, x, skip, dtype):
     import mlx.core as mx
-    if skip is not None:
-        x = x + skip
+    if skip is not None: x = x + skip
     return glu(conv2d(module.conv, mx.concatenate((x, x), axis=1), dtype), axis=1)
 
 def _sulayer(module, x, lengths, origin_lengths, dtype):
@@ -98,8 +93,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     dtype = mx_dtype(dtype)
     x = raw_audio.astype(dtype)
     batch, padding = x.shape[0], module.hop_length - x.shape[-1] % module.hop_length
-    if (x.shape[-1] + padding) // module.hop_length % 2 == 0:
-        padding += module.hop_length
+    if (x.shape[-1] + padding) // module.hop_length % 2 == 0: padding += module.hop_length
     x = mx.pad(x, [(0, 0), (0, 0), (0, padding)])
     length = x.shape[-1]
     spec, context = _stft_scnet(module, x.reshape(-1, length), dtype)

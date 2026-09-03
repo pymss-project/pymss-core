@@ -35,6 +35,5 @@ def forward_subband_mask_model(module, x, core_fn):
     first_conv_out = x = module.first_conv(x)
     x = core_fn(x.transpose(-1, -2)).transpose(-1, -2) * first_conv_out
     x = cws_to_cac(module.final_conv(torch.cat([mix, x], 1)), module.num_subbands)
-    if module.num_target_instruments > 1:
-        x = x.reshape(x.shape[0], module.num_target_instruments, -1, *x.shape[-2:])
+    if module.num_target_instruments > 1: x = x.reshape(x.shape[0], module.num_target_instruments, -1, *x.shape[-2:])
     return module.stft.inverse(x)
