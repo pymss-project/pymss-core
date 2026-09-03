@@ -505,8 +505,7 @@ class Encoder(nn.Module):
         self.L, self.N = L, N
         self.conv1d_U = nn.Conv1d(audio_channels, N, kernel_size=L, stride=L // 2, bias=False)
 
-    def forward(self, mixture):
-        return F.relu(self.conv1d_U(mixture))
+    def forward(self, mixture): return F.relu(self.conv1d_U(mixture))
 
 
 class Decoder(nn.Module):
@@ -553,14 +552,10 @@ class TemporalBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation, norm_type="gLN", causal=False):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Conv1d(in_channels, out_channels, 1, bias=False),
-            nn.PReLU(),
-            _choose_norm(norm_type, out_channels),
-            DepthwiseSeparableConv(out_channels, in_channels, kernel_size, stride, padding, dilation, norm_type, causal),
-        )
+            nn.Conv1d(in_channels, out_channels, 1, bias=False), nn.PReLU(), _choose_norm(norm_type, out_channels),
+            DepthwiseSeparableConv(out_channels, in_channels, kernel_size, stride, padding, dilation, norm_type, causal))
 
-    def forward(self, x):
-        return self.net(x) + x
+    def forward(self, x): return self.net(x) + x
 
 
 class DepthwiseSeparableConv(nn.Module):
@@ -573,8 +568,7 @@ class DepthwiseSeparableConv(nn.Module):
         self.net = nn.Sequential(*layers, nn.PReLU(), _choose_norm(norm_type, in_channels),
                                  nn.Conv1d(in_channels, out_channels, 1, bias=False))
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x): return self.net(x)
 
 
 class Chomp1d(nn.Module):
@@ -582,8 +576,7 @@ class Chomp1d(nn.Module):
         super().__init__()
         self.chomp_size = chomp_size
 
-    def forward(self, x):
-        return x[:, :, : -self.chomp_size].contiguous()
+    def forward(self, x): return x[:, :, : -self.chomp_size].contiguous()
 
 
 class ChannelwiseLayerNorm(nn.Module):
@@ -598,8 +591,7 @@ class ChannelwiseLayerNorm(nn.Module):
         self.beta.data.zero_()
 
     def _stat(self, y):
-        mean = torch.mean(y, dim=1, keepdim=True)
-        return mean, torch.var(y, dim=1, keepdim=True, unbiased=False)
+        return torch.mean(y, dim=1, keepdim=True), torch.var(y, dim=1, keepdim=True, unbiased=False)
 
     def forward(self, y):
         mean, var = self._stat(y)

@@ -63,6 +63,11 @@ def linear(x, weight, bias=None):
     return y if bias is None else y + bias
 
 
+def linear_layer(module, x, dtype):
+    return linear(x, param(module, "weight", module.weight, dtype),
+                  None if module.bias is None else param(module, "bias", module.bias, dtype))
+
+
 def rms_norm(x, gamma):
     import mlx.core as mx
 

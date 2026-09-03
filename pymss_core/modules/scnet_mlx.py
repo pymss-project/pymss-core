@@ -3,6 +3,7 @@ import math
 import torch
 
 from .mlx_backend import (
+    linear_layer,
     check_dtype, conv1d, conv2d, conv_transpose2d, gelu, glu, group_norm, istft, linear, mx_dtype, param,
     relu, rnn_forward, stft, swish, to_mx, to_torch,
 )
@@ -35,9 +36,7 @@ def _istft_scnet(module, spec, context, length):
                  center=context["center"], normalized=context["normalized"])
 
 
-def _linear_layer(module, x, dtype):
-    return linear(x, param(module, "weight", module.weight, dtype),
-                  None if module.bias is None else param(module, "bias", module.bias, dtype))
+_linear_layer = linear_layer
 
 
 def _activation(module, x):

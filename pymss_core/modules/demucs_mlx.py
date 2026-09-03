@@ -4,6 +4,7 @@ import torch
 
 from .demucs_local import LayerScale, MyGroupNorm
 from .mlx_backend import (
+    linear_layer,
     check_dtype, conv1d, conv2d, conv_transpose1d, conv_transpose2d, gelu, glu, group_norm, istft, layer_norm,
     linear, mx_dtype, pad_last, param, periodic_hann_window, relu, stft, to_mx, to_torch,
 )
@@ -43,9 +44,7 @@ def _demucs_ispec(module, z, length, scale, dtype):
     return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 
 
-def _linear_layer(module, x, dtype):
-    return linear(x, param(module, "weight", module.weight, dtype),
-                  None if module.bias is None else param(module, "bias", module.bias, dtype))
+_linear_layer = linear_layer
 
 
 def _my_group_norm(module, x, dtype):

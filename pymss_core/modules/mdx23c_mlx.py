@@ -2,6 +2,7 @@ import torch
 
 from .mdx23c_tfc_tdf_v3 import Downscale, TFC_TDF, Upscale
 from .mlx_backend import (
+    linear_layer,
     batch_norm,
     check_dtype,
     conv2d,
@@ -23,9 +24,7 @@ from .mlx_backend import (
 torch_to_mlx_input = to_mx
 
 
-def _linear_layer(module, x, dtype):
-    return linear(x, param(module, "weight", module.weight, dtype),
-                  None if module.bias is None else param(module, "bias", module.bias, dtype))
+_linear_layer = linear_layer
 
 
 def _subband_stft(module, raw_audio, dtype):

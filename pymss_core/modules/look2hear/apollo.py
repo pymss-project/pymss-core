@@ -67,8 +67,7 @@ class RMVN(nn.Module):
         assert N % self.groups == 0
         x = input.reshape(B, self.groups, N // self.groups, -1)
         norm = (x - x.mean(2).unsqueeze(2)) / (x.var(2).unsqueeze(2) + self.eps).sqrt()
-        norm = norm.reshape(B, N, x.shape[-1]) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)
-        return norm.reshape(input.shape)
+        return (norm.reshape(B, N, x.shape[-1]) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)).reshape(input.shape)
 
 
 class Roformer(nn.Module):
@@ -141,8 +140,7 @@ class ICB(nn.Module):
         super().__init__()
         self.blocks = nn.Sequential(*[ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal) for _ in range(3)])
 
-    def forward(self, input):
-        return self.blocks(input)
+    def forward(self, input): return self.blocks(input)
 
 
 class BSNet(nn.Module):
@@ -245,9 +243,7 @@ class Apollo(MpsBackendMixin, nn.Module):
         spec, norms, powers, band_idx = self._stft(input), [], [], 0
         for width in self.band_width:
             norm, power = self._band_norm_power(spec, band_idx, width)
-            norms.append(norm)
-            powers.append(power)
-            band_idx += width
+            norms.append(norm); powers.append(power); band_idx += width
         return norms, torch.cat(powers, 1)
 
     def _spec_band_split_packed(self, input):
