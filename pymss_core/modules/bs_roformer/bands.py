@@ -64,6 +64,13 @@ def inference_tanh(x):
     return torch.tanh(x) if torch.is_grad_enabled() else x.tanh_()
 
 
+def stack_linears(linears, device, dtype):
+    weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
+    if linears[0].bias is None:
+        return weight, None
+    return weight, torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
+
+
 class BandSplit(Module):
     def __init__(self, dim, dim_inputs: Tuple[int, ...]):
         super().__init__()
@@ -85,14 +92,8 @@ class BandSplit(Module):
         norms = [self.to_features[i][0] for i in range(start, end)]
         linears = [self.to_features[i][1] for i in range(start, end)]
         gamma = torch.stack([norm.gamma.to(device=device, dtype=dtype) for norm in norms], dim=0)
-        weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-        cached = (
-            gamma,
-            weight,
-            torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
-            if linears[0].bias is not None
-            else None,
-        )
+        weight, bias = stack_linears(linears, device, dtype)
+        cached = (gamma, weight, bias)
         if use_cache:
             self._group_cache[key] = cached
         return cached
@@ -230,6 +231,12 @@ class MaskEstimator(Module):
             )
         return self._band_signatures_cache
 
+    def _plan_bail(self, allow_deep_grouping):
+        self._layer_group_plan_ready = True
+        self._layer_group_plan_allow_deep = allow_deep_grouping
+        self._layer_group_plan = None
+        return None
+
     def _layer_grouping_plan(self):
         allow_deep_grouping = self.training and experimental_deep_mask_grouping()
         if self._layer_group_plan_ready and getattr(self, "_layer_group_plan_allow_deep", False) == allow_deep_grouping:
@@ -237,57 +244,32 @@ class MaskEstimator(Module):
 
         band_layers = self._band_groupable_layers()
         if any(layers is None for layers in band_layers):
-            self._layer_group_plan_ready = True
-            self._layer_group_plan_allow_deep = allow_deep_grouping
-            self._layer_group_plan = None
-            return None
+            return self._plan_bail(allow_deep_grouping)
 
         layer_count = len(band_layers[0])
         if any(len(layers) != layer_count for layers in band_layers):
-            self._layer_group_plan_ready = True
-            self._layer_group_plan_allow_deep = allow_deep_grouping
-            self._layer_group_plan = None
-            return None
-
+            return self._plan_bail(allow_deep_grouping)
         plan = []
         for layer_index in range(layer_count):
-            first_kind = band_layers[0][layer_index][0]
-            if first_kind == "tanh":
-                if any(layers[layer_index][0] != "tanh" for layers in band_layers):
-                    self._layer_group_plan_ready = True
-                    self._layer_group_plan_allow_deep = allow_deep_grouping
-                    self._layer_group_plan = None
-                    return None
+            kinds = [layers[layer_index][0] for layers in band_layers]
+            if kinds[0] == "tanh":
+                if any(kind != "tanh" for kind in kinds):
+                    return self._plan_bail(allow_deep_grouping)
                 plan.append(("tanh", None))
                 continue
-
-            if first_kind != "linear":
-                self._layer_group_plan_ready = True
-                self._layer_group_plan_allow_deep = allow_deep_grouping
-                self._layer_group_plan = None
-                return None
-
+            if kinds[0] != "linear" or any(kind != "linear" for kind in kinds):
+                return self._plan_bail(allow_deep_grouping)
             groups = defaultdict(list)
             for band_index, layers in enumerate(band_layers):
                 kind, layer = layers[layer_index]
-                if kind != "linear":
-                    self._layer_group_plan_ready = True
-                    self._layer_group_plan_allow_deep = allow_deep_grouping
-                    self._layer_group_plan = None
-                    return None
-                signature = (layer.in_features, layer.out_features, layer.bias is not None)
-                groups[signature].append(band_index)
-
+                groups[(layer.in_features, layer.out_features, layer.bias is not None)].append(band_index)
             plan.append(("linear", tuple((signature, tuple(indices)) for signature, indices in groups.items())))
 
         # Extra hidden layers in MBR produce large per-band hidden->hidden
         # batched GEMMs. On CUDA those are slower than the existing addmm
         # loop, so keep this fast path to the common two-linear mask heads.
         if sum(1 for kind, _ in plan if kind == "linear") > 2 and not allow_deep_grouping:
-            self._layer_group_plan_ready = True
-            self._layer_group_plan_allow_deep = allow_deep_grouping
-            self._layer_group_plan = None
-            return None
+            return self._plan_bail(allow_deep_grouping)
 
         self._layer_group_plan_ready = True
         self._layer_group_plan_allow_deep = allow_deep_grouping
@@ -326,11 +308,7 @@ class MaskEstimator(Module):
                 grouped_layers.append(("tanh", None, None))
                 continue
 
-            linears = [band_layers[i][layer_index][1] for i in range(start, end)]
-            weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-            bias = None
-            if linears[0].bias is not None:
-                bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
+            weight, bias = stack_linears([band_layers[i][layer_index][1] for i in range(start, end)], device, dtype)
             grouped_layers.append(("linear", weight, bias))
 
         cached = tuple(grouped_layers)
@@ -347,12 +325,7 @@ class MaskEstimator(Module):
                 return cached
 
         band_layers = self._band_groupable_layers()
-        linears = [band_layers[i][layer_index][1] for i in indices]
-        weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-        bias = None
-        if linears[0].bias is not None:
-            bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
-
+        weight, bias = stack_linears([band_layers[i][layer_index][1] for i in indices], device, dtype)
         cached = (weight, bias)
         if use_cache:
             self._layer_group_cache[key] = cached
@@ -370,20 +343,23 @@ class MaskEstimator(Module):
         linears = [
             estimator._band_groupable_layers()[band_index][layer_index][1] for estimator in estimators for band_index in indices
         ]
-        weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-        bias = None
-        if linears[0].bias is not None:
-            bias = torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears], dim=0)
-
+        weight, bias = stack_linears(linears, device, dtype)
         cached = (weight, bias)
         if use_cache:
             self._packed_layer_group_cache[key] = cached
         return cached
 
     @staticmethod
-    def _packable_estimators_by_band(estimators):
+    def _checked_estimators(estimators):
         estimators = tuple(estimators)
-        if len(estimators) <= 1:
+        if len(estimators) <= 1 or not isinstance(estimators[0], MaskEstimator) or not should_use_grouped_forward(estimators[0]):
+            return None
+        return estimators
+
+    @staticmethod
+    def _packable_estimators_by_band(estimators):
+        estimators = MaskEstimator._checked_estimators(estimators)
+        if estimators is None:
             return False
 
         first = estimators[0]
@@ -479,30 +455,20 @@ class MaskEstimator(Module):
 
     @staticmethod
     def _packable_estimators(estimators):
-        estimators = tuple(estimators)
-        if len(estimators) <= 1:
+        estimators = MaskEstimator._checked_estimators(estimators)
+        if estimators is None:
             return False
-
         first = estimators[0]
-        if not isinstance(first, MaskEstimator):
-            return False
-        if not should_use_grouped_forward(first):
-            return False
-
         first_plan = first._layer_grouping_plan()
         if first_plan is None:
             return False
-
-        for estimator in estimators[1:]:
-            if type(estimator) is not type(first):
-                return False
-            if not should_use_grouped_forward(estimator):
-                return False
-            if estimator.dim_inputs != first.dim_inputs:
-                return False
-            if estimator._layer_grouping_plan() != first_plan:
-                return False
-        return True
+        return all(
+            type(estimator) is type(first)
+            and should_use_grouped_forward(estimator)
+            and estimator.dim_inputs == first.dim_inputs
+            and estimator._layer_grouping_plan() == first_plan
+            for estimator in estimators[1:]
+        )
 
     @staticmethod
     def _select_packed_group(group_x, band_index, stem_count):

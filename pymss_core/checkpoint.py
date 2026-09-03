@@ -1,18 +1,11 @@
-"""Checkpoint helpers shared by inference and training frontends."""
-
-from __future__ import annotations
-
 from pathlib import Path
-from types import ModuleType
-from typing import Any
 
 import torch
-
 
 STATE_DICT_KEYS = ("state", "state_dict", "model_state_dict")
 
 
-def unwrap_state_dict(checkpoint: Any) -> Any:
+def unwrap_state_dict(checkpoint):
     """Return the model state dict from common MSS checkpoint containers."""
     if isinstance(checkpoint, dict):
         for key in STATE_DICT_KEYS:
@@ -21,7 +14,9 @@ def unwrap_state_dict(checkpoint: Any) -> Any:
     return checkpoint
 
 
-def _install_demucs_pickle_stubs() -> dict[str, ModuleType | None]:
+def _install_demucs_pickle_stubs():
+    # torch.load(weights_only=False) of facebook/demucs checkpoints needs the
+    # demucs.* module tree importable; provide empty stand-ins for unpickling.
     import sys
     import types
 
@@ -29,21 +24,17 @@ def _install_demucs_pickle_stubs() -> dict[str, ModuleType | None]:
     previous = {name: sys.modules.get(name) for name in module_names}
     package = sys.modules.setdefault("demucs", types.ModuleType("demucs"))
     package.__path__ = []
-    for module_name, class_names in {
-        "demucs": ("Demucs",),
-        "hdemucs": ("HDemucs", "HTDemucs"),
-        "htdemucs": ("HTDemucs",),
-    }.items():
-        full_name = f"demucs.{module_name}"
-        module = sys.modules.setdefault(full_name, types.ModuleType(full_name))
+    for module_name, class_names in {"demucs": ("Demucs",), "hdemucs": ("HDemucs", "HTDemucs"),
+                                     "htdemucs": ("HTDemucs",)}.items():
+        module = sys.modules.setdefault(f"demucs.{module_name}", types.ModuleType(f"demucs.{module_name}"))
         setattr(package, module_name, module)
         for class_name in class_names:
             if not hasattr(module, class_name):
-                setattr(module, class_name, type(class_name, (), {"__module__": full_name}))
+                setattr(module, class_name, type(class_name, (), {"__module__": f"demucs.{module_name}"}))
     return previous
 
 
-def _restore_modules(previous: dict[str, ModuleType | None]) -> None:
+def _restore_modules(previous):
     import sys
 
     for name, module in previous.items():
@@ -53,31 +44,20 @@ def _restore_modules(previous: dict[str, ModuleType | None]) -> None:
             sys.modules[name] = module
 
 
-def _torch_load(path: str | Path, *, map_location="cpu", weights_only: bool | None = None, mmap: bool = True) -> Any:
-    kwargs: dict[str, Any] = {"map_location": map_location}
+def _torch_load(path, *, map_location="cpu", weights_only=None, mmap=True):
+    kwargs = {"map_location": map_location}
     if weights_only is not None:
         kwargs["weights_only"] = weights_only
-    if mmap:
-        kwargs["mmap"] = True
-    try:
-        return torch.load(path, **kwargs)
-    except TypeError:
-        kwargs.pop("mmap", None)
+    kwargs["mmap"] = mmap
+    for _ in range(2):  # older torch builds lack mmap / weights_only
         try:
             return torch.load(path, **kwargs)
         except TypeError:
-            kwargs.pop("weights_only", None)
-            return torch.load(path, **kwargs)
+            kwargs.pop("mmap", None) if "mmap" in kwargs else kwargs.pop("weights_only", None)
+    return torch.load(path, **{k: v for k, v in kwargs.items() if k != "weights_only"})
 
 
-def load_checkpoint(
-    path: str | Path,
-    *,
-    model_type: str | None = None,
-    map_location: str | torch.device = "cpu",
-    weights_only: bool | None = None,
-    mmap: bool = True,
-) -> Any:
+def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True):
     """Load a checkpoint package with compatibility for common MSS formats."""
     model_type = (model_type or "").lower()
     if model_type in {"htdemucs", "demucs", "legacy_demucs", "legacy_tasnet"}:
@@ -91,34 +71,14 @@ def load_checkpoint(
     return _torch_load(path, map_location=map_location, weights_only=weights_only, mmap=mmap)
 
 
-def load_state_dict(
-    path: str | Path,
-    *,
-    model_type: str | None = None,
-    map_location: str | torch.device = "cpu",
-    weights_only: bool | None = None,
-    mmap: bool = True,
-) -> Any:
+def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True):
     """Load and unwrap the model state dict from a checkpoint file."""
     return unwrap_state_dict(
-        load_checkpoint(
-            path,
-            model_type=model_type,
-            map_location=map_location,
-            weights_only=weights_only,
-            mmap=mmap,
-        )
+        load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap)
     )
 
 
-def load_model_weights(
-    model: torch.nn.Module,
-    checkpoint_or_path: Any,
-    *,
-    model_type: str | None = None,
-    strict: bool = True,
-    map_location: str | torch.device = "cpu",
-) -> Any:
+def load_model_weights(model, checkpoint_or_path, *, model_type=None, strict=True, map_location="cpu"):
     """Load weights from a checkpoint package or file into a model."""
     if isinstance(checkpoint_or_path, (str, Path)):
         state_dict = load_state_dict(checkpoint_or_path, model_type=model_type, map_location=map_location)

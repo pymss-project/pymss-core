@@ -1,177 +1,106 @@
-import numpy as np
 import torch
 
-from ..mlx_utils import mlx_periodic_hann_window
-from .bands import contiguous_dim_groups, dim_input_offsets
+from ..mlx_backend import (
+    conv1d, conv2d, glu, instance_norm2d, linear, overlap_add, param, periodic_hann_window, reflect_pad_last, silu, to_mx, to_torch,
+)
+from . import hyperace_segm
+from .bands import contiguous_dim_groups
 from .bs_roformer_hyperace import BSRoformerHyperACE
 from .conformer import Conformer
-from . import hyperace_segm
-from .mel_band_conformer import MelBandConformer
 from .mel_band_roformer import MelBandRoformer
 from .mlx_attention import (
     _COMPUTE_DTYPE,
-    _gelu,
-    _linear,
     _mlx_attention,
-    _mlx_dtype,
     _mlx_feed_forward,
     _mlx_output_norm,
     _rms_norm,
-    _torch_to_mlx_array,
-    mlx_to_torch_mps,
 )
 
-
-def torch_to_mlx_input(tensor, dtype=_COMPUTE_DTYPE):
-    import mlx.core as mx
-
-    return mx.array(tensor.detach().to(dtype=dtype).cpu().numpy())
+torch_to_mlx_input = to_mx
 
 
 def _cache_key(params, dtype):
     return tuple(None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype) for p in params)
 
 
-def _is_identity(module):
-    return isinstance(module, torch.nn.Identity)
-
-
-def _hann_window(length, dtype):
-    return mlx_periodic_hann_window(length, dtype)
-
-
-def _reflect_pad_last(x, pad):
+def _padded_window(win_length, n_fft, dtype):
     import mlx.core as mx
 
-    if pad <= 0:
-        return x
-    if x.shape[-1] <= pad:
-        raise ValueError("reflect padding requires input length greater than padding")
-    left = x[..., 1 : pad + 1][..., ::-1]
-    right = x[..., -pad - 1 : -1][..., ::-1]
-    return mx.concatenate((left, x, right), axis=-1)
+    window = periodic_hann_window(win_length, dtype)
+    if win_length < n_fft:
+        left = (n_fft - win_length) // 2
+        window = mx.pad(window, [(left, n_fft - win_length - left)])
+    elif win_length > n_fft:
+        raise ValueError("MLX RoFormer STFT does not support win_length > n_fft")
+    return window
 
 
 def _stft_roformer(module, raw_audio, dtype):
+    import numpy as np
+
     import mlx.core as mx
 
     if raw_audio.ndim == 2:
         raw_audio = raw_audio[:, None, :]
-
     batch, channels, audio_length = raw_audio.shape
     if (module.stereo and channels != 2) or (not module.stereo and channels != 1):
         raise ValueError("raw_audio channel count does not match RoFormer stereo setting")
-
-    n_fft = int(module.stft_kwargs["n_fft"])
-    hop = int(module.stft_kwargs["hop_length"])
-    win_length = int(module.stft_kwargs["win_length"])
-    normalized = bool(module.stft_kwargs.get("normalized", False))
-    stft_audio = raw_audio.reshape(batch * channels, audio_length).astype(dtype)
-    stft_audio = _reflect_pad_last(stft_audio, n_fft // 2)
-
-    frames = 1 + (stft_audio.shape[-1] - n_fft) // hop
-    framed = mx.as_strided(
-        stft_audio,
-        shape=(batch * channels, frames, n_fft),
-        strides=(stft_audio.shape[-1], hop, 1),
-    )
-    window = _hann_window(win_length, dtype)
-    if win_length < n_fft:
-        left = (n_fft - win_length) // 2
-        right = n_fft - win_length - left
-        window = mx.pad(window, [(left, right)])
-    elif win_length > n_fft:
-        raise ValueError("MLX RoFormer STFT does not support win_length > n_fft")
-
+    kw = module.stft_kwargs
+    n_fft, hop, win_length = int(kw["n_fft"]), int(kw["hop_length"]), int(kw["win_length"])
+    normalized = bool(kw.get("normalized", False))
+    flat = reflect_pad_last(raw_audio.reshape(batch * channels, audio_length).astype(dtype), n_fft // 2, n_fft // 2)
+    frames = 1 + (flat.shape[-1] - n_fft) // hop
+    framed = mx.as_strided(flat, shape=(flat.shape[0], frames, n_fft), strides=(flat.shape[-1], hop, 1))
+    window = _padded_window(win_length, n_fft, dtype)
     stft = mx.fft.rfft(framed * window, n=n_fft, axis=-1)
     if normalized:
         stft = stft / np.sqrt(n_fft)
-    stft = mx.moveaxis(stft, -1, -2)
-    stft_repr = mx.stack((stft.real, stft.imag), axis=-1)
-    freq_bins = stft_repr.shape[-3]
-    stft_repr = stft_repr.reshape(batch, channels, freq_bins, frames, 2)
-    stft_repr = mx.transpose(stft_repr, (0, 2, 1, 3, 4)).reshape(batch, freq_bins * channels, frames, 2)
-    context = {
-        "batch": batch,
-        "channels": channels,
-        "freq_bins": freq_bins,
-        "audio_length": audio_length,
-        "window": window,
-        "n_fft": n_fft,
-        "hop": hop,
-        "normalized": normalized,
-        "dtype": dtype,
+    stft = mx.moveaxis(stft, -1, -2)  # (n, T, F) -> (n, F, T)
+    ri = mx.stack((stft.real, stft.imag), axis=-1)
+    freq_bins = ri.shape[-3]
+    ri = mx.transpose(ri.reshape(batch, channels, freq_bins, frames, 2), (0, 2, 1, 3, 4))
+    return ri.reshape(batch, freq_bins * channels, frames, 2), {
+        "batch": batch, "channels": channels, "freq_bins": freq_bins, "audio_length": audio_length,
+        "window": window, "n_fft": n_fft, "hop": hop, "normalized": normalized, "dtype": dtype,
     }
-    return stft_repr, context
 
 
 def _istft_roformer(module, stft_repr, context, length):
     import mlx.core as mx
 
     b, n, _, t, _ = stft_repr.shape
-    channels = context["channels"]
-    freq_bins = context["freq_bins"]
-    n_fft = context["n_fft"]
-    hop = context["hop"]
-    dtype = context["dtype"]
-    normalized = context["normalized"]
-    stft_repr = stft_repr.reshape(b, n, freq_bins, channels, t, 2)
-    stft_repr = mx.transpose(stft_repr, (0, 1, 3, 2, 4, 5)).reshape(b * n * channels, freq_bins, t, 2)
-    complex_stft = stft_repr[..., 0] + (1j * stft_repr[..., 1])
+    channels, freq_bins, n_fft, hop, dtype = context["channels"], context["freq_bins"], context["n_fft"], context["hop"], context["dtype"]
+    ri = mx.transpose(stft_repr.reshape(b, n, freq_bins, channels, t, 2), (0, 1, 3, 2, 4, 5)).reshape(b * n * channels, freq_bins, t, 2)
+    complex_stft = ri[..., 0] + (1j * ri[..., 1])
     if getattr(module, "zero_dc", False):
         complex_stft = complex_stft.at[:, 0, :].multiply(0)
-    complex_stft = mx.moveaxis(complex_stft, -2, -1)
-    if normalized:
-        complex_stft = complex_stft * np.sqrt(n_fft)
-    frames = mx.fft.irfft(complex_stft, n=n_fft, axis=-1).astype(dtype)
-    frames = frames * context["window"]
-
-    batch_channels = frames.shape[0]
-    frame_count = frames.shape[1]
-    full_length = n_fft + hop * (frame_count - 1)
-    positions = mx.arange(n_fft)[None, :] + hop * mx.arange(frame_count)[:, None]
-    audio = mx.zeros((batch_channels, full_length), dtype=dtype).at[:, positions].add(frames)
-    denom_frames = mx.broadcast_to(mx.square(context["window"])[None, :], (frame_count, n_fft))
-    denom = mx.zeros((full_length,), dtype=dtype).at[positions].add(denom_frames)
-    audio = audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=dtype))
+    if context["normalized"]:
+        complex_stft = complex_stft * context["n_fft"] ** 0.5
+    frames = mx.fft.irfft(mx.moveaxis(complex_stft, -2, -1), n=n_fft, axis=-1).astype(dtype) * context["window"]
+    audio = overlap_add(frames, context["window"], hop)
     pad = n_fft // 2
-    if length is None:
-        audio = audio[..., pad:-pad] if pad > 0 else audio
-    else:
-        audio = audio[..., pad : pad + length]
+    audio = audio[..., pad:-pad] if length is None and pad > 0 else audio[..., pad : pad + length]
     audio = audio.reshape(context["batch"], n, channels, audio.shape[-1])
     return audio[:, 0] if n == 1 else audio
 
 
 def _band_split_cache(module, dtype):
     cache = getattr(module, "_pymss_mlx_full_band_split_cache", None)
-    params = []
-    for to_feature in module.band_split.to_features:
-        norm, linear = to_feature
-        params.extend((norm.gamma, linear.weight, linear.bias))
+    params = [p for norm, linear in module.band_split.to_features for p in (norm.gamma, linear.weight, linear.bias)]
     key = (tuple(module.band_split.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key:
         return cache
-
     groups = []
     for start, end, dim_in in contiguous_dim_groups(module.band_split.dim_inputs):
         norms = [module.band_split.to_features[i][0] for i in range(start, end)]
         linears = [module.band_split.to_features[i][1] for i in range(start, end)]
-        groups.append(
-            {
-                "start": start,
-                "end": end,
-                "dim_in": dim_in,
-                "offset_start": module.band_split._dim_offsets[start],
-                "offset_end": module.band_split._dim_offsets[end],
-                "gamma": _torch_to_mlx_array(torch.stack([norm.gamma for norm in norms], dim=0), dtype),
-                "weight": _torch_to_mlx_array(torch.stack([linear.weight for linear in linears], dim=0), dtype),
-                "bias": None
-                if linears[0].bias is None
-                else _torch_to_mlx_array(torch.stack([linear.bias for linear in linears], dim=0), dtype),
-            }
-        )
-
+        groups.append({
+            "start": start, "end": end, "dim_in": dim_in,
+            "offset_start": module.band_split._dim_offsets[start], "offset_end": module.band_split._dim_offsets[end],
+            "gamma": to_mx(torch.stack([n.gamma for n in norms]), dtype),
+            "weight": to_mx(torch.stack([lin.weight for lin in linears]), dtype),
+            "bias": None if linears[0].bias is None else to_mx(torch.stack([lin.bias for lin in linears]), dtype),
+        })
     cache = {"key": key, "groups": groups}
     module._pymss_mlx_full_band_split_cache = cache
     return cache
@@ -191,8 +120,7 @@ def _band_split(module, x, dtype):
     for group in _band_split_cache(module, dtype)["groups"]:
         group_x = x[..., group["offset_start"] : group["offset_end"]]
         group_x = group_x.reshape(*group_x.shape[:-1], group["end"] - group["start"], group["dim_in"])
-        group_x = _rms_norm(group_x, group["gamma"])
-        outs.append(_grouped_linear(group_x, group["weight"], group["bias"]))
+        outs.append(_grouped_linear(_rms_norm(group_x, group["gamma"]), group["weight"], group["bias"]))
     return mx.concatenate(outs, axis=-2)
 
 
@@ -203,37 +131,14 @@ def _transformer(module, x, dtype):
     return _mlx_output_norm(module.norm, x, dtype)
 
 
-def _conv1d_ncl(conv, x, dtype):
-    import mlx.core as mx
-
-    weight = _mlx_param(conv, "weight", conv.weight, dtype).transpose(0, 2, 1)
-    y = mx.conv1d(
-        x.transpose(0, 2, 1),
-        weight,
-        stride=conv.stride[0],
-        padding=conv.padding[0],
-        dilation=conv.dilation[0],
-        groups=conv.groups,
-    )
-    if conv.bias is not None:
-        y = y + _mlx_param(conv, "bias", conv.bias, dtype)
-    return y.transpose(0, 2, 1)
-
-
-def _batch_norm1d(module, x, dtype):
-    import mlx.core as mx
-
-    if module.training:
-        raise TypeError("MLX Conformer BatchNorm1d supports eval mode only")
-    y = x.astype(mx.float32)
-    mean = _torch_to_mlx_array(module.running_mean, torch.float32).reshape(1, -1, 1)
-    var = _torch_to_mlx_array(module.running_var, torch.float32).reshape(1, -1, 1)
-    y = (y - mean) * mx.rsqrt(var + module.eps)
-    if module.affine:
-        weight = _mlx_param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
-        bias = _mlx_param(module, "bias", module.bias, dtype).reshape(1, -1, 1)
-        y = y.astype(x.dtype) * weight + bias
-    return y.astype(x.dtype)
+def _conformer(module, x, dtype):
+    for block in module.layers:
+        x = x + _macaron_ff(block.ff1, x, dtype)
+        x = x + _mlx_attention(block.attn, x, dtype)
+        x = x + _conformer_conv(block.conv, x, dtype)
+        x = x + _macaron_ff(block.ff2, x, dtype)
+        x = _mlx_output_norm(block.out_norm, x, dtype)
+    return _mlx_output_norm(module.norm, x, dtype)
 
 
 def _macaron_ff(module, x, dtype):
@@ -243,47 +148,45 @@ def _macaron_ff(module, x, dtype):
 def _conformer_conv(module, x, dtype):
     # Sequential indices match ConformerConvModule / MSST checkpoints.
     norm, _, pointwise_in, _, depthwise, batch_norm, _, pointwise_out, _, _ = module.net
-    y = _rms_norm(x, _mlx_param(norm, "gamma", norm.gamma, dtype))
-    y = y.transpose(0, 2, 1)
-    y = _conv1d_ncl(pointwise_in, y, dtype)
-    y = _glu(y, axis=1)
-    y = _conv1d_ncl(depthwise, y, dtype)
-    y = _batch_norm1d(batch_norm, y, dtype)
-    y = _silu(y)
-    y = _conv1d_ncl(pointwise_out, y, dtype)
+    y = _rms_norm(x, param(norm, "gamma", norm.gamma, dtype)).transpose(0, 2, 1)
+    y = conv1d(pointwise_in, y, dtype)
+    y = glu(y, axis=1)
+    y = batch_norm1d(batch_norm, conv1d(depthwise, y, dtype), dtype)
+    y = conv1d(pointwise_out, silu(y), dtype)
     return y.transpose(0, 2, 1)
 
 
-def _conformer_block(block, x, dtype):
-    x = x + _macaron_ff(block.ff1, x, dtype)
-    x = x + _mlx_attention(block.attn, x, dtype)
-    x = x + _conformer_conv(block.conv, x, dtype)
-    x = x + _macaron_ff(block.ff2, x, dtype)
-    return _mlx_output_norm(block.out_norm, x, dtype)
+def batch_norm1d(module, x, dtype):
+    import mlx.core as mx
 
-
-def _conformer(module, x, dtype):
-    for block in module.layers:
-        x = _conformer_block(block, x, dtype)
-    return _mlx_output_norm(module.norm, x, dtype)
+    if module.training:
+        raise TypeError("MLX Conformer BatchNorm1d supports eval mode only")
+    y = x.astype(mx.float32)
+    mean = to_mx(module.running_mean, torch.float32).reshape(1, -1, 1)
+    var = to_mx(module.running_var, torch.float32).reshape(1, -1, 1)
+    y = (y - mean) * mx.rsqrt(var + module.eps)
+    if module.affine:
+        y = y.astype(x.dtype) * param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
+        y = y + param(module, "bias", module.bias, dtype).reshape(1, -1, 1)
+    return y.astype(x.dtype)
 
 
 def _sequence_model(module, x, dtype):
-    if isinstance(module, Conformer):
-        return _conformer(module, x, dtype)
-    return _transformer(module, x, dtype)
+    return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
 
 
 def _final_norm(module, x, dtype):
-    if _is_identity(module.final_norm):
+    import mlx.core as mx
+
+    if isinstance(module.final_norm, mx.mod.Module) if False else isinstance(module.final_norm, torch.nn.Identity):
         return x
-    return _rms_norm(x, _torch_to_mlx_array(module.final_norm.gamma, dtype))
+    return _rms_norm(x, to_mx(module.final_norm.gamma, dtype))
 
 
 def _mask_estimator_layers(mlp_with_glu):
     layers = []
-    mlp, glu = mlp_with_glu
-    if not isinstance(glu, torch.nn.GLU):
+    mlp, glu_mod = mlp_with_glu
+    if not isinstance(glu_mod, torch.nn.GLU):
         raise TypeError("MLX RoFormer mask estimator expects nn.GLU")
     for layer in mlp:
         if isinstance(layer, torch.nn.Linear):
@@ -297,15 +200,13 @@ def _mask_estimator_layers(mlp_with_glu):
 
 def _mask_estimator_cache(estimator, dtype):
     cache = getattr(estimator, "_pymss_mlx_full_mask_cache", None)
-    params = []
-    for mlp_with_glu in estimator.to_freqs:
-        for kind, layer in _mask_estimator_layers(mlp_with_glu):
-            if kind == "linear":
-                params.extend((layer.weight, layer.bias))
+    params = [
+        p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu)
+        if kind == "linear" for p in (layer.weight, layer.bias)
+    ]
     key = (tuple(estimator.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key:
         return cache
-
     band_layers = []
     for mlp_with_glu in estimator.to_freqs:
         layers = []
@@ -313,24 +214,11 @@ def _mask_estimator_cache(estimator, dtype):
             if kind == "tanh":
                 layers.append(("tanh", None, None))
             else:
-                layers.append(
-                    (
-                        "linear",
-                        _torch_to_mlx_array(layer.weight, dtype),
-                        None if layer.bias is None else _torch_to_mlx_array(layer.bias, dtype),
-                    )
-                )
+                layers.append(("linear", to_mx(layer.weight, dtype), None if layer.bias is None else to_mx(layer.bias, dtype)))
         band_layers.append(tuple(layers))
     cache = {"key": key, "band_layers": tuple(band_layers)}
     estimator._pymss_mlx_full_mask_cache = cache
     return cache
-
-
-def _glu(x, axis=-1):
-    import mlx.core as mx
-
-    a, b = mx.split(x, 2, axis=axis)
-    return a * (1 / (1 + mx.exp(-b)))
 
 
 def _mask_estimator(estimator, x, dtype):
@@ -340,101 +228,30 @@ def _mask_estimator(estimator, x, dtype):
     for band_index, layers in enumerate(_mask_estimator_cache(estimator, dtype)["band_layers"]):
         group_x = x[:, :, band_index, :]
         for kind, weight, bias in layers:
-            if kind == "tanh":
-                group_x = mx.tanh(group_x)
-            else:
-                group_x = _linear(group_x, weight, bias)
-        outs.append(_glu(group_x, axis=-1))
+            group_x = mx.tanh(group_x) if kind == "tanh" else linear(group_x, weight, bias)
+        outs.append(glu(group_x, axis=-1))
     return mx.concatenate(outs, axis=-1)
 
 
-def _mlx_param(module, name, tensor, dtype):
-    cache = getattr(module, "_pymss_mlx_full_param_cache", None)
-    if cache is None:
-        cache = {}
-        module._pymss_mlx_full_param_cache = cache
-    key = (name, tensor.data_ptr(), tensor._version, tuple(tensor.shape), dtype)
-    cached = cache.get(name)
-    if cached is not None and cached[0] == key:
-        return cached[1]
-    value = _torch_to_mlx_array(tensor, dtype)
-    cache[name] = (key, value)
-    return value
-
-
-def _silu(x):
-    import mlx.core as mx
-
-    return x * mx.sigmoid(x)
-
-
-def _conv_padding(conv):
-    padding = conv.padding
-    if isinstance(padding, str):
-        kernel = conv.kernel_size
-        return kernel[0] // 2, kernel[1] // 2
-    if isinstance(padding, tuple):
-        return padding
-    return padding, padding
-
-
-def _conv2d_nchw(conv, x, dtype):
-    import mlx.core as mx
-
-    weight = _mlx_param(conv, "weight", conv.weight, dtype)
-    weight = mx.transpose(weight, (0, 2, 3, 1))
-    x_nhwc = mx.transpose(x, (0, 2, 3, 1))
-    y = mx.conv2d(
-        x_nhwc,
-        weight,
-        stride=conv.stride,
-        padding=_conv_padding(conv),
-        dilation=conv.dilation,
-        groups=conv.groups,
-    )
-    if conv.bias is not None:
-        y = y + _mlx_param(conv, "bias", conv.bias, dtype)
-    return mx.transpose(y, (0, 3, 1, 2))
-
-
-def _instance_norm2d(module, x, dtype):
-    import mlx.core as mx
-
-    x32 = x.astype(mx.float32)
-    mean = mx.mean(x32, axis=(2, 3), keepdims=True)
-    var = mx.mean(mx.square(x32 - mean), axis=(2, 3), keepdims=True)
-    x = ((x32 - mean) * mx.rsqrt(var + module.eps)).astype(x.dtype)
-    if module.affine:
-        weight = _mlx_param(module, "weight", module.weight, dtype).reshape(1, -1, 1, 1)
-        bias = _mlx_param(module, "bias", module.bias, dtype).reshape(1, -1, 1, 1)
-        x = x * weight + bias
-    return x
-
-
 def _conv_block(module, x, dtype):
-    x = _conv2d_nchw(module.conv, x, dtype)
-    x = _instance_norm2d(module.bn, x, dtype)
-    return x if isinstance(module.act, torch.nn.Identity) else _silu(x)
+    x = conv2d(module.conv, x, dtype)
+    x = instance_norm2d(module.bn, x, dtype)
+    return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 
 
 def _dsconv_block(module, x, dtype):
-    x = _conv2d_nchw(module.dwconv, x, dtype)
-    x = _conv2d_nchw(module.pwconv, x, dtype)
-    x = _instance_norm2d(module.bn, x, dtype)
-    return x if isinstance(module.act, torch.nn.Identity) else _silu(x)
+    x = conv2d(module.pwconv, conv2d(module.dwconv, x, dtype), dtype)
+    x = instance_norm2d(module.bn, x, dtype)
+    return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 
 
 def _resize_positions(in_size, out_size):
     import mlx.core as mx
 
-    scale = in_size / out_size
-    pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * scale - 0.5
+    pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5
     lower = mx.floor(pos)
-    upper = lower + 1
     weight = pos - lower
-    lower = mx.clip(lower, 0, in_size - 1).astype(mx.int32)
-    upper = mx.clip(upper, 0, in_size - 1).astype(mx.int32)
-    return lower, upper, weight
+    return (mx.clip(lower, 0, in_size - 1).astype(mx.int32), mx.clip(lower + 1, 0, in_size - 1).astype(mx.int32), weight)
 
 
 def _resize_bilinear_nchw(x, size):
@@ -446,13 +263,12 @@ def _resize_bilinear_nchw(x, size):
         return x
     y0, y1, wy = _resize_positions(in_h, out_h)
     x0, x1, wx = _resize_positions(in_w, out_w)
-    v00 = mx.take(mx.take(x, y0, axis=2), x0, axis=3)
-    v01 = mx.take(mx.take(x, y0, axis=2), x1, axis=3)
-    v10 = mx.take(mx.take(x, y1, axis=2), x0, axis=3)
-    v11 = mx.take(mx.take(x, y1, axis=2), x1, axis=3)
-    wy = wy.reshape(1, 1, out_h, 1)
-    wx = wx.reshape(1, 1, 1, out_w)
-    return v00 * (1 - wy) * (1 - wx) + v01 * (1 - wy) * wx + v10 * wy * (1 - wx) + v11 * wy * wx
+    def corner(yy, xx):
+        return mx.take(mx.take(x, yy, axis=2), xx, axis=3)
+
+    wy, wx = wy.reshape(1, 1, out_h, 1), wx.reshape(1, 1, 1, out_w)
+    return (corner(y0, x0) * (1 - wy) * (1 - wx) + corner(y0, x1) * (1 - wy) * wx
+            + corner(y1, x0) * wy * (1 - wx) + corner(y1, x1) * wy * wx)
 
 
 def _seq(module, x, dtype):
@@ -469,11 +285,8 @@ def _ds_bottleneck(module, x, dtype):
 def _ds_c3k(module, x, dtype):
     import mlx.core as mx
 
-    return _conv_block(
-        module.cv3,
-        mx.concatenate((_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1),
-        dtype,
-    )
+    return _conv_block(module.cv3, mx.concatenate(
+        (_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1), dtype)
 
 
 def _ds_c3k2(module, x, dtype):
@@ -484,24 +297,20 @@ def _adaptive_hyperedge_generation(module, x, dtype):
     import mlx.core as mx
 
     b, n, c = x.shape
-    avg_pool = mx.mean(x, axis=1)
-    max_pool = mx.max(x, axis=1)
-    context = mx.concatenate((avg_pool, max_pool), axis=1)
-    proto = _mlx_param(module, "global_proto", module.global_proto, dtype)[None]
-    mapped = _linear(context, _mlx_param(module.context_mapper, "weight", module.context_mapper.weight, dtype), None)
-    proto = proto + mapped.reshape(b, module.num_hyperedges, c)
-    z = _linear(x, _mlx_param(module.query_proj, "weight", module.query_proj.weight, dtype), None)
+    context = mx.concatenate((mx.mean(x, axis=1), mx.max(x, axis=1)), axis=1)
+    proto = to_mx(module.global_proto, dtype)[None] + linear(context, param(module.context_mapper, "weight", module.context_mapper.weight, dtype)).reshape(b, module.num_hyperedges, c)
+    z = linear(x, param(module.query_proj, "weight", module.query_proj.weight, dtype))
     z = z.reshape(b, n, module.num_heads, module.head_dim).transpose(0, 2, 1, 3)
     proto = proto.reshape(b, module.num_hyperedges, module.num_heads, module.head_dim).transpose(0, 2, 3, 1)
     return mx.softmax(mx.mean((z @ proto) * module.scale, axis=1).transpose(0, 2, 1), axis=-1)
 
 
 def _hypergraph_convolution(module, x, a, dtype):
+
     hidden = a @ x
-    hidden = _silu(_linear(hidden, _mlx_param(module.W_e, "weight", module.W_e.weight, dtype), None))
-    hidden = a.transpose(0, 2, 1) @ hidden
-    hidden = _linear(hidden, _mlx_param(module.W_v, "weight", module.W_v.weight, dtype), None)
-    return x + _silu(hidden)
+    hidden = silu(linear(hidden, param(module.W_e, "weight", module.W_e.weight, dtype)))
+    hidden = linear(a.transpose(0, 2, 1) @ hidden, param(module.W_v, "weight", module.W_v.weight, dtype))
+    return x + silu(hidden)
 
 
 def _adaptive_hypergraph_computation(module, x, dtype):
@@ -514,17 +323,9 @@ def _adaptive_hypergraph_computation(module, x, dtype):
 def _c3ah(module, x, dtype):
     import mlx.core as mx
 
-    return _conv_block(
-        module.cv3,
-        mx.concatenate(
-            (
-                _adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype),
-                _conv_block(module.cv1, x, dtype),
-            ),
-            axis=1,
-        ),
-        dtype,
-    )
+    return _conv_block(module.cv3, mx.concatenate(
+        (_adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype),
+         _conv_block(module.cv1, x, dtype)), axis=1), dtype)
 
 
 def _hyperace(module, features, dtype):
@@ -532,33 +333,16 @@ def _hyperace(module, features, dtype):
 
     b2, b3, b4, b5 = features
     size = b4.shape[2:]
-    x = _conv_block(
-        module.fuse_conv,
-        mx.concatenate(
-            (
-                _resize_bilinear_nchw(b2, size),
-                _resize_bilinear_nchw(b3, size),
-                b4,
-                _resize_bilinear_nchw(b5, size),
-            ),
-            axis=1,
-        ),
-        dtype,
-    )
-    x_h = x[:, : module.c_h]
-    x_l = x[:, module.c_h : module.c_h + module.c_l]
-    x_s = x[:, module.c_h + module.c_l :]
-    high = _conv_block(
-        module.high_order_fuse,
-        mx.concatenate([_c3ah(branch, x_h, dtype) for branch in module.high_order_branch], axis=1),
-        dtype,
-    )
-    low = _seq(module.low_order_branch, x_l, dtype)
-    return _conv_block(module.final_fuse, mx.concatenate((high, low, x_s), axis=1), dtype)
+    x = _conv_block(module.fuse_conv, mx.concatenate(
+        (_resize_bilinear_nchw(b2, size), _resize_bilinear_nchw(b3, size), b4, _resize_bilinear_nchw(b5, size)), axis=1), dtype)
+    x_h, x_l, x_s = x[:, : module.c_h], x[:, module.c_h : module.c_h + module.c_l], x[:, module.c_h + module.c_l :]
+    high = _conv_block(module.high_order_fuse,
+                       mx.concatenate([_c3ah(branch, x_h, dtype) for branch in module.high_order_branch], axis=1), dtype)
+    return _conv_block(module.final_fuse, mx.concatenate((high, _seq(module.low_order_branch, x_l, dtype), x_s), axis=1), dtype)
 
 
 def _gated_fusion(module, f_in, h, dtype):
-    return f_in + _mlx_param(module, "gamma", module.gamma, dtype) * h
+    return f_in + param(module, "gamma", module.gamma, dtype) * h
 
 
 def _backbone(module, x, dtype):
@@ -570,30 +354,20 @@ def _backbone(module, x, dtype):
 
 def _decoder(module, enc_feats, h_ace, dtype):
     p2, p3, p4, p5 = enc_feats
-    d5 = _gated_fusion(
-        module.fusion_d5,
-        _conv_block(module.skip_p5, p5, dtype),
-        _conv_block(module.h_to_d5, _resize_bilinear_nchw(h_ace, p5.shape[2:]), dtype),
-        dtype,
-    )
+    d5 = _gated_fusion(module.fusion_d5, _conv_block(module.skip_p5, p5, dtype),
+                       _conv_block(module.h_to_d5, _resize_bilinear_nchw(h_ace, p5.shape[2:]), dtype), dtype)
     d4 = _ds_c3k2(module.up_d5, _resize_bilinear_nchw(d5, p4.shape[2:]), dtype) + _conv_block(module.skip_p4, p4, dtype)
-    d4 = _gated_fusion(
-        module.fusion_d4, d4, _conv_block(module.h_to_d4, _resize_bilinear_nchw(h_ace, d4.shape[2:]), dtype), dtype
-    )
+    d4 = _gated_fusion(module.fusion_d4, d4, _conv_block(module.h_to_d4, _resize_bilinear_nchw(h_ace, d4.shape[2:]), dtype), dtype)
     d3 = _ds_c3k2(module.up_d4, _resize_bilinear_nchw(d4, p3.shape[2:]), dtype) + _conv_block(module.skip_p3, p3, dtype)
-    d3 = _gated_fusion(
-        module.fusion_d3, d3, _conv_block(module.h_to_d3, _resize_bilinear_nchw(h_ace, d3.shape[2:]), dtype), dtype
-    )
+    d3 = _gated_fusion(module.fusion_d3, d3, _conv_block(module.h_to_d3, _resize_bilinear_nchw(h_ace, d3.shape[2:]), dtype), dtype)
     d2 = _ds_c3k2(module.up_d3, _resize_bilinear_nchw(d3, p2.shape[2:]), dtype) + _conv_block(module.skip_p2, p2, dtype)
-    d2 = _gated_fusion(
-        module.fusion_d2, d2, _conv_block(module.h_to_d2, _resize_bilinear_nchw(h_ace, d2.shape[2:]), dtype), dtype
-    )
+    d2 = _gated_fusion(module.fusion_d2, d2, _conv_block(module.h_to_d2, _resize_bilinear_nchw(h_ace, d2.shape[2:]), dtype), dtype)
     return _ds_c3k2(module.final_d2, d2, dtype)
 
 
 def _tfc_tdf(module, x, dtype):
     for block in module.blocks:
-        shortcut = _conv2d_nchw(block.shortcut, x, dtype)
+        shortcut = conv2d(block.shortcut, x, dtype)
         x = _segm_module(block.tfc1, x, dtype)
         x = _segm_module(block.tfc2, x + _segm_module(block.tdf, x, dtype), dtype) + shortcut
     return x
@@ -614,7 +388,7 @@ def _progressive_upsample_head(module, x, dtype):
     x = _freq_pixel_shuffle(module.block4, x, dtype)
     if x.shape[-1] != module.target_bins:
         x = _resize_bilinear_nchw(x, (x.shape[2], module.target_bins))
-    return _conv2d_nchw(module.final_conv, x, dtype)
+    return conv2d(module.final_conv, x, dtype)
 
 
 def _segm_model(module, x, dtype):
@@ -625,6 +399,7 @@ def _segm_model(module, x, dtype):
 
 
 def _segm_module(module, x, dtype):
+
     if isinstance(module, torch.nn.Sequential):
         return _seq(module, x, dtype)
     if isinstance(module, hyperace_segm.Conv):
@@ -640,17 +415,14 @@ def _segm_module(module, x, dtype):
     if isinstance(module, hyperace_segm.TFC_TDF):
         return _tfc_tdf(module, x, dtype)
     if isinstance(module, torch.nn.InstanceNorm2d):
-        return _instance_norm2d(module, x, dtype)
+        return instance_norm2d(module, x, dtype)
     if isinstance(module, torch.nn.SiLU):
-        return _silu(x)
+        return silu(x)
     if isinstance(module, torch.nn.Conv2d):
-        return _conv2d_nchw(module, x, dtype)
+        return conv2d(module, x, dtype)
     if isinstance(module, torch.nn.Linear):
-        return _linear(
-            x,
-            _mlx_param(module, "weight", module.weight, dtype),
-            None if module.bias is None else _mlx_param(module, "bias", module.bias, dtype),
-        )
+        return linear(x, param(module, "weight", module.weight, dtype),
+                      None if module.bias is None else param(module, "bias", module.bias, dtype))
     if isinstance(module, torch.nn.Identity):
         return x
     raise TypeError(f"unsupported HyperACE SegmModel layer for MLX full backend: {type(module).__name__}")
@@ -671,27 +443,23 @@ def _estimate_masks(module, x, dtype):
 
 
 def _mask_to_complex_shape(mask):
-    return mask.reshape(mask.shape[0], mask.shape[1], mask.shape[2], mask.shape[3] // 2, 2).transpose(0, 1, 3, 2, 4)
+    return mask.reshape(*mask.shape[:3], mask.shape[3] // 2, 2).transpose(0, 1, 3, 2, 4)
 
 
 def _forward_mask_core(module, stft_repr, dtype):
     b, fs, model_t, complex_dim = stft_repr.shape
-    x = stft_repr.transpose(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
-    x = _band_split(module, x, dtype)
-
+    x = _band_split(module, stft_repr.transpose(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim), dtype)
     residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
         if residual_store is not None:
             for residual in residual_store:
                 x = x + residual
-
         b, t, f, d = x.shape
         x = _sequence_model(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
         x = _sequence_model(freq_transformer, x.reshape(b * t, f, d), dtype).reshape(b, t, f, d)
         if residual_store is not None:
             residual_store.append(x)
-
     return _mask_to_complex_shape(_estimate_masks(module, _final_norm(module, x, dtype), dtype))
 
 
@@ -714,17 +482,9 @@ def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     import mlx.core as mx
 
     freq_indices = mx.array(module.freq_indices.detach().cpu().numpy())
-    x = stft_repr[:, freq_indices]
-    masks = _forward_mask_core(module, x, dtype)
-    num_stems = len(module.mask_estimators)
-    masks_summed = (
-        mx.zeros(
-            (context["batch"], num_stems, stft_repr.shape[1], stft_repr.shape[-2], 2),
-            dtype=masks.dtype,
-        )
-        .at[:, :, freq_indices, :, :]
-        .add(masks)
-    )
+    masks = _forward_mask_core(module, stft_repr[:, freq_indices], dtype)
+    masks_summed = mx.zeros((context["batch"], len(module.mask_estimators), stft_repr.shape[1], stft_repr.shape[-2], 2),
+                            dtype=masks.dtype).at[:, :, freq_indices, :, :].add(masks)
     denom = mx.array(module.num_bands_per_channel_freq.detach().cpu().numpy(), dtype=masks.dtype)[..., None]
     return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(masks_summed / mx.maximum(denom, 1e-8))
 
@@ -732,10 +492,11 @@ def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
 def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
     if dtype not in (torch.float16, torch.float32):
         raise TypeError("MLX full RoFormer supports torch.float16 or torch.float32 compute dtype")
+    import mlx.core as mx
 
-    mx_dtype = _mlx_dtype(dtype)
+    mx_dtype = mx.float16 if dtype == torch.float16 else mx.float32
     stft_repr, context = _stft_roformer(module, raw_audio.astype(mx_dtype), mx_dtype)
-    if isinstance(module, (MelBandRoformer, MelBandConformer)):
+    if isinstance(module, MelBandRoformer):
         masked = _mask_stft_repr_mbr(module, stft_repr, context, dtype)
         length = context["audio_length"] if module.match_input_audio_length else None
     else:
@@ -745,5 +506,4 @@ def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
 
 
 def mlx_forward_roformer(module, raw_audio, dtype=_COMPUTE_DTYPE):
-    x_mx = torch_to_mlx_input(raw_audio, dtype=dtype)
-    return mlx_to_torch_mps(mlx_forward_roformer_mx(module, x_mx, dtype), raw_audio)
+    return to_torch(mlx_forward_roformer_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

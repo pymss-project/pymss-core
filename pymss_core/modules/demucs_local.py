@@ -1,5 +1,6 @@
 import math
 import random
+from copy import deepcopy
 
 import numpy as np
 import torch
@@ -8,20 +9,14 @@ from torch.nn import functional as F
 
 
 def pad1d(x, paddings, mode="constant", value=0.0):
-    x0 = x
-    length = x.shape[-1]
-    left, right = paddings
-    if mode == "reflect":
-        max_pad = max(left, right)
-        if length <= max_pad:
-            extra = max_pad - length + 1
-            extra_right = min(right, extra)
-            extra_left = extra - extra_right
-            paddings = (left - extra_left, right - extra_right)
-            x = F.pad(x, (extra_left, extra_right))
+    x0, (left, right), length = x, paddings, x.shape[-1]
+    if mode == "reflect" and length <= max(left, right):  # torch reflect pad breaks past half window: overpad then crop
+        extra = max(left, right) - length + 1
+        extra_right = min(right, extra)
+        extra_left = extra - extra_right
+        paddings, x = (left - extra_left, right - extra_right), F.pad(x, (extra_left, extra_right))
     out = F.pad(x, paddings, mode, value)
-    assert out.shape[-1] == length + left + right
-    assert (out[..., left : left + length] == x0).all()
+    assert out.shape[-1] == length + left + right and (out[..., left : left + length] == x0).all()
     return out
 
 
@@ -29,17 +24,8 @@ def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps":
         x = x.cpu()
-    z = torch.stft(
-        x.reshape(-1, length),
-        n_fft * (1 + pad),
-        hop_length or n_fft // 4,
-        window=torch.hann_window(n_fft).to(x),
-        win_length=n_fft,
-        normalized=True,
-        center=True,
-        return_complex=True,
-        pad_mode="reflect",
-    )
+    z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x),
+                   win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
 
 
@@ -49,27 +35,23 @@ def ispectro(z, hop_length=None, length=None, pad=0):
     win_length = n_fft // (1 + pad)
     if z.device.type == "mps":
         z = z.cpu()
-    x = torch.istft(
-        z.reshape(-1, freqs, frames),
-        n_fft,
-        hop_length,
-        window=torch.hann_window(win_length).to(z.real),
-        win_length=win_length,
-        normalized=True,
-        length=length,
-        center=True,
-    )
+    x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(win_length).to(z.real),
+                    win_length=win_length, normalized=True, length=length, center=True)
     return x.view(*other, x.shape[-1])
 
 
 def rescale_module(module, reference):
     for sub in module.modules():
         if isinstance(sub, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
-            std = sub.weight.std().detach()
-            scale = (std / reference) ** 0.5
+            scale = (sub.weight.std().detach() / reference) ** 0.5
             sub.weight.data /= scale
             if sub.bias is not None:
                 sub.bias.data /= scale
+
+
+def _freq_dconv(dconv, y):
+    b, c, fr, t = y.shape
+    return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
 
 
 class LayerScale(nn.Module):
@@ -87,21 +69,10 @@ class DConv(nn.Module):
         super().__init__()
         hidden = int(channels / compress)
         norm_fn = (lambda d: nn.GroupNorm(1, d)) if norm else (lambda d: nn.Identity())
-        act = nn.GELU if gelu else nn.ReLU
-        self.layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Conv1d(channels, hidden, kernel, dilation=2**d, padding=(2**d) * (kernel // 2)),
-                    norm_fn(hidden),
-                    act(),
-                    nn.Conv1d(hidden, 2 * channels, 1),
-                    norm_fn(2 * channels),
-                    nn.GLU(1),
-                    LayerScale(channels, init),
-                )
-                for d in range(abs(depth))
-            ]
-        )
+        self.layers = nn.ModuleList([
+            nn.Sequential(nn.Conv1d(channels, hidden, kernel, dilation=2**d, padding=(2**d) * (kernel // 2)), norm_fn(hidden),
+                          nn.GELU() if gelu else nn.ReLU(), nn.Conv1d(hidden, 2 * channels, 1), norm_fn(2 * channels),
+                          nn.GLU(1), LayerScale(channels, init)) for d in range(abs(depth))])
 
     def forward(self, x):
         for layer in self.layers:
@@ -113,10 +84,9 @@ class ScaledEmbedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, scale=10.0, smooth=False):
         super().__init__()
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        if smooth:
-            weight = torch.cumsum(self.embedding.weight.data, dim=0)
-            weight = weight / torch.arange(1, num_embeddings + 1).to(weight).sqrt()[:, None]
-            self.embedding.weight.data[:] = weight
+        if smooth:  # low-pass the table along the freq axis
+            w = torch.cumsum(self.embedding.weight.data, dim=0)
+            self.embedding.weight.data[:] = w / torch.arange(1, num_embeddings + 1).to(w).sqrt()[:, None]
         self.embedding.weight.data /= scale
         self.scale = scale
 
@@ -129,29 +99,14 @@ class ScaledEmbedding(nn.Module):
 
 
 class HEncLayer(nn.Module):
-    def __init__(
-        self,
-        chin,
-        chout,
-        kernel_size=8,
-        stride=4,
-        norm_groups=1,
-        empty=False,
-        freq=True,
-        dconv=True,
-        norm=True,
-        context=0,
-        dconv_kw=None,
-        pad=True,
-        rewrite=True,
-    ):
+    def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True,
+                 norm=True, context=0, dconv_kw=None, pad=True, rewrite=True):
         super().__init__()
-        dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
         pad = kernel_size // 4 if pad else 0
         klass = nn.Conv2d if freq else nn.Conv1d
         self.freq, self.kernel_size, self.stride, self.empty, self.norm, self.pad = freq, kernel_size, stride, empty, norm, pad
-        if freq:
+        if freq:  # B,C,F,T conv: stride along freq only
             kernel_size, stride, pad = [kernel_size, 1], [stride, 1], [pad, 0]
         self.conv = klass(chin, chout, kernel_size, stride, pad)
         if empty:
@@ -160,52 +115,28 @@ class HEncLayer(nn.Module):
         self.rewrite = klass(chout, 2 * chout, 1 + 2 * context, 1, context) if rewrite else None
         if rewrite:
             self.norm2 = norm_fn(2 * chout)
-        self.dconv = DConv(chout, **dconv_kw) if dconv else None
+        self.dconv = DConv(chout, **(dconv_kw or {})) if dconv else None
 
     def forward(self, x, inject=None):
         if not self.freq and x.dim() == 4:
-            b, _, _, t = x.shape
-            x = x.view(b, -1, t)
+            x = x.view(x.shape[0], -1, x.shape[-1])
         if not self.freq and x.shape[-1] % self.stride:
             x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
         y = self.conv(x)
         if self.empty:
             return y
         if inject is not None:
-            if inject.dim() == 3 and y.dim() == 4:
-                inject = inject[:, :, None]
-            y = y + inject
+            y = y + (inject[:, :, None] if inject.dim() == 3 and y.dim() == 4 else inject)
         y = F.gelu(self.norm1(y))
         if self.dconv:
-            if self.freq:
-                b, c, fr, t = y.shape
-                y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
-            else:
-                y = self.dconv(y)
+            y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
 
 
 class HDecLayer(nn.Module):
-    def __init__(
-        self,
-        chin,
-        chout,
-        last=False,
-        kernel_size=8,
-        stride=4,
-        norm_groups=1,
-        empty=False,
-        freq=True,
-        dconv=True,
-        norm=True,
-        context=1,
-        dconv_kw=None,
-        pad=True,
-        context_freq=True,
-        rewrite=True,
-    ):
+    def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True,
+                 norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True):
         super().__init__()
-        dconv_kw = dconv_kw or {}
         norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
         self.pad = kernel_size // 4 if pad else 0
         self.last, self.freq, self.chin, self.empty, self.stride = last, freq, chin, empty, stride
@@ -218,28 +149,20 @@ class HDecLayer(nn.Module):
             return
         self.rewrite = None
         if rewrite:
-            if context_freq:
-                self.rewrite = klass(chin, 2 * chin, 1 + 2 * context, 1, context)
-            else:
-                self.rewrite = klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context])
+            self.rewrite = (klass(chin, 2 * chin, 1 + 2 * context, 1, context) if context_freq
+                            else klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context]))
             self.norm1 = norm_fn(2 * chin)
-        self.dconv = DConv(chin, **dconv_kw) if dconv else None
+        self.dconv = DConv(chin, **(dconv_kw or {})) if dconv else None
 
     def forward(self, x, skip, length):
         if self.freq and x.dim() == 3:
-            b, _, t = x.shape
-            x = x.view(b, self.chin, -1, t)
+            x = x.view(x.shape[0], self.chin, -1, x.shape[-1])
         if self.empty:
             y = x
         else:
-            x = x + skip
-            y = F.glu(self.norm1(self.rewrite(x)), dim=1) if self.rewrite else x
+            y = F.glu(self.norm1(self.rewrite(x + skip)), dim=1) if self.rewrite else x + skip
             if self.dconv:
-                if self.freq:
-                    b, c, fr, t = y.shape
-                    y = self.dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
-                else:
-                    y = self.dconv(y)
+                y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
             z = z[..., self.pad : -self.pad, :]
@@ -251,16 +174,13 @@ class HDecLayer(nn.Module):
 
 class MultiWrap(nn.Module):
     def __init__(self, layer, split_ratios):
-        from copy import deepcopy
-
         super().__init__()
-        self.split_ratios = split_ratios
-        self.conv = isinstance(layer, HEncLayer)
+        self.split_ratios, self.conv = split_ratios, isinstance(layer, HEncLayer)
 
         def new_layer():
             lay = deepcopy(layer)
             if self.conv:
-                lay.conv.padding = (0, 0)
+                lay.conv.padding = (0, 0)  # padding handled per segment in forward
             else:
                 lay.pad = False
             for m in lay.modules():
@@ -275,14 +195,11 @@ class MultiWrap(nn.Module):
         start, outs = 0, []
         for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
             if self.conv:
-                pad = layer.kernel_size // 4
-                if ratio == 1:
-                    limit = fr
-                else:
-                    limit = int(round(fr * ratio))
+                pad, limit = layer.kernel_size // 4, fr if ratio == 1 else int(round(fr * ratio))
+                if ratio != 1:
                     le = limit - start + (pad if start == 0 else 0)
-                    frames = round((le - layer.kernel_size) / layer.stride + 1)
-                    limit = start + (frames - 1) * layer.stride + layer.kernel_size - (pad if start == 0 else 0)
+                    limit = start + (round((le - layer.kernel_size) / layer.stride + 1) - 1) * layer.stride \
+                        + layer.kernel_size - (pad if start == 0 else 0)
                 y = x[:, :, start:limit, :]
                 if start == 0:
                     y = F.pad(y, (0, 0, pad, 0))
@@ -291,8 +208,7 @@ class MultiWrap(nn.Module):
                 outs.append(layer(y))
                 start = limit - layer.kernel_size + layer.stride
             else:
-                limit = fr if ratio == 1 else int(round(fr * ratio))
-                last = layer.last
+                limit, last = fr if ratio == 1 else int(round(fr * ratio)), layer.last
                 layer.last = True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], None)
                 if outs:
@@ -328,30 +244,16 @@ def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=100
     return pe[None].to(device)
 
 
-def create_sin_embedding_cape(
-    length,
-    dim,
-    batch_size,
-    mean_normalize,
-    augment,
-    max_global_shift=0.0,
-    max_local_shift=0.0,
-    max_scale=1.0,
-    device="cpu",
-    max_period=10000.0,
-):
+def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, max_global_shift=0.0, max_local_shift=0.0,
+                              max_scale=1.0, device="cpu", max_period=10000.0):
     pos = torch.arange(length).view(-1, 1, 1).float().repeat(1, batch_size, 1)
     if mean_normalize:
         pos -= torch.nanmean(pos, dim=0, keepdim=True)
-    if augment:
-        pos = (
-            pos
-            + np.random.uniform(-max_global_shift, max_global_shift, (1, batch_size, 1))
-            + np.random.uniform(-max_local_shift, max_local_shift, (length, batch_size, 1))
-        )
+    if augment:  # train-only CAPE jitter: global/local shift + log-scale stretch
+        pos = (pos + np.random.uniform(-max_global_shift, max_global_shift, (1, batch_size, 1))
+               + np.random.uniform(-max_local_shift, max_local_shift, (length, batch_size, 1)))
         pos = pos * np.exp(np.random.uniform(-np.log(max_scale), np.log(max_scale), (1, batch_size, 1)))
-    pos = pos.to(device)
-    half = dim // 2
+    pos, half = pos.to(device), dim // 2
     phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1).float()
 
@@ -362,40 +264,16 @@ class MyGroupNorm(nn.GroupNorm):
 
 
 class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
-    def __init__(
-        self,
-        d_model,
-        nhead,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation=F.relu,
-        group_norm=0,
-        norm_first=False,
-        norm_out=False,
-        layer_norm_eps=1e-5,
-        layer_scale=False,
-        init_values=1e-4,
-        batch_first=False,
-        sparse=False,
-        **kwargs,
-    ):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu, group_norm=0, norm_first=False,
+                 norm_out=False, layer_norm_eps=1e-5, layer_scale=False, init_values=1e-4, batch_first=False, sparse=False,
+                 **kwargs):
         if sparse:
             raise NotImplementedError("Sparse Demucs transformer is not supported")
-        super().__init__(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            activation=activation,
-            layer_norm_eps=layer_norm_eps,
-            batch_first=batch_first,
-            norm_first=norm_first,
-            device=kwargs.get("device"),
-            dtype=kwargs.get("dtype"),
-        )
+        super().__init__(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation,
+                         layer_norm_eps=layer_norm_eps, batch_first=batch_first, norm_first=norm_first,
+                         device=kwargs.get("device"), dtype=kwargs.get("dtype"))
         if group_norm:
-            self.norm1 = MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)
-            self.norm2 = MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)
+            self.norm1, self.norm2 = MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps), MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)
         self.norm_out = MyGroupNorm(int(norm_out), d_model) if self.norm_first & norm_out else None
         self.gamma_1 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.gamma_2 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
@@ -411,47 +289,27 @@ class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
 
 
 class CrossTransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        d_model,
-        nhead,
-        dim_feedforward=2048,
-        dropout=0.1,
-        activation=F.relu,
-        layer_norm_eps=1e-5,
-        layer_scale=False,
-        init_values=1e-4,
-        norm_first=False,
-        group_norm=False,
-        norm_out=False,
-        sparse=False,
-        batch_first=False,
-        **_,
-    ):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu, layer_norm_eps=1e-5,
+                 layer_scale=False, init_values=1e-4, norm_first=False, group_norm=False, norm_out=False, sparse=False,
+                 batch_first=False, **_):
         if sparse:
             raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__()
         self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.dropout = nn.Dropout(dropout)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        norm = (
-            (lambda: MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps))
-            if group_norm
-            else (lambda: nn.LayerNorm(d_model, eps=layer_norm_eps))
-        )
+        self.linear1, self.dropout, self.linear2 = (nn.Linear(d_model, dim_feedforward), nn.Dropout(dropout),
+                                                    nn.Linear(dim_feedforward, d_model))
+        norm = ((lambda: MyGroupNorm(int(group_norm), d_model, eps=layer_norm_eps)) if group_norm
+                else (lambda: nn.LayerNorm(d_model, eps=layer_norm_eps)))
         self.norm_first = norm_first
         self.norm1, self.norm2, self.norm3 = norm(), norm(), norm()
         self.norm_out = MyGroupNorm(int(norm_out), d_model) if self.norm_first & norm_out else None
         self.gamma_1 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.gamma_2 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
-        self.dropout1, self.dropout2 = nn.Dropout(dropout), nn.Dropout(dropout)
-        self.activation = activation
+        self.dropout1, self.dropout2, self.activation = nn.Dropout(dropout), nn.Dropout(dropout), activation
 
     def forward(self, q, k, mask=None):
         if self.norm_first:
-            norm_q = self.norm1(q)
-            norm_k = self.norm2(k)
+            norm_q, norm_k = self.norm1(q), self.norm2(k)
             attn_out = self.cross_attn(norm_q, norm_k, norm_k, attn_mask=mask, need_weights=False)[0]
             x = q + self.gamma_1(self.dropout1(attn_out))
             ffn_out = self.linear2(self.dropout(self.activation(self.linear1(self.norm3(x)))))
@@ -459,8 +317,7 @@ class CrossTransformerEncoderLayer(nn.Module):
             return self.norm_out(x) if self.norm_out else x
         attn_out = self.cross_attn(q, k, k, attn_mask=mask, need_weights=False)[0]
         x = self.norm1(q + self.gamma_1(self.dropout1(attn_out)))
-        ffn_out = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.norm2(x + self.gamma_2(self.dropout2(ffn_out)))
+        return self.norm2(x + self.gamma_2(self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(x)))))))
 
 
 class PositionEmbedding(nn.Module):
@@ -475,43 +332,14 @@ class PositionEmbedding(nn.Module):
 
 
 class CrossTransformerEncoder(nn.Module):
-    def __init__(
-        self,
-        dim,
-        emb="sin",
-        hidden_scale=4.0,
-        num_heads=8,
-        num_layers=6,
-        cross_first=False,
-        dropout=0.0,
-        max_positions=1000,
-        norm_in=True,
-        norm_in_group=False,
-        group_norm=False,
-        norm_first=False,
-        norm_out=False,
-        max_period=10000.0,
-        weight_decay=0.0,
-        lr=None,
-        layer_scale=False,
-        gelu=True,
-        sin_random_shift=0,
-        weight_pos_embed=1.0,
-        cape_mean_normalize=True,
-        cape_augment=True,
-        cape_glob_loc_scale=None,
-        sparse_self_attn=False,
-        sparse_cross_attn=False,
-        mask_type="diag",
-        mask_random_seed=42,
-        sparse_attn_window=500,
-        global_window=50,
-        auto_sparsity=False,
-        sparsity=0.95,
-    ):
+    def __init__(self, dim, emb="sin", hidden_scale=4.0, num_heads=8, num_layers=6, cross_first=False, dropout=0.0,
+                 max_positions=1000, norm_in=True, norm_in_group=False, group_norm=False, norm_first=False, norm_out=False,
+                 max_period=10000.0, weight_decay=0.0, lr=None, layer_scale=False, gelu=True, sin_random_shift=0,
+                 weight_pos_embed=1.0, cape_mean_normalize=True, cape_augment=True, cape_glob_loc_scale=None,
+                 sparse_self_attn=False, sparse_cross_attn=False, mask_type="diag", mask_random_seed=42,
+                 sparse_attn_window=500, global_window=50, auto_sparsity=False, sparsity=0.95):
         super().__init__()
-        self.num_layers = num_layers
-        self.classic_parity = 1 if cross_first else 0
+        self.num_layers, self.classic_parity = num_layers, 1 if cross_first else 0
         self.emb, self.max_period, self.weight_decay, self.lr = emb, max_period, weight_decay, lr
         self.weight_pos_embed, self.sin_random_shift = weight_pos_embed, sin_random_shift
         self.cape_mean_normalize, self.cape_augment = cape_mean_normalize, cape_augment
@@ -519,32 +347,17 @@ class CrossTransformerEncoder(nn.Module):
         if emb == "scaled":
             self.position_embeddings = PositionEmbedding(max_positions, dim, scale=0.2)
         if norm_in:
-            self.norm_in = nn.LayerNorm(dim)
-            self.norm_in_t = nn.LayerNorm(dim)
+            norm_fn = lambda: nn.LayerNorm(dim)
         elif norm_in_group:
-            self.norm_in = MyGroupNorm(int(norm_in_group), dim)
-            self.norm_in_t = MyGroupNorm(int(norm_in_group), dim)
+            norm_fn = lambda: MyGroupNorm(int(norm_in_group), dim)
         else:
-            self.norm_in = nn.Identity()
-            self.norm_in_t = nn.Identity()
-        common = dict(
-            d_model=dim,
-            nhead=num_heads,
-            dim_feedforward=int(dim * hidden_scale),
-            dropout=dropout,
-            activation=F.gelu if gelu else F.relu,
-            group_norm=group_norm,
-            norm_first=norm_first,
-            norm_out=norm_out,
-            layer_scale=layer_scale,
-            mask_type=mask_type,
-            mask_random_seed=mask_random_seed,
-            sparse_attn_window=sparse_attn_window,
-            global_window=global_window,
-            sparsity=sparsity,
-            auto_sparsity=auto_sparsity,
-            batch_first=True,
-        )
+            norm_fn = lambda: nn.Identity()
+        self.norm_in, self.norm_in_t = norm_fn(), norm_fn()
+        common = dict(d_model=dim, nhead=num_heads, dim_feedforward=int(dim * hidden_scale), dropout=dropout,
+                      activation=F.gelu if gelu else F.relu, group_norm=group_norm, norm_first=norm_first, norm_out=norm_out,
+                      layer_scale=layer_scale, mask_type=mask_type, mask_random_seed=mask_random_seed,
+                      sparse_attn_window=sparse_attn_window, global_window=global_window, sparsity=sparsity,
+                      auto_sparsity=auto_sparsity, batch_first=True)
         self.layers, self.layers_t = nn.ModuleList(), nn.ModuleList()
         for idx in range(num_layers):
             klass = MyTransformerEncoderLayer if idx % 2 == self.classic_parity else CrossTransformerEncoderLayer
@@ -556,19 +369,9 @@ class CrossTransformerEncoder(nn.Module):
         if self.emb == "sin":
             return create_sin_embedding(t, c, random.randrange(self.sin_random_shift + 1), device, self.max_period)
         if self.emb == "cape":
-            scale = self.cape_glob_loc_scale
-            return create_sin_embedding_cape(
-                t,
-                c,
-                b,
-                self.cape_mean_normalize,
-                self.training and self.cape_augment,
-                scale[0],
-                scale[1],
-                scale[2],
-                device,
-                self.max_period,
-            )
+            s = self.cape_glob_loc_scale
+            return create_sin_embedding_cape(t, c, b, self.cape_mean_normalize, self.training and self.cape_augment,
+                                             s[0], s[1], s[2], device, self.max_period)
         if self.emb == "scaled":
             return self.position_embeddings(torch.arange(t, device=device))[:, None]
         raise ValueError(f"unsupported Demucs positional embedding: {self.emb}")
@@ -582,12 +385,10 @@ class CrossTransformerEncoder(nn.Module):
         xt = self.norm_in_t(xt.permute(0, 2, 1)) + self.weight_pos_embed * xt_pos
         for idx in range(self.num_layers):
             if idx % 2 == self.classic_parity:
-                x = self.layers[idx](x)
-                xt = self.layers_t[idx](xt)
+                x, xt = self.layers[idx](x), self.layers_t[idx](xt)
             else:
                 old_x = x
-                x = self.layers[idx](x, xt)
-                xt = self.layers_t[idx](xt, old_x)
+                x, xt = self.layers[idx](x, xt), self.layers_t[idx](xt, old_x)
         return x.reshape(b, t1, fr, c).permute(0, 3, 2, 1), xt.permute(0, 2, 1)
 
     def make_optim_group(self):

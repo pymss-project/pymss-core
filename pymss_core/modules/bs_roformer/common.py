@@ -4,6 +4,7 @@ from typing import NamedTuple
 import torch
 from torch import nn
 
+from ..mlx_backend import MpsBackendMixin
 from .bands import BandSplit, MaskEstimator
 from .conformer import Conformer
 from .transformer import RMSNorm, Transformer
@@ -264,30 +265,7 @@ def init_roformer_band_modules(
     )
 
 
-class RoformerRuntimeMixin:
-    mps_model_backend = "torch"
-    mps_model_compute_dtype = torch.float16
-
-    def set_mps_model_backend(self, backend=None, compute_dtype=None):
-        backend = (backend or "torch").lower()
-        if backend not in ("torch", "mlx_full"):
-            raise ValueError("mps_model_backend must be 'torch' or 'mlx_full'")
-        self.mps_model_backend = backend
-        if compute_dtype is not None:
-            if isinstance(compute_dtype, str):
-                compute_dtype = {
-                    "float16": torch.float16,
-                    "fp16": torch.float16,
-                    "float32": torch.float32,
-                    "fp32": torch.float32,
-                }.get(compute_dtype.lower(), compute_dtype)
-            if compute_dtype not in (torch.float16, torch.float32):
-                raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
-            self.mps_model_compute_dtype = compute_dtype
-
-    def _use_mlx_full_forward(self, raw_audio):
-        return not self.training and self.mps_model_backend == "mlx_full" and raw_audio.device.type == "mps"
-
+class RoformerRuntimeMixin(MpsBackendMixin):
     def mlx_forward_mx(self, raw_audio):
         from .mlx_roformer import mlx_forward_roformer_mx
 

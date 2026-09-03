@@ -9,12 +9,10 @@ from .bandsplit import BandSplitModule
 from .maskestim import OverlappingMaskEstimationModule
 from .tfmodel import SeqBandModellingModule
 from .utils import MusicalBandsplitSpecification
+from ..mlx_backend import MpsBackendMixin
 
 
-class BaseBandit(_SpectralComponent):
-    mps_model_backend = "torch"
-    mps_model_compute_dtype = torch.float16
-
+class BaseBandit(MpsBackendMixin, _SpectralComponent):
     def __init__(
         self,
         in_channels: int,
@@ -76,31 +74,8 @@ class BaseBandit(_SpectralComponent):
             rnn_type=rnn_type,
         )
 
-    def set_mps_model_backend(self, backend=None, compute_dtype=None):
-        backend = (backend or "torch").lower()
-        if backend not in ("torch", "mlx_full"):
-            raise ValueError("mps_model_backend must be 'torch' or 'mlx_full'")
-        self.mps_model_backend = backend
-        if compute_dtype is None:
-            return
-        if isinstance(compute_dtype, str):
-            compute_dtype = {
-                "float16": torch.float16,
-                "fp16": torch.float16,
-                "float32": torch.float32,
-                "fp32": torch.float32,
-            }.get(compute_dtype.lower(), compute_dtype)
-        if compute_dtype not in (torch.float16, torch.float32):
-            raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
-        self.mps_model_compute_dtype = compute_dtype
-
     def _use_mlx_full_forward(self, batch):
-        return (
-            not self.training
-            and self.mps_model_backend == "mlx_full"
-            and not isinstance(batch, dict)
-            and batch.device.type == "mps"
-        )
+        return not self.training and self.mps_model_backend == "mlx_full" and not isinstance(batch, dict) and batch.device.type == "mps"
 
     def mlx_forward_mx(self, raw_audio):
         from ..bandit_mlx import mlx_forward_bandit_mx
