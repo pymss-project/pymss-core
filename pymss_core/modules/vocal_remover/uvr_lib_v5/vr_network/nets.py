@@ -37,8 +37,7 @@ class BaseASPPNet(nn.Module):
 
 def determine_model_capacity(n_fft_bins, nn_architecture):
     ch = {31191: 16, 33966: 16, 123821: 32, 123812: 32, 537238: 64, 537227: 64}[nn_architecture]
-    caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch),
-            (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]
+    caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch), (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]
     return CascadedASPPNet(n_fft_bins, caps, nn_architecture)
 
 class CascadedASPPNet(nn.Module):
@@ -57,8 +56,7 @@ class CascadedASPPNet(nn.Module):
         mix = input_tensor.detach()
         input_tensor = input_tensor.clone()[:, :, : self.max_bin]
         bandwidth = input_tensor.size()[2] // 2
-        aux1 = torch.cat([self.stg1_low_band_net(input_tensor[:, :, :bandwidth]),
-                          self.stg1_high_band_net(input_tensor[:, :, bandwidth:])], dim=2)
+        aux1 = torch.cat([self.stg1_low_band_net(input_tensor[:, :, :bandwidth]), self.stg1_high_band_net(input_tensor[:, :, bandwidth:])], dim=2)
         aux2 = self.stg2_full_band_net(self.stg2_bridge(torch.cat([input_tensor, aux1], dim=1)))
         hidden_state = self.stg3_full_band_net(self.stg3_bridge(torch.cat([input_tensor, aux1, aux2], dim=1)))
         mask = torch.sigmoid(self.out(hidden_state))

@@ -6,17 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..config import to_plain
-from .demucs_local import (
-    CrossTransformerEncoder,
-    HDecLayer,
-    HEncLayer,
-    MultiWrap,
-    ScaledEmbedding,
-    ispectro,
-    pad1d,
-    rescale_module,
-    spectro,
-)
+from .demucs_local import (CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, rescale_module, spectro)
 from .mlx_backend import MpsBackendMixin
 
 class HTDemucs(MpsBackendMixin, nn.Module):
@@ -37,14 +27,12 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         if t_cape_glob_loc_scale is None:
             t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
         super().__init__()
-        self.num_subbands, self.cac, self.wiener_residual, self.audio_channels, self.sources = (
-            num_subbands, cac, wiener_residual, audio_channels, sources)
+        self.num_subbands, self.cac, self.wiener_residual, self.audio_channels, self.sources = (num_subbands, cac, wiener_residual, audio_channels, sources)
         self.kernel_size, self.context, self.stride, self.depth, self.bottom_channels = kernel_size, context, stride, depth, bottom_channels
         self.channels, self.samplerate, self.segment, self.use_train_segment = channels, samplerate, segment, use_train_segment
         self.nfft, self.hop_length, self.wiener_iters, self.end_iters, self.freq_emb = nfft, nfft // 4, wiener_iters, end_iters, None
         assert wiener_iters == end_iters
-        self.encoder, self.decoder, self.tencoder, self.tdecoder = (nn.ModuleList(), nn.ModuleList(),
-                                                                    nn.ModuleList(), nn.ModuleList())
+        self.encoder, self.decoder, self.tencoder, self.tdecoder = (nn.ModuleList(), nn.ModuleList(), nn.ModuleList(), nn.ModuleList())
         chin = audio_channels
         zmul = (2 if cac else 1) * (max(1, num_subbands))  # freq branch channels: CaC x subbands
         chin_z, freqs = chin * zmul, nfft // 2
@@ -59,11 +47,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 ker, stri, pad, last_freq = freqs, stride, False, True
             else:
                 ker, stri, pad, last_freq = kernel_size, stride, True, False
-            kw = {
-                "kernel_size": ker, "stride": stri, "freq": freq, "pad": pad, "norm": norm, "rewrite": rewrite,
-                "norm_groups": norm_groups,
-                "dconv_kw": {"depth": dconv_depth, "compress": dconv_comp, "init": dconv_init, "gelu": True},
-            }
+            kw = { "kernel_size": ker, "stride": stri, "freq": freq, "pad": pad, "norm": norm, "rewrite": rewrite, "norm_groups": norm_groups, "dconv_kw": {"depth": dconv_depth, "compress": dconv_comp, "init": dconv_init, "gelu": True}, }
             kwt = dict(kw, freq=0, kernel_size=kernel_size, stride=stride, pad=True)  # time branch
             kw_dec = dict(kw)
             multi = bool(multi_freqs and index < multi_freqs_depth)
@@ -96,10 +80,8 @@ class HTDemucs(MpsBackendMixin, nn.Module):
             rescale_module(self, reference=rescale)
         transformer_channels = channels * growth ** (depth - 1)
         if bottom_channels:
-            self.channel_upsampler, self.channel_downsampler = (nn.Conv1d(transformer_channels, bottom_channels, 1),
-                                                                nn.Conv1d(bottom_channels, transformer_channels, 1))
-            self.channel_upsampler_t, self.channel_downsampler_t = (nn.Conv1d(transformer_channels, bottom_channels, 1),
-                                                                    nn.Conv1d(bottom_channels, transformer_channels, 1))
+            self.channel_upsampler, self.channel_downsampler = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1))
+            self.channel_upsampler_t, self.channel_downsampler_t = (nn.Conv1d(transformer_channels, bottom_channels, 1), nn.Conv1d(bottom_channels, transformer_channels, 1))
             transformer_channels = bottom_channels
         if t_layers > 0:
             self.crosstransformer = CrossTransformerEncoder(
@@ -147,8 +129,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
             z = z[:, None]
             return z / (1e-8 + z.abs()) * m
         return self._wiener(m, z, niters)
-    def _wiener(self, mag_out, mix_stft, niters):
-        raise NotImplementedError("non-CaC Wiener Demucs is not supported by the dependency-free path")
+    def _wiener(self, mag_out, mix_stft, niters): raise NotImplementedError("non-CaC Wiener Demucs is not supported by the dependency-free path")
     def valid_length(self, length):
         if not self.use_train_segment: return length
         training_length = int(self.segment * self.samplerate)
@@ -238,11 +219,6 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         return x
 
 def get_model(args):
-    extra = {
-        "sources": list(args.training.instruments),
-        "audio_channels": args.training.channels,
-        "samplerate": args.training.samplerate,
-        "segment": args.training.segment,
-    }
+    extra = { "sources": list(args.training.instruments), "audio_channels": args.training.channels, "samplerate": args.training.samplerate, "segment": args.training.segment, }
     if args.model != "htdemucs": raise ValueError(f"Only htdemucs configs are supported, got {args.model!r}")
     return HTDemucs(**extra, **to_plain(getattr(args, args.model)))

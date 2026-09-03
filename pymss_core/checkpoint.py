@@ -19,8 +19,7 @@ def _install_demucs_pickle_stubs():
     previous = {name: sys.modules.get(name) for name in module_names}
     package = sys.modules.setdefault("demucs", types.ModuleType("demucs"))
     package.__path__ = []
-    for module_name, class_names in {"demucs": ("Demucs",), "hdemucs": ("HDemucs", "HTDemucs"),
-                                     "htdemucs": ("HTDemucs",)}.items():
+    for module_name, class_names in {"demucs": ("Demucs",), "hdemucs": ("HDemucs", "HTDemucs"), "htdemucs": ("HTDemucs",)}.items():
         module = sys.modules.setdefault(f"demucs.{module_name}", types.ModuleType(f"demucs.{module_name}"))
         setattr(package, module_name, module)
         for class_name in class_names:
@@ -63,8 +62,7 @@ def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=N
 
 def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True):
     """Load and unwrap the model state dict from a checkpoint file."""
-    return unwrap_state_dict(
-        load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))
+    return unwrap_state_dict(load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))
 
 def load_model_weights(model, checkpoint_or_path, *, model_type=None, strict=True, map_location="cpu"):
     """Load weights from a checkpoint package or file into a model."""

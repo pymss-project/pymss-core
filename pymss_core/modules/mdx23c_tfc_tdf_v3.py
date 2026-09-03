@@ -28,11 +28,7 @@ class TFC_TDF(nn.Module):
         super().__init__()
         def block():
             nonlocal in_c
-            out = _block(
-                tfc1=nn.Sequential(norm(in_c), act, nn.Conv2d(in_c, c, 3, 1, 1, bias=False)),
-                tdf=nn.Sequential(norm(c), act, nn.Linear(f, f // bn, bias=False), norm(c), act, nn.Linear(f // bn, f, bias=False)),
-                tfc2=nn.Sequential(norm(c), act, nn.Conv2d(c, c, 3, 1, 1, bias=False)),
-                shortcut=nn.Conv2d(in_c, c, 1, 1, 0, bias=False))
+            out = _block(tfc1=nn.Sequential(norm(in_c), act, nn.Conv2d(in_c, c, 3, 1, 1, bias=False)), tdf=nn.Sequential(norm(c), act, nn.Linear(f, f // bn, bias=False), norm(c), act, nn.Linear(f // bn, f, bias=False)), tfc2=nn.Sequential(norm(c), act, nn.Conv2d(c, c, 3, 1, 1, bias=False)), shortcut=nn.Conv2d(in_c, c, 1, 1, 0, bias=False))
             in_c = c
             return out
         self.blocks = nn.ModuleList([block() for _ in range(l)])
@@ -64,8 +60,7 @@ class TFC_TDF_net(MpsBackendMixin, nn.Module):
             f = f * scale[1]; c -= g
             return _block(upscale=upscale, tfc_tdf=TFC_TDF(2 * c, c, l, f, bn, norm, act))
         self.decoder_blocks = nn.ModuleList([decoder_block() for _ in range(n)])
-        self.final_conv = nn.Sequential(
-            nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False), act, nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False))
+        self.final_conv = nn.Sequential(nn.Conv2d(c + dim_c, c, 1, 1, 0, bias=False), act, nn.Conv2d(c, self.num_target_instruments * dim_c, 1, 1, 0, bias=False))
         self.stft = SubbandSTFT(config.audio)
     def mlx_forward_mx(self, raw_audio):
         from .mdx23c_mlx import mlx_forward_mdx23c_mx

@@ -22,12 +22,10 @@ def to_mx_raw(tensor):  # no dtype cast, keeps fp32 (MPS bridge path)
     import mlx.core as mx
     return mx.array(tensor.detach().cpu().numpy())
 
-def to_torch(array, reference):
-    return torch.from_numpy(np.array(array, copy=False)).to(device=reference.device, dtype=reference.dtype)
+def to_torch(array, reference): return torch.from_numpy(np.array(array, copy=False)).to(device=reference.device, dtype=reference.dtype)
 
 def check_dtype(dtype, name):
-    if dtype not in (torch.float16, torch.float32):
-        raise TypeError(f"MLX full {name} supports torch.float16 or torch.float32 compute dtype")
+    if dtype not in (torch.float16, torch.float32): raise TypeError(f"MLX full {name} supports torch.float16 or torch.float32 compute dtype")
 
 def param(module, name, tensor, dtype):  # memoize converted weights on the torch module; dtype: torch or mx
     cache = getattr(module, "_pymss_mlx_full_param_cache", None)
@@ -46,9 +44,7 @@ def linear(x, weight, bias=None):
     y = mx.matmul(x, mx.swapaxes(weight, -1, -2))
     return y if bias is None else y + bias
 
-def linear_layer(module, x, dtype):
-    return linear(x, param(module, "weight", module.weight, dtype),
-                  None if module.bias is None else param(module, "bias", module.bias, dtype))
+def linear_layer(module, x, dtype): return linear(x, param(module, "weight", module.weight, dtype), None if module.bias is None else param(module, "bias", module.bias, dtype))
 
 def generic_activation(module, x, extra_swish=False):
     # shared activation dispatch: Tanh/ReLU/GELU/ELU/Identity/Swish, ordered by per-family frequency
@@ -78,8 +74,7 @@ def generic_module_forward(module, x, dtype, norm_fn, swish_cls=None, extra=()):
     if isinstance(module, torch.nn.ConvTranspose1d): return conv_transpose1d(module, x, dtype)
     if isinstance(module, torch.nn.ConvTranspose2d): return conv_transpose2d(module, x, dtype)
     if isinstance(module, torch.nn.Linear): return linear_layer(module, x, dtype)
-    if isinstance(module, (torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.InstanceNorm2d, torch.nn.BatchNorm2d)):
-        return norm_fn(module, x, dtype)
+    if isinstance(module, (torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.InstanceNorm2d, torch.nn.BatchNorm2d)): return norm_fn(module, x, dtype)
     if isinstance(module, torch.nn.GLU): return glu(x, module.dim)
     if isinstance(module, torch.nn.SiLU): return silu(x)
     if swish_cls is not None and isinstance(module, swish_cls): return swish(x)
@@ -173,58 +168,28 @@ def conv_padding(conv, ndim=2):
 
 def conv1d(conv, x, dtype):  # NCL in/out
     import mlx.core as mx
-    y = mx.conv1d(
-        x.transpose(0, 2, 1),
-        param(conv, "weight", conv.weight, dtype).transpose(0, 2, 1),
-        stride=conv.stride[0],
-        padding=conv_padding(conv, 1),
-        dilation=conv.dilation[0],
-        groups=conv.groups,
-    )
+    y = mx.conv1d(x.transpose(0, 2, 1), param(conv, "weight", conv.weight, dtype).transpose(0, 2, 1), stride=conv.stride[0], padding=conv_padding(conv, 1), dilation=conv.dilation[0], groups=conv.groups)
     if conv.bias is not None:
         y = y + param(conv, "bias", conv.bias, dtype)
     return y.transpose(0, 2, 1)
 
 def conv_transpose1d(conv, x, dtype):  # NCL in/out
     import mlx.core as mx
-    y = mx.conv_transpose1d(
-        x.transpose(0, 2, 1),
-        param(conv, "weight", conv.weight, dtype).transpose(1, 2, 0),
-        stride=conv.stride[0],
-        padding=conv.padding[0],
-        dilation=conv.dilation[0],
-        output_padding=conv.output_padding[0],
-        groups=conv.groups,
-    )
+    y = mx.conv_transpose1d(x.transpose(0, 2, 1), param(conv, "weight", conv.weight, dtype).transpose(1, 2, 0), stride=conv.stride[0], padding=conv.padding[0], dilation=conv.dilation[0], output_padding=conv.output_padding[0], groups=conv.groups)
     if conv.bias is not None:
         y = y + param(conv, "bias", conv.bias, dtype)
     return y.transpose(0, 2, 1)
 
 def conv2d(conv, x, dtype, padding=None):  # NCHW in/out
     import mlx.core as mx
-    y = mx.conv2d(
-        x.transpose(0, 2, 3, 1),
-        param(conv, "weight", conv.weight, dtype).transpose(0, 2, 3, 1),
-        stride=conv.stride,
-        padding=conv_padding(conv) if padding is None else padding,
-        dilation=conv.dilation,
-        groups=conv.groups,
-    )
+    y = mx.conv2d(x.transpose(0, 2, 3, 1), param(conv, "weight", conv.weight, dtype).transpose(0, 2, 3, 1), stride=conv.stride, padding=conv_padding(conv) if padding is None else padding, dilation=conv.dilation, groups=conv.groups)
     if conv.bias is not None:
         y = y + param(conv, "bias", conv.bias, dtype)
     return y.transpose(0, 3, 1, 2)
 
 def conv_transpose2d(conv, x, dtype):  # NCHW in/out
     import mlx.core as mx
-    y = mx.conv_transpose2d(
-        x.transpose(0, 2, 3, 1),
-        param(conv, "weight", conv.weight, dtype).transpose(1, 2, 3, 0),
-        stride=conv.stride,
-        padding=conv.padding,
-        dilation=conv.dilation,
-        output_padding=conv.output_padding,
-        groups=conv.groups,
-    )
+    y = mx.conv_transpose2d(x.transpose(0, 2, 3, 1), param(conv, "weight", conv.weight, dtype).transpose(1, 2, 3, 0), stride=conv.stride, padding=conv.padding, dilation=conv.dilation, output_padding=conv.output_padding, groups=conv.groups)
     if conv.bias is not None:
         y = y + param(conv, "bias", conv.bias, dtype)
     return y.transpose(0, 3, 1, 2)
@@ -280,12 +245,7 @@ def batch_norm(module, x, dtype):  # eval mode only (inference package); 1d/2d/a
         y = y + param(module, "bias", module.bias, dtype).reshape(shape)
     return y.astype(x.dtype)
 
-def _rnn_params(rnn, suffix, dtype):
-    return {
-        key: param(rnn, f"{key}_l0{suffix}", getattr(rnn, f"{key}_l0{suffix}"), dtype)
-        for key in ("weight_ih", "weight_hh", "bias_ih", "bias_hh")
-        if rnn.bias or not key.startswith("bias")
-    }
+def _rnn_params(rnn, suffix, dtype): return { key: param(rnn, f"{key}_l0{suffix}", getattr(rnn, f"{key}_l0{suffix}"), dtype) for key in ("weight_ih", "weight_hh", "bias_ih", "bias_hh") if rnn.bias or not key.startswith("bias") }
 
 def lstm(rnn, x, dtype):
     import mlx.core as mx
@@ -354,9 +314,7 @@ def overlap_add(frames, window, hop):  # weighted overlap-add, 1e-11 denom floor
     full_length = n_fft + hop * (count - 1)
     positions = mx.arange(n_fft)[None, :] + hop * mx.arange(count)[:, None]
     audio = mx.zeros((frames.shape[0], full_length), dtype=frames.dtype).at[:, positions].add(frames)
-    denom = mx.zeros((full_length,), dtype=frames.dtype).at[positions].add(
-        mx.broadcast_to(mx.square(window)[None, :], (count, n_fft))
-    )
+    denom = mx.zeros((full_length,), dtype=frames.dtype).at[positions].add(mx.broadcast_to(mx.square(window)[None, :], (count, n_fft)))
     return audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=frames.dtype))
 
 def istft(spec, window, hop, length, dtype, n_fft=None, center=True, normalized=False):
@@ -387,10 +345,7 @@ class MpsBackendMixin:
         self.mps_model_backend = backend
         if compute_dtype is None: return
         if isinstance(compute_dtype, str):
-            compute_dtype = {"float16": torch.float16, "fp16": torch.float16, "float32": torch.float32,
-                             "fp32": torch.float32}.get(compute_dtype.lower(), compute_dtype)
-        if compute_dtype not in (torch.float16, torch.float32):
-            raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
+            compute_dtype = {"float16": torch.float16, "fp16": torch.float16, "float32": torch.float32, "fp32": torch.float32}.get(compute_dtype.lower(), compute_dtype)
+        if compute_dtype not in (torch.float16, torch.float32): raise ValueError("mps_model_compute_dtype must be 'float16' or 'float32'")
         self.mps_model_compute_dtype = compute_dtype
-    def _use_mlx_full_forward(self, x):
-        return not self.training and self.mps_model_backend == "mlx_full" and x.device.type == "mps"
+    def _use_mlx_full_forward(self, x): return not self.training and self.mps_model_backend == "mlx_full" and x.device.type == "mps"

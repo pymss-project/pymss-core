@@ -3,31 +3,11 @@ import math
 import torch
 
 from .demucs_local import LayerScale, MyGroupNorm
-from .mlx_backend import (
-    check_dtype,
-    conv1d,
-    gelu,
-    generic_module_forward,
-    glu,
-    group_norm,
-    istft,
-    layer_norm,
-    linear,
-    linear_layer,
-    mx_dtype,
-    pad_last,
-    param,
-    periodic_hann_window,
-    relu,
-    stft,
-    to_mx,
-    to_torch,
-)
+from .mlx_backend import (check_dtype, conv1d, gelu, generic_module_forward, glu, group_norm, istft, layer_norm, linear, linear_layer, mx_dtype, pad_last, param, periodic_hann_window, relu, stft, to_mx, to_torch)
 
 torch_to_mlx_input = to_mx
 
-def _pad1d(x, paddings, mode="constant", value=0.0):
-    return pad_last(x, paddings[0], paddings[1], mode=mode, value=value, extend=True)
+def _pad1d(x, paddings, mode="constant", value=0.0): return pad_last(x, paddings[0], paddings[1], mode=mode, value=value, extend=True)
 
 def _spectro(x, n_fft, hop, dtype): return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
 
@@ -76,8 +56,7 @@ def _layer_scale(module, x, dtype):
 
 def _module_forward(module, x, dtype):
     # F.gelu/F.relu raw functions (stored on CrossTransformerEncoderLayer) + MyGroupNorm/LayerScale are family-specific
-    if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)) or module.__class__ in (torch.nn.GELU, torch.nn.ReLU):
-        return _activation(module, x)
+    if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)) or module.__class__ in (torch.nn.GELU, torch.nn.ReLU): return _activation(module, x)
     if isinstance(module, MyGroupNorm): return _my_group_norm(module, x, dtype)
     if isinstance(module, LayerScale): return _layer_scale(module, x, dtype)
     if isinstance(module, torch.nn.GroupNorm): return group_norm(module, x, dtype)
@@ -137,22 +116,17 @@ def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
     div = mx.exp(mx.arange(0.0, half, 2) * -(math.log(max_period) / half))
     pos_w, pos_h = mx.arange(0.0, width).reshape(-1, 1), mx.arange(0.0, height).reshape(-1, 1)
     pe = mx.zeros((d_model, height, width), dtype=mx.float32)
-    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]),
-                    (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]),
-                    (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]),
-                    (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])):
+    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]), (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]), (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]), (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])):
         pe = pe.at[sl].add(mx.broadcast_to(val, (val.shape[0], height, width)))
     return pe[None].astype(dtype)
 
 def _create_sin_embedding(length, dim, dtype, max_period=10000):
     import mlx.core as mx
     half = dim // 2
-    phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (
-        max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1)))
+    phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1)))
     return mx.concatenate((mx.cos(phase), mx.sin(phase)), axis=-1).astype(dtype)
 
-def _attention_out(mha, out, q_in, dtype):
-    return _linear_layer(mha.out_proj, out.transpose(0, 2, 1, 3).reshape(q_in.shape), dtype)
+def _attention_out(mha, out, q_in, dtype): return _linear_layer(mha.out_proj, out.transpose(0, 2, 1, 3).reshape(q_in.shape), dtype)
 
 def _split_heads(q, heads): return q.reshape(q.shape[0], q.shape[1], heads, -1).transpose(0, 2, 1, 3)
 
@@ -179,8 +153,7 @@ def _cross_attention(mha, q_in, k_in, dtype):
     out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
     return _attention_out(mha, out, q_in, dtype)
 
-def _ffn(module, x, dtype):
-    return _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, x, dtype)), dtype)
+def _ffn(module, x, dtype): return _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, x, dtype)), dtype)
 
 def _transformer_encoder_layer(module, x, dtype):
     if module.norm_first:
@@ -225,12 +198,9 @@ def _std(x, axes, keepdims):
     return mx.sqrt(mx.sum(mx.square(x - mean), axis=axes, keepdims=keepdims) / max(1, n - 1))
 
 def _validate_supported(module):
-    if module.num_subbands != 1 or not module.cac or module.wiener_iters != 0 or module.end_iters != 0:
-        raise TypeError("MLX full HTDemucs supports num_subbands=1, cac=True, wiener_iters=end_iters=0")
-    if any(layer.__class__.__name__ == "MultiWrap" for layer in list(module.encoder) + list(module.decoder)):
-        raise TypeError("MLX full HTDemucs does not support MultiWrap/multi_freqs yet")
-    if module.crosstransformer is not None and module.crosstransformer.emb != "sin":
-        raise TypeError("MLX full HTDemucs supports sinusoidal transformer embeddings only")
+    if module.num_subbands != 1 or not module.cac or module.wiener_iters != 0 or module.end_iters != 0: raise TypeError("MLX full HTDemucs supports num_subbands=1, cac=True, wiener_iters=end_iters=0")
+    if any(layer.__class__.__name__ == "MultiWrap" for layer in list(module.encoder) + list(module.decoder)): raise TypeError("MLX full HTDemucs does not support MultiWrap/multi_freqs yet")
+    if module.crosstransformer is not None and module.crosstransformer.emb != "sin": raise TypeError("MLX full HTDemucs supports sinusoidal transformer embeddings only")
 
 def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     import mlx.core as mx
@@ -300,5 +270,4 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     x_audio = xt + x_audio
     return x_audio[..., :length_pre_pad] if length_pre_pad else x_audio
 
-def mlx_forward_demucs(module, raw_audio, dtype=torch.float16):
-    return to_torch(mlx_forward_demucs_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)
+def mlx_forward_demucs(module, raw_audio, dtype=torch.float16): return to_torch(mlx_forward_demucs_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

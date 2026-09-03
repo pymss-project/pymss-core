@@ -7,18 +7,13 @@ def autopad(k, p=None): return p if p is not None else k // 2 if isinstance(k, i
 class Conv(nn.Module):
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True):
         super().__init__()
-        self.conv, self.bn, self.act = (
-            nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False),
-            nn.InstanceNorm2d(c2, affine=True, eps=1e-8), nn.SiLU() if act else nn.Identity())
+        self.conv, self.bn, self.act = (nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False), nn.InstanceNorm2d(c2, affine=True, eps=1e-8), nn.SiLU() if act else nn.Identity())
     def forward(self, x): return self.act(self.bn(self.conv(x)))
 
 class DSConv(nn.Module):
     def __init__(self, c1, c2, k=3, s=1, p=None, act=True):
         super().__init__()
-        self.dwconv, self.pwconv, self.bn, self.act = (
-            nn.Conv2d(c1, c1, k, s, autopad(k, p), groups=c1, bias=False),
-            nn.Conv2d(c1, c2, 1, 1, 0, bias=False), nn.InstanceNorm2d(c2, affine=True, eps=1e-8),
-            nn.SiLU() if act else nn.Identity())
+        self.dwconv, self.pwconv, self.bn, self.act = (nn.Conv2d(c1, c1, k, s, autopad(k, p), groups=c1, bias=False), nn.Conv2d(c1, c2, 1, 1, 0, bias=False), nn.InstanceNorm2d(c2, affine=True, eps=1e-8), nn.SiLU() if act else nn.Identity())
     def forward(self, x): return self.act(self.bn(self.pwconv(self.dwconv(x))))
 
 class DS_Bottleneck(nn.Module):
@@ -51,16 +46,12 @@ class AdaptiveHyperedgeGeneration(nn.Module):
         super().__init__()
         self.num_hyperedges, self.num_heads, self.head_dim = num_hyperedges, num_heads, in_channels // num_heads
         self.global_proto = nn.Parameter(torch.randn(num_hyperedges, in_channels))
-        self.context_mapper, self.query_proj = (
-            nn.Linear(2 * in_channels, num_hyperedges * in_channels, bias=False),
-            nn.Linear(in_channels, in_channels, bias=False))
+        self.context_mapper, self.query_proj = (nn.Linear(2 * in_channels, num_hyperedges * in_channels, bias=False), nn.Linear(in_channels, in_channels, bias=False))
         self.scale = self.head_dim**-0.5
     def forward(self, x):
         b, n, c = x.shape
         pooled = x.transpose(1, 2)
-        proto = self.global_proto.unsqueeze(0) + self.context_mapper(torch.cat(
-            (F.adaptive_avg_pool1d(pooled, 1).squeeze(-1), F.adaptive_max_pool1d(pooled, 1).squeeze(-1)), dim=1)
-        ).view(b, self.num_hyperedges, c)
+        proto = self.global_proto.unsqueeze(0) + self.context_mapper(torch.cat((F.adaptive_avg_pool1d(pooled, 1).squeeze(-1), F.adaptive_max_pool1d(pooled, 1).squeeze(-1)), dim=1)).view(b, self.num_hyperedges, c)
         z = self.query_proj(x).view(b, n, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         proto = proto.view(b, self.num_hyperedges, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
         return F.softmax(((z @ proto) * self.scale).mean(dim=1).permute(0, 2, 1), dim=-1)
@@ -109,9 +100,7 @@ class HyperACE(nn.Module):
         size = b4.shape[2:]
         x_b = self.fuse_conv(torch.cat((_interp(b2, size), _interp(b3, size), b4, _interp(b5, size)), dim=1))
         x_h, x_l, x_s = torch.split(x_b, [self.c_h, self.c_l, self.c_s], dim=1)
-        return self.final_fuse(torch.cat(
-            (self.high_order_fuse(torch.cat([m(x_h) for m in self.high_order_branch], dim=1)),
-             self.low_order_branch(x_l), x_s), dim=1))
+        return self.final_fuse(torch.cat((self.high_order_fuse(torch.cat([m(x_h) for m in self.high_order_branch], dim=1)), self.low_order_branch(x_l), x_s), dim=1))
 
 class GatedFusion(nn.Module):
     def __init__(self, in_channels):
@@ -132,7 +121,9 @@ class Backbone(nn.Module):
         self.p5 = nn.Sequential(DSConv(c5, c6, k=3, s=2, p=1), DS_C3k2(c6, c6, n=base_depth))
         self.out_channels = [c3, c4, c5, c6]
     def forward(self, x):
-        x2,x3,x4 = self.p2(self.stem(x)), self.p3(x2), self.p4(x3)
+        x2 = self.p2(self.stem(x))
+        x3 = self.p3(x2)
+        x4 = self.p4(x3)
         return [x2, x3, x4, self.p5(x4)]
 
 class Decoder(nn.Module):
@@ -166,12 +157,9 @@ class TFC_TDF(nn.Module):
         self.blocks = nn.ModuleList()
         for _ in range(l):
             block = nn.Module()
-            block.tfc1 = nn.Sequential(nn.InstanceNorm2d(in_c, affine=True, eps=1e-8), nn.SiLU(),
-                                       nn.Conv2d(in_c, c, 3, 1, 1, bias=False))
-            block.tdf = nn.Sequential(nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(), nn.Linear(f, f // bn, bias=False),
-                                      nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(), nn.Linear(f // bn, f, bias=False))
-            block.tfc2 = nn.Sequential(nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(),
-                                       nn.Conv2d(c, c, 3, 1, 1, bias=False))
+            block.tfc1 = nn.Sequential(nn.InstanceNorm2d(in_c, affine=True, eps=1e-8), nn.SiLU(), nn.Conv2d(in_c, c, 3, 1, 1, bias=False))
+            block.tdf = nn.Sequential(nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(), nn.Linear(f, f // bn, bias=False), nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(), nn.Linear(f // bn, f, bias=False))
+            block.tfc2 = nn.Sequential(nn.InstanceNorm2d(c, affine=True, eps=1e-8), nn.SiLU(), nn.Conv2d(c, c, 3, 1, 1, bias=False))
             block.shortcut = nn.Conv2d(in_c, c, 1, 1, 0, bias=False)
             self.blocks.append(block)
             in_c = c
@@ -190,8 +178,7 @@ class FreqPixelShuffle(nn.Module):
         x = self.conv(x)
         b, c_r, h, w = x.shape
         out_c = c_r // self.scale
-        return self.out_conv(x.view(b, out_c, self.scale, h, w).permute(0, 1, 3, 4, 2)
-                             .contiguous().view(b, out_c, h, w * self.scale))
+        return self.out_conv(x.view(b, out_c, self.scale, h, w).permute(0, 1, 3, 4, 2) .contiguous().view(b, out_c, h, w * self.scale))
 
 class ProgressiveUpsampleHead(nn.Module):
     def __init__(self, in_channels, out_channels, target_bins=1025, in_bands=62):
@@ -205,8 +192,7 @@ class ProgressiveUpsampleHead(nn.Module):
         return self.final_conv(x if x.shape[-1] == self.target_bins else _interp(x, (x.shape[2], self.target_bins)))
 
 class SegmModel(nn.Module):
-    def __init__(self, in_bands=62, in_dim=256, out_bins=1025, out_channels=4, base_channels=64, base_depth=2,
-                 num_hyperedges=32, num_heads=8):
+    def __init__(self, in_bands=62, in_dim=256, out_bins=1025, out_channels=4, base_channels=64, base_depth=2, num_hyperedges=32, num_heads=8):
         super().__init__()
         self.backbone = Backbone(in_channels=in_dim, base_channels=base_channels, base_depth=base_depth)
         enc_channels = self.backbone.out_channels

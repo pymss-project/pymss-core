@@ -61,8 +61,7 @@ def _roformer(module, x, dtype):
     qkv = conv1d(module.weight, _rms_norm(module.input_norm, x, dtype), dtype)
     qkv = qkv.reshape(batch, module.num_head, module.hidden_size * 3, frames).transpose(0, 1, 3, 2)
     q, k, v = mx.split(qkv, 3, axis=-1)
-    attn = mx.fast.scaled_dot_product_attention(_apply_rope(module, q, dtype), _apply_rope(module, k, dtype), v,
-                                                scale=module.hidden_size**-0.5, mask=None)
+    attn = mx.fast.scaled_dot_product_attention(_apply_rope(module, q, dtype), _apply_rope(module, k, dtype), v, scale=module.hidden_size**-0.5, mask=None)
     out = conv1d(module.output, attn.transpose(0, 1, 3, 2).reshape(batch, -1, frames), dtype) + x
     hidden = silu(conv1d(module.MLP[1], _rms_norm(module.MLP[0], out, dtype), dtype))
     gate, z = mx.split(hidden, 2, axis=1)
@@ -71,8 +70,7 @@ def _roformer(module, x, dtype):
 def _bsnet(module, x, dtype):
     batch, bands, channels, frames = x.shape
     band = _roformer(module.band_net, x.transpose(0, 3, 2, 1).reshape(batch * frames, channels, bands), dtype)
-    seq = _module_forward(module.seq_net, band.reshape(batch, frames, channels, bands).transpose(0, 3, 2, 1)
-                          .reshape(batch * bands, channels, frames), dtype)
+    seq = _module_forward(module.seq_net, band.reshape(batch, frames, channels, bands).transpose(0, 3, 2, 1) .reshape(batch * bands, channels, frames), dtype)
     return seq.reshape(batch, bands, channels, frames)
 
 def _feature_extractor(module, raw_audio, dtype):
@@ -104,8 +102,6 @@ def mlx_forward_apollo_mx(module, raw_audio, dtype=torch.float16):
     for block in module.net:
         feature = _bsnet(block, feature, dtype)
     est_spec = _estimate_spec(module, feature, batch * channels, dtype)
-    return istft(est_spec, to_mx(module.window, torch.float32).astype(raw_audio.dtype), module.stride, samples,
-                 raw_audio.dtype, n_fft=module.win).reshape(batch, channels, -1)
+    return istft(est_spec, to_mx(module.window, torch.float32).astype(raw_audio.dtype), module.stride, samples, raw_audio.dtype, n_fft=module.win).reshape(batch, channels, -1)
 
-def mlx_forward_apollo(module, raw_audio, dtype=torch.float16):
-    return to_torch(mlx_forward_apollo_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)
+def mlx_forward_apollo(module, raw_audio, dtype=torch.float16): return to_torch(mlx_forward_apollo_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

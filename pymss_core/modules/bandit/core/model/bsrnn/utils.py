@@ -57,8 +57,7 @@ class BandsplitSpecification:
             band_specs.append((lower, upper))
             lower = upper
         return band_specs
-    def bands(self, *segments):
-        return functools.reduce(operator.iadd, (self.get_band_specs_with_bandwidth(start, end, bandwidth) for start, end, bandwidth in segments), [])
+    def bands(self, *segments): return functools.reduce(operator.iadd, (self.get_band_specs_with_bandwidth(start, end, bandwidth) for start, end, bandwidth in segments), [])
 
 class VocalBandsplitSpecification(BandsplitSpecification):
     def __init__(self, nfft, fs, version="7"):
@@ -68,27 +67,19 @@ class VocalBandsplitSpecification(BandsplitSpecification):
     def version1(self): return self.bands((0, self.max_index, 1000))
     def version2(self): return self.bands((0, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
     def version3(self): return self.bands((0, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
-    def version4(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
-    def version5(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
-    def version6(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 500), (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
-    def version7(self):
-        return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 250), (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
+    def version4(self): return self.bands((0, self.split1k, 100), (self.split1k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
+    def version5(self): return self.bands((0, self.split1k, 100), (self.split1k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
+    def version6(self): return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 500), (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + self.above16k
+    def version7(self): return self.bands((0, self.split1k, 100), (self.split1k, self.split4k, 250), (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000), (self.split16k, self.split20k, 2000)) + self.above20k
 
 class OtherBandsplitSpecification(VocalBandsplitSpecification):
     def __init__(self, nfft, fs): super().__init__(nfft=nfft, fs=fs, version="7")
 
 class BassBandsplitSpecification(BandsplitSpecification):
-    def get_band_specs(self):
-        return self.bands((0, self.split500, 50), (self.split500, self.split1k, 100), (self.split1k, self.split4k, 500),
-                          (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + [(self.split16k, self.max_index)]
+    def get_band_specs(self): return self.bands((0, self.split500, 50), (self.split500, self.split1k, 100), (self.split1k, self.split4k, 500), (self.split4k, self.split8k, 1000), (self.split8k, self.split16k, 2000)) + [(self.split16k, self.max_index)]
 
 class DrumBandsplitSpecification(BandsplitSpecification):
-    def get_band_specs(self):
-        return self.bands((0, self.split1k, 50), (self.split1k, self.split2k, 100), (self.split2k, self.split4k, 250),
-                          (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000)) + [(self.split16k, self.max_index)]
+    def get_band_specs(self): return self.bands((0, self.split1k, 50), (self.split1k, self.split2k, 100), (self.split2k, self.split4k, 250), (self.split4k, self.split8k, 500), (self.split8k, self.split16k, 1000)) + [(self.split16k, self.max_index)]
 
 class PerceptualBandsplitSpecification(BandsplitSpecification):
     def __init__(self, nfft, fs, fbank_fn, n_bands, f_min=0.0, f_max=None):
@@ -138,18 +129,14 @@ def bark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     for band, center in enumerate(centers):
         diff = bark_bins - center
         values = np.zeros_like(diff)
-        lower, center_mask, upper = ((-1.3 <= diff) & (diff <= -0.5), (-0.5 < diff) & (diff < 0.5),
-                                     (0.5 <= diff) & (diff <= 2.5))
+        lower, center_mask, upper = ((-1.3 <= diff) & (diff <= -0.5), (-0.5 < diff) & (diff < 0.5), (0.5 <= diff) & (diff <= 2.5))
         values[lower] = 10 ** (2.5 * (diff[lower] + 0.5))
         values[center_mask] = 1
         values[upper] = 10 ** (-(diff[upper] - 0.5))
         fb[band, start:end] = values
     return torch.as_tensor(fb)
 
-def triangular_bark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
-    return triangular_filterbank_from_points(
-        torch.linspace(0, fs // 2, n_freqs),
-        600 * torch.sinh(torch.linspace(hz_to_bark(f_min), hz_to_bark(f_max), n_bands + 2) / 6))
+def triangular_bark_filterbank(n_bands, fs, f_min, f_max, n_freqs): return triangular_filterbank_from_points(torch.linspace(0, fs // 2, n_freqs), 600 * torch.sinh(torch.linspace(hz_to_bark(f_min), hz_to_bark(f_max), n_bands + 2) / 6))
 
 def minibark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     fb = bark_filterbank(n_bands, fs, f_min, f_max, n_freqs)
@@ -158,9 +145,7 @@ def minibark_filterbank(n_bands, fs, f_min, f_max, n_freqs):
 
 def erb_filterbank(n_bands, fs, f_min, f_max, n_freqs):
     a = (1000 * np.log(10)) / (24.7 * 4.37)
-    return triangular_filterbank_from_points(
-        torch.linspace(0, fs // 2, n_freqs),
-        (torch.pow(10, torch.linspace(hz_to_erb(f_min), hz_to_erb(f_max), n_bands + 2) / a) - 1) / 0.00437)
+    return triangular_filterbank_from_points(torch.linspace(0, fs // 2, n_freqs), (torch.pow(10, torch.linspace(hz_to_erb(f_min), hz_to_erb(f_max), n_bands + 2) / a) - 1) / 0.00437)
 
 def _perceptual(fbank_fn):
     class _Spec(PerceptualBandsplitSpecification):

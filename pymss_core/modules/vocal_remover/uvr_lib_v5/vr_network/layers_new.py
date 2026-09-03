@@ -32,9 +32,7 @@ class ASPPModule(nn.Module):
         self.dropout = nn.Dropout2d(0.1) if dropout else None
     def forward(self, input_tensor):
         _, _, h, w = input_tensor.size()
-        x = self.bottleneck(torch.cat(
-            (F.interpolate(self.conv1(input_tensor), size=(h, w), mode="bilinear", align_corners=True),
-             self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)), dim=1))
+        x = self.bottleneck(torch.cat((F.interpolate(self.conv1(input_tensor), size=(h, w), mode="bilinear", align_corners=True), self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)), dim=1))
         return self.dropout(x) if self.dropout is not None else x
 
 class LSTMModule(nn.Module):

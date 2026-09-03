@@ -9,8 +9,7 @@ class SubbandSTFT:
         self.dim_f = config.dim_f
     def __call__(self, x):
         b = x.shape[:-2]; c, l = x.shape[-2:]
-        x = torch.view_as_real(torch.stft(x.reshape(-1, l), n_fft=self.n_fft, hop_length=self.hop_length,
-                                          window=self.window.to(x.device), center=True, return_complex=True))
+        x = torch.view_as_real(torch.stft(x.reshape(-1, l), n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True, return_complex=True))
         x = x.permute(0, 3, 1, 2)
         return x.reshape(*b, c * 2, -1, x.shape[-1])[..., : self.dim_f, :]
     def inverse(self, x):
@@ -19,8 +18,7 @@ class SubbandSTFT:
         x = torch.cat([x, torch.zeros([*b, c, full - f, t]).to(x.device)], -2)
         x = x.reshape(-1, 2, full, t).permute(0, 2, 3, 1)
         x = x[..., 0] + x[..., 1] * 1.0j
-        return torch.istft(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device),
-                           center=True).reshape([*b, 2, -1])
+        return torch.istft(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True).reshape([*b, 2, -1])
 
 def get_activation(act_type):
     if act_type == "gelu": return nn.GELU()

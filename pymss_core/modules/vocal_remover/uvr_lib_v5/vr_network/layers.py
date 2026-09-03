@@ -11,17 +11,13 @@ def crop_center(h1, h2):
 class Conv2DBNActiv(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False),
-            nn.BatchNorm2d(nout), activ())
+        self.conv = nn.Sequential(nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False), nn.BatchNorm2d(nout), activ())
     def forward(self, input_tensor): return self.conv(input_tensor)
 
 class SeperableConv2DBNActiv(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False),
-            nn.Conv2d(nin, nout, kernel_size=1, bias=False), nn.BatchNorm2d(nout), activ())
+        self.conv = nn.Sequential(nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False), nn.Conv2d(nin, nout, kernel_size=1, bias=False), nn.BatchNorm2d(nout), activ())
     def forward(self, input_tensor): return self.conv(input_tensor)
 
 class Encoder(nn.Module):
@@ -62,8 +58,7 @@ class ASPPModule(nn.Module):
         self.bottleneck = nn.Sequential(Conv2DBNActiv(nin * nin_x, nout, 1, 1, 0, activ=activ), nn.Dropout2d(0.1))
     def forward(self, input_tensor):
         _, _, h, w = input_tensor.size()
-        features = [F.interpolate(self.conv1(input_tensor), size=(h, w), mode="bilinear", align_corners=True),
-                    self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)]
+        features = [F.interpolate(self.conv1(input_tensor), size=(h, w), mode="bilinear", align_corners=True), self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)]
         if self.nn_architecture in self.six_layer: features.append(self.conv6(input_tensor))
         elif self.nn_architecture in self.seven_layer: features.extend([self.conv6(input_tensor), self.conv7(input_tensor)])
         return self.bottleneck(torch.cat(features, dim=1))

@@ -1,19 +1,6 @@
 import torch
 
-from ..mlx_backend import (
-    conv1d,
-    conv2d,
-    glu,
-    instance_norm2d,
-    linear,
-    overlap_add,
-    param,
-    periodic_hann_window,
-    reflect_pad_last,
-    silu,
-    to_mx,
-    to_torch,
-)
+from ..mlx_backend import (conv1d, conv2d, glu, instance_norm2d, linear, overlap_add, param, periodic_hann_window, reflect_pad_last, silu, to_mx, to_torch)
 from . import hyperace_segm
 from .bands import contiguous_dim_groups
 from .bs_roformer_hyperace import BSRoformerHyperACE
@@ -23,8 +10,7 @@ from .mlx_attention import _COMPUTE_DTYPE, _mlx_attention, _mlx_feed_forward, _m
 
 torch_to_mlx_input = to_mx
 
-def _cache_key(params, dtype):
-    return tuple(None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype) for p in params)
+def _cache_key(params, dtype): return tuple(None if p is None else (p.data_ptr(), p._version, tuple(p.shape), dtype) for p in params)
 
 def _padded_window(win_length, n_fft, dtype):
     import mlx.core as mx
@@ -41,8 +27,7 @@ def _stft_roformer(module, raw_audio, dtype):
     if raw_audio.ndim == 2:
         raw_audio = raw_audio[:, None, :]
     batch, channels, audio_length = raw_audio.shape
-    if (module.stereo and channels != 2) or (not module.stereo and channels != 1):
-        raise ValueError("raw_audio channel count does not match RoFormer stereo setting")
+    if (module.stereo and channels != 2) or (not module.stereo and channels != 1): raise ValueError("raw_audio channel count does not match RoFormer stereo setting")
     kw = module.stft_kwargs
     n_fft, hop, win_length = int(kw["n_fft"]), int(kw["hop_length"]), int(kw["win_length"])
     normalized = bool(kw.get("normalized", False))
@@ -57,10 +42,7 @@ def _stft_roformer(module, raw_audio, dtype):
     ri = mx.stack((stft.real, stft.imag), axis=-1)
     freq_bins = ri.shape[-3]
     ri = mx.transpose(ri.reshape(batch, channels, freq_bins, frames, 2), (0, 2, 1, 3, 4))
-    return ri.reshape(batch, freq_bins * channels, frames, 2), {
-        "batch": batch, "channels": channels, "freq_bins": freq_bins, "audio_length": audio_length,
-        "window": window, "n_fft": n_fft, "hop": hop, "normalized": normalized, "dtype": dtype,
-    }
+    return ri.reshape(batch, freq_bins * channels, frames, 2), { "batch": batch, "channels": channels, "freq_bins": freq_bins, "audio_length": audio_length, "window": window, "n_fft": n_fft, "hop": hop, "normalized": normalized, "dtype": dtype, }
 
 def _istft_roformer(module, stft_repr, context, length):
     import mlx.core as mx
@@ -88,13 +70,7 @@ def _band_split_cache(module, dtype):
     for start, end, dim_in in contiguous_dim_groups(module.band_split.dim_inputs):
         norms = [module.band_split.to_features[i][0] for i in range(start, end)]
         linears = [module.band_split.to_features[i][1] for i in range(start, end)]
-        groups.append({
-            "start": start, "end": end, "dim_in": dim_in,
-            "offset_start": module.band_split._dim_offsets[start], "offset_end": module.band_split._dim_offsets[end],
-            "gamma": to_mx(torch.stack([n.gamma for n in norms]), dtype),
-            "weight": to_mx(torch.stack([lin.weight for lin in linears]), dtype),
-            "bias": None if linears[0].bias is None else to_mx(torch.stack([lin.bias for lin in linears]), dtype),
-        })
+        groups.append({ "start": start, "end": end, "dim_in": dim_in, "offset_start": module.band_split._dim_offsets[start], "offset_end": module.band_split._dim_offsets[end], "gamma": to_mx(torch.stack([n.gamma for n in norms]), dtype), "weight": to_mx(torch.stack([lin.weight for lin in linears]), dtype), "bias": None if linears[0].bias is None else to_mx(torch.stack([lin.bias for lin in linears]), dtype), })
     cache = {"key": key, "groups": groups}
     module._pymss_mlx_full_band_split_cache = cache
     return cache
@@ -152,8 +128,7 @@ def batch_norm1d(module, x, dtype):
         y = y + param(module, "bias", module.bias, dtype).reshape(1, -1, 1)
     return y.astype(x.dtype)
 
-def _sequence_model(module, x, dtype):
-    return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
+def _sequence_model(module, x, dtype): return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
 
 def _final_norm(module, x, dtype):
     if isinstance(module.final_norm, torch.nn.Identity): return x
@@ -174,10 +149,7 @@ def _mask_estimator_layers(mlp_with_glu):
 
 def _mask_estimator_cache(estimator, dtype):
     cache = getattr(estimator, "_pymss_mlx_full_mask_cache", None)
-    params = [
-        p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu)
-        if kind == "linear" for p in (layer.weight, layer.bias)
-    ]
+    params = [ p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu) if kind == "linear" for p in (layer.weight, layer.bias) ]
     key = (tuple(estimator.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key: return cache
     band_layers = []
@@ -215,7 +187,9 @@ def _dsconv_block(module, x, dtype):
 
 def _resize_positions(in_size, out_size):
     import mlx.core as mx
-    pos,lower,weight = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5, mx.floor(pos), pos - lower
+    pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5
+    lower = mx.floor(pos)
+    weight = pos - lower
     return (mx.clip(lower, 0, in_size - 1).astype(mx.int32), mx.clip(lower + 1, 0, in_size - 1).astype(mx.int32), weight)
 
 def _resize_bilinear_nchw(x, size):
@@ -227,8 +201,7 @@ def _resize_bilinear_nchw(x, size):
     x0, x1, wx = _resize_positions(in_w, out_w)
     def corner(yy, xx): return mx.take(mx.take(x, yy, axis=2), xx, axis=3)
     wy, wx = wy.reshape(1, 1, out_h, 1), wx.reshape(1, 1, 1, out_w)
-    return (corner(y0, x0) * (1 - wy) * (1 - wx) + corner(y0, x1) * (1 - wy) * wx
-            + corner(y1, x0) * wy * (1 - wx) + corner(y1, x1) * wy * wx)
+    return (corner(y0, x0) * (1 - wy) * (1 - wx) + corner(y0, x1) * (1 - wy) * wx + corner(y1, x0) * wy * (1 - wx) + corner(y1, x1) * wy * wx)
 
 def _seq(module, x, dtype):
     for child in module:
@@ -241,11 +214,9 @@ def _ds_bottleneck(module, x, dtype):
 
 def _ds_c3k(module, x, dtype):
     import mlx.core as mx
-    return _conv_block(module.cv3, mx.concatenate(
-        (_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1), dtype)
+    return _conv_block(module.cv3, mx.concatenate((_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1), dtype)
 
-def _ds_c3k2(module, x, dtype):
-    return _conv_block(module.cv2, _ds_c3k(module.m, _conv_block(module.cv1, x, dtype), dtype), dtype)
+def _ds_c3k2(module, x, dtype): return _conv_block(module.cv2, _ds_c3k(module.m, _conv_block(module.cv1, x, dtype), dtype), dtype)
 
 def _adaptive_hyperedge_generation(module, x, dtype):
     import mlx.core as mx
@@ -272,19 +243,15 @@ def _adaptive_hypergraph_computation(module, x, dtype):
 
 def _c3ah(module, x, dtype):
     import mlx.core as mx
-    return _conv_block(module.cv3, mx.concatenate(
-        (_adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype),
-         _conv_block(module.cv1, x, dtype)), axis=1), dtype)
+    return _conv_block(module.cv3, mx.concatenate((_adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype), _conv_block(module.cv1, x, dtype)), axis=1), dtype)
 
 def _hyperace(module, features, dtype):
     import mlx.core as mx
     b2, b3, b4, b5 = features
     size = b4.shape[2:]
-    x = _conv_block(module.fuse_conv, mx.concatenate(
-        (_resize_bilinear_nchw(b2, size), _resize_bilinear_nchw(b3, size), b4, _resize_bilinear_nchw(b5, size)), axis=1), dtype)
+    x = _conv_block(module.fuse_conv, mx.concatenate((_resize_bilinear_nchw(b2, size), _resize_bilinear_nchw(b3, size), b4, _resize_bilinear_nchw(b5, size)), axis=1), dtype)
     x_h, x_l, x_s = x[:, : module.c_h], x[:, module.c_h : module.c_h + module.c_l], x[:, module.c_h + module.c_l :]
-    high = _conv_block(module.high_order_fuse,
-                       mx.concatenate([_c3ah(branch, x_h, dtype) for branch in module.high_order_branch], axis=1), dtype)
+    high = _conv_block(module.high_order_fuse, mx.concatenate([_c3ah(branch, x_h, dtype) for branch in module.high_order_branch], axis=1), dtype)
     return _conv_block(module.final_fuse, mx.concatenate((high, _seq(module.low_order_branch, x_l, dtype), x_s), axis=1), dtype)
 
 def _gated_fusion(module, f_in, h, dtype): return f_in + param(module, "gamma", module.gamma, dtype) * h
@@ -297,8 +264,7 @@ def _backbone(module, x, dtype):
 
 def _decoder(module, enc_feats, h_ace, dtype):
     p2, p3, p4, p5 = enc_feats
-    d5 = _gated_fusion(module.fusion_d5, _conv_block(module.skip_p5, p5, dtype),
-                       _conv_block(module.h_to_d5, _resize_bilinear_nchw(h_ace, p5.shape[2:]), dtype), dtype)
+    d5 = _gated_fusion(module.fusion_d5, _conv_block(module.skip_p5, p5, dtype), _conv_block(module.h_to_d5, _resize_bilinear_nchw(h_ace, p5.shape[2:]), dtype), dtype)
     d4 = _ds_c3k2(module.up_d5, _resize_bilinear_nchw(d5, p4.shape[2:]), dtype) + _conv_block(module.skip_p4, p4, dtype)
     d4 = _gated_fusion(module.fusion_d4, d4, _conv_block(module.h_to_d4, _resize_bilinear_nchw(h_ace, d4.shape[2:]), dtype), dtype)
     d3 = _ds_c3k2(module.up_d4, _resize_bilinear_nchw(d4, p3.shape[2:]), dtype) + _conv_block(module.skip_p3, p3, dtype)
@@ -337,16 +303,12 @@ def _segm_model(module, x, dtype):
     return _progressive_upsample_head(module.upsample_head, dec_feat, dtype)
 
 def _segm_module(module, x, dtype):
-    handlers = {torch.nn.Sequential: _seq, hyperace_segm.Conv: _conv_block, hyperace_segm.DSConv: _dsconv_block,
-                hyperace_segm.DS_Bottleneck: _ds_bottleneck, hyperace_segm.DS_C3k: _ds_c3k,
-                hyperace_segm.DS_C3k2: _ds_c3k2, hyperace_segm.TFC_TDF: _tfc_tdf, torch.nn.InstanceNorm2d: instance_norm2d}
+    handlers = {torch.nn.Sequential: _seq, hyperace_segm.Conv: _conv_block, hyperace_segm.DSConv: _dsconv_block, hyperace_segm.DS_Bottleneck: _ds_bottleneck, hyperace_segm.DS_C3k: _ds_c3k, hyperace_segm.DS_C3k2: _ds_c3k2, hyperace_segm.TFC_TDF: _tfc_tdf, torch.nn.InstanceNorm2d: instance_norm2d}
     for klass, fn in handlers.items():
         if isinstance(module, klass): return fn(module, x, dtype)
     if isinstance(module, torch.nn.SiLU): return silu(x)
     if isinstance(module, torch.nn.Conv2d): return conv2d(module, x, dtype)
-    if isinstance(module, torch.nn.Linear):
-        return linear(x, param(module, "weight", module.weight, dtype),
-                      None if module.bias is None else param(module, "bias", module.bias, dtype))
+    if isinstance(module, torch.nn.Linear): return linear(x, param(module, "weight", module.weight, dtype), None if module.bias is None else param(module, "bias", module.bias, dtype))
     if isinstance(module, torch.nn.Identity): return x
     raise TypeError(f"unsupported HyperACE SegmModel layer for MLX full backend: {type(module).__name__}")
 
@@ -394,14 +356,12 @@ def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     import mlx.core as mx
     freq_indices = mx.array(module.freq_indices.detach().cpu().numpy())
     masks = _forward_mask_core(module, stft_repr[:, freq_indices], dtype)
-    masks_summed = mx.zeros((context["batch"], len(module.mask_estimators), stft_repr.shape[1], stft_repr.shape[-2], 2),
-                            dtype=masks.dtype).at[:, :, freq_indices, :, :].add(masks)
+    masks_summed = mx.zeros((context["batch"], len(module.mask_estimators), stft_repr.shape[1], stft_repr.shape[-2], 2), dtype=masks.dtype).at[:, :, freq_indices, :, :].add(masks)
     denom = mx.array(module.num_bands_per_channel_freq.detach().cpu().numpy(), dtype=masks.dtype)[..., None]
     return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(masks_summed / mx.maximum(denom, 1e-8))
 
 def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
-    if dtype not in (torch.float16, torch.float32):
-        raise TypeError("MLX full RoFormer supports torch.float16 or torch.float32 compute dtype")
+    if dtype not in (torch.float16, torch.float32): raise TypeError("MLX full RoFormer supports torch.float16 or torch.float32 compute dtype")
     import mlx.core as mx
     mx_dtype = mx.float16 if dtype == torch.float16 else mx.float32
     stft_repr, context = _stft_roformer(module, raw_audio.astype(mx_dtype), mx_dtype)
@@ -413,5 +373,4 @@ def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
         length = context["audio_length"]
     return _istft_roformer(module, _ri_from_complex(masked), context, length)
 
-def mlx_forward_roformer(module, raw_audio, dtype=_COMPUTE_DTYPE):
-    return to_torch(mlx_forward_roformer_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)
+def mlx_forward_roformer(module, raw_audio, dtype=_COMPUTE_DTYPE): return to_torch(mlx_forward_roformer_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

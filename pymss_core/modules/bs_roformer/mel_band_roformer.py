@@ -2,20 +2,7 @@ import torch
 from torch.nn import Module
 
 from .._dsp import mel_filterbank
-from .common import (
-    MaskEstimator,
-    RoformerRuntimeMixin,
-    forward_roformer_mask_core,
-    forward_spectral_roformer,
-    ignore_roformer_training_kwargs,
-    init_conformer_layers,
-    init_roformer_band_modules,
-    init_roformer_layers,
-    init_roformer_runtime,
-    init_roformer_stft,
-    roformer_stft_freq_bins,
-    roformer_transformer_kwargs,
-)
+from .common import (MaskEstimator, RoformerRuntimeMixin, forward_roformer_mask_core, forward_spectral_roformer, ignore_roformer_training_kwargs, init_conformer_layers, init_roformer_band_modules, init_roformer_layers, init_roformer_runtime, init_roformer_stft, roformer_stft_freq_bins, roformer_transformer_kwargs)
 
 class MelBandRoformer(RoformerRuntimeMixin, Module):
     # One class covers mel_band_roformer / mel_band_conformer: conformer=True swaps Transformer->Conformer layers
@@ -29,18 +16,11 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         super().__init__()
         ignore_roformer_training_kwargs(kwargs)
         init_roformer_runtime(self, stereo, num_stems, skip_connection=skip_connection)
-        transformer_kwargs = roformer_transformer_kwargs(dim=dim, heads=heads, dim_head=dim_head,
-                                                         attn_dropout=attn_dropout, ff_dropout=ff_dropout,
-                                                         flash_attn=flash_attn, norm_output=norm_output)
+        transformer_kwargs = roformer_transformer_kwargs(dim=dim, heads=heads, dim_head=dim_head, attn_dropout=attn_dropout, ff_dropout=ff_dropout, flash_attn=flash_attn, norm_output=norm_output)
         if conformer:
-            init_conformer_layers(self, depth=depth, time_conformer_depth=time_transformer_depth,
-                                  freq_conformer_depth=freq_transformer_depth, dim_head=dim_head,
-                                  transformer_kwargs=transformer_kwargs, ff_mult=ff_mult,
-                                  conv_expansion_factor=conv_expansion_factor, conv_kernel_size=conv_kernel_size)
+            init_conformer_layers(self, depth=depth, time_conformer_depth=time_transformer_depth, freq_conformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs, ff_mult=ff_mult, conv_expansion_factor=conv_expansion_factor, conv_kernel_size=conv_kernel_size)
         else:
-            init_roformer_layers(self, depth=depth, time_transformer_depth=time_transformer_depth,
-                                 freq_transformer_depth=freq_transformer_depth, dim_head=dim_head,
-                                 transformer_kwargs=transformer_kwargs)
+            init_roformer_layers(self, depth=depth, time_transformer_depth=time_transformer_depth, freq_transformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs)
         self.final_norm = torch.nn.Identity()
         init_roformer_stft(self, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn)
         freqs = roformer_stft_freq_bins(self, stft_n_fft)
@@ -59,12 +39,8 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         num_freqs_per_band, num_bands_per_freq = freqs_per_band.sum(dim=1), freqs_per_band.sum(dim=0)
         self.register_buffer("num_freqs_per_band", num_freqs_per_band, persistent=False)
         self.register_buffer("num_bands_per_freq", num_bands_per_freq, persistent=False)
-        self.register_buffer("num_bands_per_channel_freq",
-                             num_bands_per_freq.repeat_interleave(self.audio_channels).view(1, 1, -1, 1), persistent=False)
-        init_roformer_band_modules(
-            self, dim=dim, freqs_per_bands_with_complex=tuple(2 * f * self.audio_channels for f in num_freqs_per_band.tolist()),
-            num_stems=num_stems, mask_estimator_cls=MaskEstimator, mask_estimator_depth=mask_estimator_depth,
-            mlp_expansion_factor=mlp_expansion_factor, mask_estimator_kwargs={"mlp_hidden_layers": mlp_hidden_layers})
+        self.register_buffer("num_bands_per_channel_freq", num_bands_per_freq.repeat_interleave(self.audio_channels).view(1, 1, -1, 1), persistent=False)
+        init_roformer_band_modules(self, dim=dim, freqs_per_bands_with_complex=tuple(2 * f * self.audio_channels for f in num_freqs_per_band.tolist()), num_stems=num_stems, mask_estimator_cls=MaskEstimator, mask_estimator_depth=mask_estimator_depth, mlp_expansion_factor=mlp_expansion_factor, mask_estimator_kwargs={"mlp_hidden_layers": mlp_hidden_layers})
         self.zero_dc, self.match_input_audio_length = zero_dc, match_input_audio_length
     def _forward_mask_core(self, selected_stft_repr): return forward_roformer_mask_core(self, selected_stft_repr)
     def _mask_stft_repr(self, stft_repr, context):

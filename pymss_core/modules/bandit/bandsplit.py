@@ -29,9 +29,7 @@ class SequentialNormFC(nn.Module):
     def forward(self, xb): return checkpoint_sequential(self.combined, 1, xb, use_reentrant=False)
 
 class BandSplitModuleBase(nn.Module):
-    def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input,
-                 require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False,
-                 treat_channel_as_feature=True):
+    def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
         check_nonzero_bandwidth(band_specs)
         if require_no_gap:
@@ -40,10 +38,7 @@ class BandSplitModuleBase(nn.Module):
             check_no_overlap(band_specs)
         self.band_specs, self.band_widths, self.n_bands = band_specs, band_widths_from_specs(band_specs), len(band_specs)
         self.emb_dim, self.complex_order, self.flatten_input = emb_dim, complex_order, flatten_input
-        self.norm_fc_modules = nn.ModuleList([
-            norm_fc_cls(emb_dim=emb_dim, bandwidth=bw, in_channels=in_channels,
-                        normalize_channel_independently=normalize_channel_independently,
-                        treat_channel_as_feature=treat_channel_as_feature) for bw in self.band_widths])
+        self.norm_fc_modules = nn.ModuleList([ norm_fc_cls(emb_dim=emb_dim, bandwidth=bw, in_channels=in_channels, normalize_channel_independently=normalize_channel_independently, treat_channel_as_feature=treat_channel_as_feature) for bw in self.band_widths])
     def _band_view(self, x):
         xr = torch.view_as_real(x)
         if self.complex_order == "reim_freq": return xr.permute(0, 3, 1, 4, 2)
@@ -55,13 +50,10 @@ class BandSplitModuleBase(nn.Module):
         z = torch.zeros(b, self.n_bands, t, self.emb_dim, device=x.device)
         for i, nfm in enumerate(self.norm_fc_modules):
             f0, f1 = self.band_specs[i]
-            xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq"
-                  else xr[:, :, :, f0:f1].reshape(b, t, -1))
+            xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq" else xr[:, :, :, f0:f1].reshape(b, t, -1))
             z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
 
 class _ConfiguredBandSplitModule(BandSplitModuleBase):
-    def __init__(self, band_specs, emb_dim, in_channels, require_no_overlap=False, require_no_gap=True,
-                 normalize_channel_independently=False, treat_channel_as_feature=True):
-        super().__init__(band_specs, emb_dim, in_channels, self.norm_fc_cls, self.complex_order, self.flatten_input,
-                         require_no_overlap, require_no_gap, normalize_channel_independently, treat_channel_as_feature)
+    def __init__(self, band_specs, emb_dim, in_channels, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True):
+        super().__init__(band_specs, emb_dim, in_channels, self.norm_fc_cls, self.complex_order, self.flatten_input, require_no_overlap, require_no_gap, normalize_channel_independently, treat_channel_as_feature)

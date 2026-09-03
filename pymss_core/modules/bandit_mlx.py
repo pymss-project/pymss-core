@@ -1,22 +1,7 @@
 import torch
 
 from .bandit.tfmodel import ResidualRNN, Transpose
-from .mlx_backend import (
-    check_dtype,
-    generic_activation,
-    glu,
-    group_norm,
-    istft,
-    layer_norm,
-    linear,
-    mx_dtype,
-    param,
-    periodic_hann_window,
-    rnn_forward,
-    stft,
-    to_mx,
-    to_torch,
-)
+from .mlx_backend import (check_dtype, generic_activation, glu, group_norm, istft, layer_norm, linear, mx_dtype, param, periodic_hann_window, rnn_forward, stft, to_mx, to_torch)
 
 torch_to_mlx_input = to_mx
 
@@ -28,22 +13,17 @@ def _spectral_stft(stft_module, raw_audio, dtype):
         left = (n_fft - win_length) // 2
         window = mx.pad(window, [(left, n_fft - win_length - left)])
     elif win_length > n_fft: raise ValueError("MLX Bandit STFT does not support win_length > n_fft")
-    spec = stft(raw_audio, n_fft, hop, window, dtype, center=stft_module.center, pad_mode=stft_module.pad_mode,
-                normalized=stft_module.normalized)
-    return spec, {"n_fft": n_fft, "hop": hop, "window": window, "normalized": stft_module.normalized,
-                  "center": stft_module.center, "dtype": dtype}
+    spec = stft(raw_audio, n_fft, hop, window, dtype, center=stft_module.center, pad_mode=stft_module.pad_mode, normalized=stft_module.normalized)
+    return spec, {"n_fft": n_fft, "hop": hop, "window": window, "normalized": stft_module.normalized, "center": stft_module.center, "dtype": dtype}
 
-def _spectral_istft(istft_module, spec, context, length):
-    return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"],
-                 center=context["center"], normalized=context["normalized"])
+def _spectral_istft(istft_module, spec, context, length): return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"], center=context["center"], normalized=context["normalized"])
 
 _activation = generic_activation
 
 def _norm_fc(module, xb, dtype):
     if hasattr(module, "combined"):
         xb = layer_norm(module.combined[0], xb, dtype)
-        return linear(xb, param(module.combined[1], "weight", module.combined[1].weight, dtype),
-                      param(module.combined[1], "bias", module.combined[1].bias, dtype))
+        return linear(xb, param(module.combined[1], "weight", module.combined[1].weight, dtype), param(module.combined[1], "bias", module.combined[1].bias, dtype))
     batch, n_time, in_channels, ribw = xb.shape
     xb = layer_norm(module.norm, xb.reshape(batch, n_time, in_channels * ribw), dtype)
     w = param(module.fc, "weight", module.fc.weight, dtype)
@@ -64,8 +44,7 @@ def _band_split(module, x, dtype):
     outs = []
     for i, nfm in enumerate(module.norm_fc_modules):
         fstart, fend = module.band_specs[i]
-        xb = (xr[..., fstart:fend] if module.complex_order == "reim_freq" else xr[:, :, :, fstart:fend]).reshape(
-            batch, n_time, in_channels, -1)
+        xb = (xr[..., fstart:fend] if module.complex_order == "reim_freq" else xr[:, :, :, fstart:fend]).reshape(batch, n_time, in_channels, -1)
         outs.append(_norm_fc(nfm, xb.reshape(batch, n_time, -1) if module.flatten_input else xb, dtype))
     return mx.stack(outs, axis=1)
 
@@ -107,8 +86,7 @@ def _tf_model(module, z, dtype):
 
 def _norm_mlp(module, qb, dtype):
     x = layer_norm(module.norm, qb, dtype)
-    x = linear(x, param(module.hidden[0], "weight", module.hidden[0].weight, dtype),
-               param(module.hidden[0], "bias", module.hidden[0].bias, dtype))
+    x = linear(x, param(module.hidden[0], "weight", module.hidden[0].weight, dtype), param(module.hidden[0], "bias", module.hidden[0].bias, dtype))
     x = _activation(module.hidden[1], x)
     output = module.output[0]
     x = glu(linear(x, param(output, "weight", output.weight, dtype), param(output, "bias", output.bias, dtype)), axis=-1)
@@ -135,8 +113,7 @@ def _append_cond(module, q, cond):
 def _mask_estimator(module, q, dtype, cond=None):
     import mlx.core as mx
     q = _append_cond(module, q, cond)
-    if getattr(module, "n_freq", 0) <= 0:
-        return mx.concatenate([_norm_mlp(nmlp, q[:, b], dtype) for b, nmlp in enumerate(module.norm_mlp)], axis=2)
+    if getattr(module, "n_freq", 0) <= 0: return mx.concatenate([_norm_mlp(nmlp, q[:, b], dtype) for b, nmlp in enumerate(module.norm_mlp)], axis=2)
     batch, _, n_time, _ = q.shape
     mask_real = mx.zeros((batch, module.in_channels, module.n_freq, n_time), dtype=mx.float32)
     mask_imag = mx.zeros_like(mask_real)
@@ -173,5 +150,4 @@ def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     import mlx.core as mx
     return mx.stack(estimates, axis=1)
 
-def mlx_forward_bandit(module, raw_audio, dtype=torch.float16):
-    return to_torch(mlx_forward_bandit_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)
+def mlx_forward_bandit(module, raw_audio, dtype=torch.float16): return to_torch(mlx_forward_bandit_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

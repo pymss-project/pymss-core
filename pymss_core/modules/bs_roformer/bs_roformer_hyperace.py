@@ -18,7 +18,6 @@ class MaskEstimator(RoformerMaskEstimator):
 class BSRoformerHyperACE(BSRoformer):
     mask_estimator_cls, mask_mode = MaskEstimator, "no_segm"
     def set_mask_mode(self, mode):
-        if mode not in ("full", "no_segm", "segm_only"):
-            raise ValueError("HyperACE mask_mode must be one of: full, no_segm, segm_only")
+        if mode not in ("full", "no_segm", "segm_only"): raise ValueError("HyperACE mask_mode must be one of: full, no_segm, segm_only")
         self.mask_mode = mode
     def _estimate_masks(self, x): return torch.stack([fn(x, self.mask_mode) for fn in self._active_mask_estimators()], dim=1)

@@ -8,8 +8,7 @@ class FeatureConversion(nn.Module):
         self.inverse, self.channels = inverse, channels
     def forward(self, x):
         x = x.float()
-        if self.inverse:
-            return torch.fft.irfft(torch.complex(x[:, : self.channels // 2], x[:, self.channels // 2 :]), dim=3, norm="ortho")
+        if self.inverse: return torch.fft.irfft(torch.complex(x[:, : self.channels // 2], x[:, self.channels // 2 :]), dim=3, norm="ortho")
         x = torch.fft.rfft(x, dim=3, norm="ortho")
         return torch.cat([x.real, x.imag], dim=1)
 

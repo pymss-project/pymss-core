@@ -2,22 +2,7 @@ import math
 
 import torch
 
-from .mlx_backend import (
-    check_dtype,
-    conv2d,
-    conv_transpose2d,
-    gelu,
-    generic_module_forward,
-    glu,
-    group_norm,
-    istft,
-    linear_layer,
-    mx_dtype,
-    rnn_forward,
-    stft,
-    to_mx,
-    to_torch,
-)
+from .mlx_backend import (check_dtype, conv2d, conv_transpose2d, gelu, generic_module_forward, glu, group_norm, istft, linear_layer, mx_dtype, rnn_forward, stft, to_mx, to_torch)
 from .scnet.scnet import Swish
 
 torch_to_mlx_input = to_mx
@@ -38,9 +23,7 @@ def mx_pad_window(win_length, n_fft, dtype):
         window = mx.pad(window, [(left, n_fft - win_length - left)])
     return window
 
-def _istft_scnet(module, spec, context, length):
-    return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"],
-                 center=context["center"], normalized=context["normalized"])
+def _istft_scnet(module, spec, context, length): return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"], center=context["center"], normalized=context["normalized"])
 
 _linear_layer = linear_layer
 
@@ -56,8 +39,7 @@ def _sdlayer(module, x, dtype):
     fr = x.shape[2]
     low, mid = math.ceil(fr * module.SR_low), math.ceil(fr * (module.SR_low + module.SR_mid))
     outputs, original_lengths = [], []
-    for conv, stride, kernel, (start, end) in zip(module.convs, module.strides, module.kernels,
-                                                  [(0, low), (low, mid), (mid, fr)]):
+    for conv, stride, kernel, (start, end) in zip(module.convs, module.strides, module.kernels, [(0, low), (low, mid), (mid, fr)]):
         extracted = x[:, :, start:end, :]
         original_lengths.append(end - start)
         total_padding = kernel - stride if stride == 1 else (stride - extracted.shape[2] % stride) % stride
@@ -136,9 +118,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     length = x.shape[-1]
     spec, context = _stft_scnet(module, x.reshape(-1, length), dtype)
     ri = mx.stack((spec.real, spec.imag), axis=-1)
-    x = ri.transpose(0, 3, 1, 2).reshape(
-        ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2]
-    )
+    x = ri.transpose(0, 3, 1, 2).reshape(ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2])
     _, _, freq_bins, time_bins = x.shape
     saved = []
     for sd_layer in module.encoder:
@@ -155,5 +135,4 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     audio = audio.reshape(batch, len(module.sources), module.audio_channels, -1)
     return audio[:, :, :, :-padding] if padding > 0 else audio
 
-def mlx_forward_scnet(module, raw_audio, dtype=torch.float16):
-    return to_torch(mlx_forward_scnet_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)
+def mlx_forward_scnet(module, raw_audio, dtype=torch.float16): return to_torch(mlx_forward_scnet_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

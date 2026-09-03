@@ -3,22 +3,12 @@ import torch
 from .....mlx_backend import MpsBackendMixin
 from .._spectral import _SpectralComponent
 from .core import MultiSourceMultiMaskBandSplitCoreRNN
-from .utils import (
-    BarkBandsplitSpecification,
-    EquivalentRectangularBandsplitSpecification,
-    MelBandsplitSpecification,
-    MusicalBandsplitSpecification,
-    TriangularBarkBandsplitSpecification,
-    VocalBandsplitSpecification,
-)
+from .utils import (BarkBandsplitSpecification, EquivalentRectangularBandsplitSpecification, MelBandsplitSpecification, MusicalBandsplitSpecification, TriangularBarkBandsplitSpecification, VocalBandsplitSpecification)
 
 def get_band_specs(band_specs, n_fft, fs, n_bands=None):
     if not isinstance(band_specs, str): return band_specs, None, False
-    if band_specs in ("dnr:speech", "dnr:vox7", "musdb:vocals", "musdb:vox7"):
-        return VocalBandsplitSpecification(nfft=n_fft, fs=fs).get_band_specs(), None, False
-    for key, cls in (("tribark", TriangularBarkBandsplitSpecification), ("bark", BarkBandsplitSpecification),
-                     ("erb", EquivalentRectangularBandsplitSpecification), ("musical", MusicalBandsplitSpecification),
-                     ("mel", MelBandsplitSpecification)):
+    if band_specs in ("dnr:speech", "dnr:vox7", "musdb:vocals", "musdb:vox7"): return VocalBandsplitSpecification(nfft=n_fft, fs=fs).get_band_specs(), None, False
+    for key, cls in (("tribark", TriangularBarkBandsplitSpecification), ("bark", BarkBandsplitSpecification), ("erb", EquivalentRectangularBandsplitSpecification), ("musical", MusicalBandsplitSpecification), ("mel", MelBandsplitSpecification)):
         if key in band_specs:
             assert n_bands is not None
             specs = cls(nfft=n_fft, fs=fs, n_bands=n_bands)
@@ -26,11 +16,8 @@ def get_band_specs(band_specs, n_fft, fs, n_bands=None):
     raise ValueError(f"Unsupported band_specs: {band_specs}")
 
 class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponent):
-    def __init__(self, stems, band_specs, fs=44100, n_fft=2048, win_length=2048, hop_length=512,
-                 window_fn="hann_window", wkwargs=None, power=None, center=True, normalized=True,
-                 pad_mode="constant", onesided=True, n_bands=None):
-        super().__init__(n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs,
-                         power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided)
+    def __init__(self, stems, band_specs, fs=44100, n_fft=2048, win_length=2048, hop_length=512, window_fn="hann_window", wkwargs=None, power=None, center=True, normalized=True, pad_mode="constant", onesided=True, n_bands=None):
+        super().__init__(n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs, power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided)
         self.band_specs, self.freq_weights, self.overlapping_band = get_band_specs(band_specs, n_fft, fs, n_bands)
         self.stems = stems
     def mlx_forward_mx(self, raw_audio):
@@ -57,9 +44,7 @@ class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSi
                  window_fn="hann_window", wkwargs=None, power=None, center=True, normalized=True, pad_mode="constant",
                  onesided=True, n_bands=None, use_freq_weights=True, normalize_input=False, mult_add_mask=False,
                  freeze_encoder=False):
-        super().__init__(stems=stems, band_specs=band_specs, fs=fs, n_fft=n_fft, win_length=win_length,
-                         hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs, power=power, center=center,
-                         normalized=normalized, pad_mode=pad_mode, onesided=onesided, n_bands=n_bands)
+        super().__init__(stems=stems, band_specs=band_specs, fs=fs, n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs, power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided, n_bands=n_bands)
         self.bsrnn = MultiSourceMultiMaskBandSplitCoreRNN(
             in_channel=in_channel, stems=stems, band_specs=self.band_specs, require_no_overlap=require_no_overlap,
             require_no_gap=require_no_gap, normalize_channel_independently=normalize_channel_independently,
