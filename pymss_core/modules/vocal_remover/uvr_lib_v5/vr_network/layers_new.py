@@ -2,22 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
-def crop_center(h1, h2):
-    if h1.size(3) == h2.size(3): return h1
-    if h1.size(3) < h2.size(3): raise ValueError("h1_shape[3] must be greater than h2_shape[3]")
-    s = (h1.size(3) - h2.size(3)) // 2
-    return h1[:, :, :, s:s + h2.size(3)]
-
-
-class Conv2DBNActiv(nn.Module):
-    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
-        super(Conv2DBNActiv, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False),
-            nn.BatchNorm2d(nout), activ())
-
-    def forward(self, input_tensor): return self.conv(input_tensor)
+from .layers import Conv2DBNActiv, crop_center
 
 
 class Encoder(nn.Module):
@@ -45,11 +30,9 @@ class Decoder(nn.Module):
 class ASPPModule(nn.Module):
     def __init__(self, nin, nout, dilations=(4, 8, 12), activ=nn.ReLU, dropout=False):
         super(ASPPModule, self).__init__()
+        conv = lambda k, p, d: Conv2DBNActiv(nin, nout, k, 1, p, d, activ=activ)
         self.conv1 = nn.Sequential(nn.AdaptiveAvgPool2d((1, None)), Conv2DBNActiv(nin, nout, 1, 1, 0, activ=activ))
-        self.conv2 = Conv2DBNActiv(nin, nout, 1, 1, 0, activ=activ)
-        self.conv3 = Conv2DBNActiv(nin, nout, 3, 1, dilations[0], dilations[0], activ=activ)
-        self.conv4 = Conv2DBNActiv(nin, nout, 3, 1, dilations[1], dilations[1], activ=activ)
-        self.conv5 = Conv2DBNActiv(nin, nout, 3, 1, dilations[2], dilations[2], activ=activ)
+        self.conv2, self.conv3, self.conv4, self.conv5 = conv(1, 0, 1), conv(3, dilations[0], dilations[0]), conv(3, dilations[1], dilations[1]), conv(3, dilations[2], dilations[2])
         self.bottleneck = Conv2DBNActiv(nout * 5, nout, 1, 1, 0, activ=activ)
         self.dropout = nn.Dropout2d(0.1) if dropout else None
 

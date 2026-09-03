@@ -57,18 +57,16 @@ class Decoder(nn.Module):
 class ASPPModule(nn.Module):
     def __init__(self, nn_architecture, nin, nout, dilations=(4, 8, 16), activ=nn.ReLU):
         super(ASPPModule, self).__init__()
+        sep = lambda d: SeperableConv2DBNActiv(nin, nin, 3, 1, d, d, activ=activ)
         self.conv1 = nn.Sequential(nn.AdaptiveAvgPool2d((1, None)), Conv2DBNActiv(nin, nin, 1, 1, 0, activ=activ))
         self.nn_architecture = nn_architecture
-        self.six_layer = [129605]
-        self.seven_layer = [537238, 537227, 33966]
+        self.six_layer, self.seven_layer = [129605], [537238, 537227, 33966]
         self.conv2 = Conv2DBNActiv(nin, nin, 1, 1, 0, activ=activ)
-        self.conv3 = SeperableConv2DBNActiv(nin, nin, 3, 1, dilations[0], dilations[0], activ=activ)
-        self.conv4 = SeperableConv2DBNActiv(nin, nin, 3, 1, dilations[1], dilations[1], activ=activ)
-        self.conv5 = SeperableConv2DBNActiv(nin, nin, 3, 1, dilations[2], dilations[2], activ=activ)
+        self.conv3, self.conv4, self.conv5 = sep(dilations[0]), sep(dilations[1]), sep(dilations[2])
         if self.nn_architecture in self.six_layer:
-            self.conv6 = SeperableConv2DBNActiv(nin, nin, 3, 1, dilations[2], dilations[2], activ=activ); nin_x = 6
+            self.conv6 = sep(dilations[2]); nin_x = 6
         elif self.nn_architecture in self.seven_layer:
-            self.conv6 = self.conv7 = SeperableConv2DBNActiv(nin, nin, 3, 1, dilations[2], dilations[2], activ=activ); nin_x = 7
+            self.conv6 = self.conv7 = sep(dilations[2]); nin_x = 7
         else:
             nin_x = 5
         self.bottleneck = nn.Sequential(Conv2DBNActiv(nin * nin_x, nout, 1, 1, 0, activ=activ), nn.Dropout2d(0.1))

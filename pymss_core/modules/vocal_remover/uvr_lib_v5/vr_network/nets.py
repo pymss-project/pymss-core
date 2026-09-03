@@ -9,12 +9,10 @@ class BaseASPPNet(nn.Module):
     def __init__(self, nn_architecture, nin, ch, dilations=(4, 8, 16)):
         super(BaseASPPNet, self).__init__()
         self.nn_architecture = nn_architecture
-        self.enc1 = layers.Encoder(nin, ch, 3, 2, 1)
-        self.enc2 = layers.Encoder(ch, ch * 2, 3, 2, 1)
-        self.enc3 = layers.Encoder(ch * 2, ch * 4, 3, 2, 1)
-        self.enc4 = layers.Encoder(ch * 4, ch * 8, 3, 2, 1)
-        if self.nn_architecture == 129605:
-            self.enc5 = layers.Encoder(ch * 8, ch * 16, 3, 2, 1)
+        enc = lambda i, o: layers.Encoder(i, o, 3, 2, 1)
+        self.enc1, self.enc2, self.enc3, self.enc4 = enc(nin, ch), enc(ch, ch * 2), enc(ch * 2, ch * 4), enc(ch * 4, ch * 8)
+        if nn_architecture == 129605:
+            self.enc5 = enc(ch * 8, ch * 16)
             self.aspp = layers.ASPPModule(nn_architecture, ch * 16, ch * 32, dilations)
             self.dec5 = layers.Decoder(ch * (16 + 32), ch * 16, 3, 1, 1)
         else:
@@ -50,18 +48,15 @@ def determine_model_capacity(n_fft_bins, nn_architecture):
 class CascadedASPPNet(nn.Module):
     def __init__(self, n_fft, model_capacity_data, nn_architecture):
         super(CascadedASPPNet, self).__init__()
-        self.stg1_low_band_net = BaseASPPNet(nn_architecture, *model_capacity_data[0])
-        self.stg1_high_band_net = BaseASPPNet(nn_architecture, *model_capacity_data[1])
-        self.stg2_bridge = layers.Conv2DBNActiv(*model_capacity_data[2])
-        self.stg2_full_band_net = BaseASPPNet(nn_architecture, *model_capacity_data[3])
-        self.stg3_bridge = layers.Conv2DBNActiv(*model_capacity_data[4])
-        self.stg3_full_band_net = BaseASPPNet(nn_architecture, *model_capacity_data[5])
-        self.out = nn.Conv2d(*model_capacity_data[6], bias=False)
-        self.aux1_out = nn.Conv2d(*model_capacity_data[7], bias=False)
-        self.aux2_out = nn.Conv2d(*model_capacity_data[8], bias=False)
-        self.max_bin = n_fft // 2
-        self.output_bin = n_fft // 2 + 1
-        self.offset = 128
+        m = model_capacity_data
+        self.stg1_low_band_net = BaseASPPNet(nn_architecture, *m[0])
+        self.stg1_high_band_net = BaseASPPNet(nn_architecture, *m[1])
+        self.stg2_bridge = layers.Conv2DBNActiv(*m[2])
+        self.stg2_full_band_net = BaseASPPNet(nn_architecture, *m[3])
+        self.stg3_bridge = layers.Conv2DBNActiv(*m[4])
+        self.stg3_full_band_net = BaseASPPNet(nn_architecture, *m[5])
+        self.out, self.aux1_out, self.aux2_out = nn.Conv2d(*m[6], bias=False), nn.Conv2d(*m[7], bias=False), nn.Conv2d(*m[8], bias=False)
+        self.max_bin, self.output_bin, self.offset = n_fft // 2, n_fft // 2 + 1, 128
 
     def forward(self, input_tensor):
         mix = input_tensor.detach()
