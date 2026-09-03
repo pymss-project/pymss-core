@@ -1,9 +1,7 @@
 import torch
 from torch.nn import Module
-
 from .._dsp import mel_filterbank
 from .common import (MaskEstimator, RoformerRuntimeMixin, forward_roformer_mask_core, forward_spectral_roformer, ignore_roformer_training_kwargs, init_conformer_layers, init_roformer_band_modules, init_roformer_layers, init_roformer_runtime, init_roformer_stft, roformer_stft_freq_bins, roformer_transformer_kwargs)
-
 class MelBandRoformer(RoformerRuntimeMixin, Module):
     # One class covers mel_band_roformer / mel_band_conformer: conformer=True swaps Transformer->Conformer layers
     # (identical layers.N.{0,1} state_dict layout). Corner-fill differs per variant (edge0 vs 0.25*neighbor).
@@ -17,18 +15,14 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         ignore_roformer_training_kwargs(kwargs)
         init_roformer_runtime(self, stereo, num_stems, skip_connection=skip_connection)
         transformer_kwargs = roformer_transformer_kwargs(dim=dim, heads=heads, dim_head=dim_head, attn_dropout=attn_dropout, ff_dropout=ff_dropout, flash_attn=flash_attn, norm_output=norm_output)
-        if conformer:
-            init_conformer_layers(self, depth=depth, time_conformer_depth=time_transformer_depth, freq_conformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs, ff_mult=ff_mult, conv_expansion_factor=conv_expansion_factor, conv_kernel_size=conv_kernel_size)
-        else:
-            init_roformer_layers(self, depth=depth, time_transformer_depth=time_transformer_depth, freq_transformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs)
+        if conformer: init_conformer_layers(self, depth=depth, time_conformer_depth=time_transformer_depth, freq_conformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs, ff_mult=ff_mult, conv_expansion_factor=conv_expansion_factor, conv_kernel_size=conv_kernel_size)
+        else: init_roformer_layers(self, depth=depth, time_transformer_depth=time_transformer_depth, freq_transformer_depth=freq_transformer_depth, dim_head=dim_head, transformer_kwargs=transformer_kwargs)
         self.final_norm = torch.nn.Identity()
         init_roformer_stft(self, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn)
         freqs = roformer_stft_freq_bins(self, stft_n_fft)
         mel_filter_bank = torch.from_numpy(mel_filterbank(sr=sample_rate, n_fft=stft_n_fft, n_mels=num_bands))
-        if conformer:
-            mel_filter_bank[0, 0], mel_filter_bank[-1, -1] = mel_filter_bank[0, 1] * 0.25, mel_filter_bank[-1, -2] * 0.25
-        else:
-            mel_filter_bank[0][0], mel_filter_bank[-1, -1] = 1.0, 1.0
+        if conformer: mel_filter_bank[0, 0], mel_filter_bank[-1, -1] = (mel_filter_bank[0, 1] * 0.25, mel_filter_bank[-1, -2] * 0.25)
+        else: mel_filter_bank[0][0], mel_filter_bank[-1, -1] = (1.0, 1.0)
         freqs_per_band = mel_filter_bank > 0
         assert freqs_per_band.any(dim=0).all(), "all frequencies need to be covered by all bands for now"
         freq_indices = torch.arange(freqs).expand(num_bands, -1)[freqs_per_band]

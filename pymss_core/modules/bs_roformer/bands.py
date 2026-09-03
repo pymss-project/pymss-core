@@ -1,30 +1,20 @@
 import os
 from collections import defaultdict
 from itertools import accumulate, pairwise
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
-
 from .transformer import RMSNorm
-
 EXPERIMENTAL_TRAIN_GROUPED_BANDS_ENV = "PYMSS_CORE_EXPERIMENTAL_TRAIN_GROUPED_BANDS"
 EXPERIMENTAL_DEEP_MASK_GROUPING_ENV = "PYMSS_CORE_EXPERIMENTAL_DEEP_MASK_GROUPING"
-
 def _env_flag(name): return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}
-
 experimental_train_grouped_bands = lambda: _env_flag(EXPERIMENTAL_TRAIN_GROUPED_BANDS_ENV)
 experimental_deep_mask_grouping = lambda: _env_flag(EXPERIMENTAL_DEEP_MASK_GROUPING_ENV)
-
 def should_use_grouped_forward(module): return module.use_grouped_forward and (not module.training or experimental_train_grouped_bands())
-
 def default(v, d): return v if v is not None else d
-
 def dim_input_offsets(dim_inputs): return (0, *accumulate(dim_inputs))
-
 def contiguous_dim_groups(dim_inputs): breaks = [0] + [i for i in range(1, len(dim_inputs)) if dim_inputs[i] != dim_inputs[i - 1]] + [len(dim_inputs)]; return tuple((s, e, dim_inputs[s]) for s, e in pairwise(breaks))
-
 def grouped_linear(x, weight, bias):
     group_count, out_features, in_features = weight.shape
     leading_shape = x.shape[:-2]
@@ -36,11 +26,8 @@ def grouped_linear(x, weight, bias):
         if bias.dtype != x.dtype or bias.device != x.device: bias = bias.to(device=x.device, dtype=x.dtype)
         out = torch.baddbmm(bias.unsqueeze(1).expand(-1, x.shape[1], -1), x, w)
     return out.transpose(0, 1).reshape(*leading_shape, group_count, out_features)
-
 def inference_tanh(x): return torch.tanh(x) if torch.is_grad_enabled() else x.tanh_()
-
 def stack_linears(linears, device, dtype): weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0); bias = None if linears[0].bias is None else torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears]); return weight, bias
-
 class BandSplit(Module):
     def __init__(self, dim, dim_inputs: tuple[int, ...]): super().__init__(); self.dim_inputs, self._dim_offsets = dim_inputs, dim_input_offsets(dim_inputs); self._dim_groups, self._group_cache = contiguous_dim_groups(dim_inputs), {}; self.use_grouped_forward = True; self.to_features = ModuleList([nn.Sequential(RMSNorm(dim_in), nn.Linear(dim_in, dim)) for dim_in in dim_inputs])
     def _get_group_params(self, start, end, device, dtype):
@@ -63,9 +50,7 @@ class BandSplit(Module):
         if self.training: return
         for start, end, _ in self._dim_groups: self._get_group_params(start, end, device, dtype)
     def forward(self, x): return self._forward_grouped(x) if (should_use_grouped_forward(self)) else torch.stack([to_feature(split_input) for split_input, to_feature in zip(x.split(self.dim_inputs, dim=-1), self.to_features)], dim=-2)
-
 def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_layers=None): dim_hidden, hidden_layers = default(dim_hidden, dim_in), default(hidden_layers, max(depth - 1, 0)); dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out); return nn.Sequential(*[layer for ind, (i, o) in enumerate(pairwise(dims)) for layer in ((nn.Linear(i, o),) if ind == len(dims) - 2 else (nn.Linear(i, o), activation()))])
-
 class MaskEstimator(Module):
     def __init__(self, dim, dim_inputs: tuple[int, ...], depth, mlp_expansion_factor=4, mlp_hidden_layers=None):
         super().__init__()

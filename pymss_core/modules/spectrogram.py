@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-
 class SubbandSTFT:
     def __init__(self, config):
         self.n_fft = config.n_fft
@@ -19,17 +18,13 @@ class SubbandSTFT:
         x = x.reshape(-1, 2, full, t).permute(0, 2, 3, 1)
         x = x[..., 0] + x[..., 1] * 1.0j
         return torch.istft(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True).reshape([*b, 2, -1])
-
 def get_activation(act_type):
     if act_type == "gelu": return nn.GELU()
     if act_type == "relu": return nn.ReLU()
     if act_type[:3] == "elu": return nn.ELU(float(act_type.replace("elu", "")))
     raise Exception
-
 def cac_to_cws(x, num_subbands): return x.reshape(x.shape[0], x.shape[1] * num_subbands, x.shape[2] // num_subbands, x.shape[3])
-
 def cws_to_cac(x, num_subbands): return x.reshape(x.shape[0], x.shape[1] // num_subbands, x.shape[2] * num_subbands, x.shape[3])
-
 def forward_subband_mask_model(module, x, core_fn):
     mix = x = cac_to_cws(module.stft(x), module.num_subbands)
     first_conv_out = x = module.first_conv(x)

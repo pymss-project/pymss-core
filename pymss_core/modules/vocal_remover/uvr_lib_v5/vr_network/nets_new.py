@@ -1,9 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from . import layers_new as layers
-
 class BaseNet(nn.Module):
     def __init__(self, nin, nout, nin_lstm, nout_lstm, dilations=((4, 2), (8, 4), (12, 6))):
         super().__init__()
@@ -22,7 +20,6 @@ class BaseNet(nn.Module):
         bottleneck = self.dec3(bottleneck, e3)
         bottleneck = self.dec2(bottleneck, e2)
         return self.dec1(torch.cat([bottleneck, self.lstm_dec2(bottleneck)], dim=1), e1)
-
 class CascadedNet(nn.Module):
     def __init__(self, n_fft, nn_arch_size=51000, nout=32, nout_lstm=128):
         super().__init__()

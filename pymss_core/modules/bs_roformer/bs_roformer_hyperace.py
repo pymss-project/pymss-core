@@ -1,9 +1,7 @@
 import torch
-
 from .bs_roformer import BSRoformer
 from .common import MaskEstimator as RoformerMaskEstimator
 from .hyperace_segm import SegmModel
-
 class MaskEstimator(RoformerMaskEstimator):
     def __init__(self, dim, dim_inputs, depth, mlp_expansion_factor=4): super().__init__(dim=dim, dim_inputs=dim_inputs, depth=depth, mlp_expansion_factor=mlp_expansion_factor); self.segm = SegmModel(in_bands=len(dim_inputs), in_dim=dim, out_bins=sum(dim_inputs) // 4)
     def forward(self, x, mode="full"):
@@ -12,7 +10,6 @@ class MaskEstimator(RoformerMaskEstimator):
         segm = self.segm(x.permute(0, 3, 1, 2))
         segm = segm.permute(0, 2, 3, 1).reshape(segm.shape[0], segm.shape[2], -1)
         return segm if mode == "segm_only" else super().forward(x) + segm
-
 class BSRoformerHyperACE(BSRoformer):
     mask_estimator_cls, mask_mode = MaskEstimator, "no_segm"
     def set_mask_mode(self, mode):

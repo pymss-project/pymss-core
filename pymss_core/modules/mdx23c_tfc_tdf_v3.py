@@ -1,28 +1,22 @@
 import torch
 from torch import nn
-
 from .mlx_backend import MpsBackendMixin
 from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
-
 def get_norm(norm_type):
     if norm_type == "BatchNorm": return nn.BatchNorm2d
     if norm_type == "InstanceNorm": return lambda c: nn.InstanceNorm2d(c, affine=True)
     if "GroupNorm" in norm_type: return lambda c: nn.GroupNorm(int(norm_type.replace("GroupNorm", "")), c)
     return lambda c: nn.Identity()
-
 def _block(**modules):
     block = nn.Module(); [block.add_module(n, m) for n, m in modules.items()]; return block
-
 class Upscale(nn.Module):
     def __init__(self, in_c, out_c, scale, norm, act):
         super().__init__(); self.conv = nn.Sequential(norm(in_c), act, nn.ConvTranspose2d(in_c, out_c, scale, scale, bias=False))
     def forward(self, x): return self.conv(x)
-
 class Downscale(nn.Module):
     def __init__(self, in_c, out_c, scale, norm, act):
         super().__init__(); self.conv = nn.Sequential(norm(in_c), act, nn.Conv2d(in_c, out_c, scale, scale, bias=False))
     def forward(self, x): return self.conv(x)
-
 class TFC_TDF(nn.Module):
     def __init__(self, in_c, c, l, f, bn, norm, act):
         super().__init__()
@@ -35,7 +29,6 @@ class TFC_TDF(nn.Module):
     def forward(self, x):
         for block in self.blocks: s = block.shortcut(x); x = block.tfc2((x := block.tfc1(x)) + block.tdf(x)) + s
         return x
-
 class TFC_TDF_net(MpsBackendMixin, nn.Module):
     def __init__(self, config):
         super().__init__()

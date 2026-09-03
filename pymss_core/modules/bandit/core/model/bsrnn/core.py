@@ -1,7 +1,5 @@
 from torch import nn
-
 from . import BandSplitModule, MaskEstimationModule, OverlappingMaskEstimationModule, SeqBandModellingModule
-
 class MultiMaskBandSplitCoreBase(nn.Module):
     @staticmethod
     def mask(x, m): return x * m
@@ -15,7 +13,6 @@ class MultiMaskBandSplitCoreBase(nn.Module):
             else {"cond_dim": cond_dim}
         self.mask_estim = nn.ModuleDict({stem: cls(band_specs=band_specs, **extra, **kwargs) for stem in stems})
     def instantiate_bandsplit(self, in_channel, band_specs, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True, emb_dim=128): self.band_split = BandSplitModule(in_channel=in_channel, band_specs=band_specs, emb_dim=emb_dim, require_no_overlap=require_no_overlap, require_no_gap=require_no_gap, normalize_channel_independently=normalize_channel_independently, treat_channel_as_feature=treat_channel_as_feature)
-
 class MultiSourceMultiMaskBandSplitCoreRNN(MultiMaskBandSplitCoreBase):
     def __init__(self, in_channel, stems, band_specs, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True, n_sqm_modules=12, emb_dim=128, rnn_dim=256, bidirectional=True, rnn_type="LSTM", mlp_dim=512, cond_dim=0, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, overlapping_band=False, freq_weights=None, n_freq=None, use_freq_weights=True, mult_add_mask=False):
         super().__init__()

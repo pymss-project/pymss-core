@@ -1,9 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint_sequential
-
 from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
-
 class NormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
@@ -16,14 +14,12 @@ class NormFC(nn.Module):
             emb_dim //= in_channels
         self.fc = nn.Linear(fc_in, emb_dim)
     def forward(self, xb): b, t, c, ribw = xb.shape; xb = self.norm(xb.reshape(b, t, c * ribw)); return self.fc(xb) if (self.treat_channel_as_feature) else self.fc(xb.reshape(b, t, c, ribw)).reshape(b, t, -1)
-
 class SequentialNormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
         if not treat_channel_as_feature or normalize_channel_independently: raise NotImplementedError
         self.combined = nn.Sequential(nn.LayerNorm(in_channels * bandwidth * 2), nn.Linear(in_channels * bandwidth * 2, emb_dim))
     def forward(self, xb): return checkpoint_sequential(self.combined, 1, xb, use_reentrant=False)
-
 class BandSplitModuleBase(nn.Module):
     def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
@@ -44,6 +40,5 @@ class BandSplitModuleBase(nn.Module):
         z = torch.zeros(b, self.n_bands, t, self.emb_dim, device=x.device)
         for i, nfm in enumerate(self.norm_fc_modules): f0, f1 = self.band_specs[i]; xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq" else xr[:, :, :, f0:f1].reshape(b, t, -1)); z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
-
 class _ConfiguredBandSplitModule(BandSplitModuleBase):
     def __init__(self, band_specs, emb_dim, in_channels, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True): super().__init__(band_specs, emb_dim, in_channels, self.norm_fc_cls, self.complex_order, self.flatten_input, require_no_overlap, require_no_gap, normalize_channel_independently, treat_channel_as_feature)

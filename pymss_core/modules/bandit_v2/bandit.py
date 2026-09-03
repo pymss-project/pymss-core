@@ -1,11 +1,9 @@
 import torch
 from torch import nn
-
 from ..bandit.core.model._spectral import _SpectralComponent
 from ..bandit.core.model.bsrnn.utils import MusicalBandsplitSpecification
 from ..mlx_backend import MpsBackendMixin
 from . import BandSplitModule, OverlappingMaskEstimationModule, SeqBandModellingModule
-
 class Bandit(MpsBackendMixin, _SpectralComponent):
     def __init__(self, in_channels, stems, fs=44100, band_type="musical", n_bands=64, require_no_overlap=False,
                  require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True,

@@ -1,16 +1,12 @@
 from pathlib import Path
-
 import torch
-
 STATE_DICT_KEYS = ("state", "state_dict", "model_state_dict")
-
 def unwrap_state_dict(checkpoint):
     """Return the model state dict from common MSS checkpoint containers."""
     if isinstance(checkpoint, dict):
         for key in STATE_DICT_KEYS:
             if key in checkpoint: return checkpoint[key]
     return checkpoint
-
 def _install_demucs_pickle_stubs():
     # torch.load(weights_only=False) of facebook/demucs checkpoints needs the demucs.* module tree importable
     import sys
@@ -25,15 +21,11 @@ def _install_demucs_pickle_stubs():
         for class_name in class_names:
             if not hasattr(module, class_name): setattr(module, class_name, type(class_name, (), {'__module__': f'demucs.{module_name}'}))
     return previous
-
 def _restore_modules(previous):
     import sys
     for name, module in previous.items():
-        if module is None:
-            sys.modules.pop(name, None)
-        else:
-            sys.modules[name] = module
-
+        if module is None: sys.modules.pop(name, None)
+        else: sys.modules[name] = module
 def _torch_load(path, *, map_location="cpu", weights_only=None, mmap=True):
     kwargs = {"map_location": map_location}
     if weights_only is not None: kwargs['weights_only'] = weights_only
@@ -44,7 +36,6 @@ def _torch_load(path, *, map_location="cpu", weights_only=None, mmap=True):
         except TypeError:
             kwargs.pop("mmap", None) if "mmap" in kwargs else kwargs.pop("weights_only", None)
     return torch.load(path, **{k: v for k, v in kwargs.items() if k != "weights_only"})
-
 def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True):
     """Load a checkpoint package with compatibility for common MSS formats."""
     model_type = (model_type or "").lower()
@@ -56,13 +47,9 @@ def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=N
             _restore_modules(previous)
     if model_type == "apollo": weights_only = False if weights_only is None else weights_only
     return _torch_load(path, map_location=map_location, weights_only=weights_only, mmap=mmap)
-
 def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True): """Load and unwrap the model state dict from a checkpoint file."""; return unwrap_state_dict(load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))
-
 def load_model_weights(model, checkpoint_or_path, *, model_type=None, strict=True, map_location="cpu"):
     """Load weights from a checkpoint package or file into a model."""
-    if isinstance(checkpoint_or_path, (str, Path)):
-        state_dict = load_state_dict(checkpoint_or_path, model_type=model_type, map_location=map_location)
-    else:
-        state_dict = unwrap_state_dict(checkpoint_or_path)
+    if isinstance(checkpoint_or_path, (str, Path)): state_dict = load_state_dict(checkpoint_or_path, model_type=model_type, map_location=map_location)
+    else: state_dict = unwrap_state_dict(checkpoint_or_path)
     return model.load_state_dict(state_dict, strict=strict)

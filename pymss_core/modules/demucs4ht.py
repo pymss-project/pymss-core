@@ -1,14 +1,11 @@
 import math
 from fractions import Fraction
-
 import torch
 from torch import nn
 from torch.nn import functional as F
-
 from ..config import to_plain
 from .demucs_local import (CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, rescale_module, spectro)
 from .mlx_backend import MpsBackendMixin
-
 class HTDemucs(MpsBackendMixin, nn.Module):
     def __init__(
         self,
@@ -42,10 +39,8 @@ class HTDemucs(MpsBackendMixin, nn.Module):
             if not freq:
                 assert freqs == 1
                 ker, stri, pad, last_freq = time_stride * 2, time_stride, True, False
-            elif freqs <= kernel_size:
-                ker, stri, pad, last_freq = freqs, stride, False, True
-            else:
-                ker, stri, pad, last_freq = kernel_size, stride, True, False
+            elif freqs <= kernel_size: ker, stri, pad, last_freq = (freqs, stride, False, True)
+            else: ker, stri, pad, last_freq = (kernel_size, stride, True, False)
             kw = { "kernel_size": ker, "stride": stri, "freq": freq, "pad": pad, "norm": norm, "rewrite": rewrite, "norm_groups": norm_groups, "dconv_kw": {"depth": dconv_depth, "compress": dconv_comp, "init": dconv_init, "gelu": True}, }
             kwt = dict(kw, freq=0, kernel_size=kernel_size, stride=stride, pad=True)  # time branch
             kw_dec = dict(kw)
@@ -139,10 +134,8 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 lengths_t.append(xt.shape[-1])
                 tenc = self.tencoder[idx]
                 xt = tenc(xt)
-                if tenc.empty:
-                    inject = xt
-                else:
-                    saved_t.append(xt)
+                if tenc.empty: inject = xt
+                else: saved_t.append(xt)
             x = encode(x, inject)
             if idx == 0 and self.freq_emb is not None: frs = torch.arange(x.shape[-2], device=x.device); x = x + self.freq_emb_scale * self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
             saved.append((x, skip_length))
@@ -172,7 +165,6 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         x = xt * stdt[:, None] + meant[:, None] + x
         if length_pre_pad: x = x[..., :length_pre_pad]
         return x
-
 def get_model(args):
     extra = { "sources": list(args.training.instruments), "audio_channels": args.training.channels, "samplerate": args.training.samplerate, "segment": args.training.segment, }
     if args.model != "htdemucs": raise ValueError(f"Only htdemucs configs are supported, got {args.model!r}")

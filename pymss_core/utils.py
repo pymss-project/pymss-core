@@ -1,5 +1,4 @@
 from .config import load_config
-
 def get_model_from_config(model_type, config_path, model_kwargs_override=None):
     """Instantiate a separation model from a model configuration file."""
     import importlib

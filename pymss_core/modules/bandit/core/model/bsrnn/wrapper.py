@@ -1,10 +1,8 @@
 import torch
-
 from .....mlx_backend import MpsBackendMixin
 from .._spectral import _SpectralComponent
 from .core import MultiSourceMultiMaskBandSplitCoreRNN
 from .utils import (BarkBandsplitSpecification, EquivalentRectangularBandsplitSpecification, MelBandsplitSpecification, MusicalBandsplitSpecification, TriangularBarkBandsplitSpecification, VocalBandsplitSpecification)
-
 def get_band_specs(band_specs, n_fft, fs, n_bands=None):
     if not isinstance(band_specs, str): return band_specs, None, False
     if band_specs in ("dnr:speech", "dnr:vox7", "musdb:vocals", "musdb:vox7"): return VocalBandsplitSpecification(nfft=n_fft, fs=fs).get_band_specs(), None, False
@@ -14,7 +12,6 @@ def get_band_specs(band_specs, n_fft, fs, n_bands=None):
             specs = cls(nfft=n_fft, fs=fs, n_bands=n_bands)
             return specs.get_band_specs(), specs.get_freq_weights(), True
     raise ValueError(f"Unsupported band_specs: {band_specs}")
-
 class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponent):
     def __init__(self, stems, band_specs, fs=44100, n_fft=2048, win_length=2048, hop_length=512, window_fn="hann_window", wkwargs=None, power=None, center=True, normalized=True, pad_mode="constant", onesided=True, n_bands=None):
         super().__init__(n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs, power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided)
@@ -33,7 +30,6 @@ class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponen
             x = self.stft(batch)
         estimates = [self.istft(spec, batch.shape[-1]) for spec in self.bsrnn(x, cond=None)["spectrogram"].values()]
         return torch.stack(estimates, dim=1)
-
 class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSimple):
     def __init__(self, in_channel, stems, band_specs, fs=44100, require_no_overlap=False, require_no_gap=True,
                  normalize_channel_independently=False, treat_channel_as_feature=True, n_sqm_modules=12, emb_dim=128,

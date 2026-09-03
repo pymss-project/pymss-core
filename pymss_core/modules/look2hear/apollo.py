@@ -1,9 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from ..mlx_backend import MpsBackendMixin
-
 def _cached_inference_tensor(module, name, tensor, input, version):
     # fp16/bf16 CUDA inference: memoize casted weights; keyed on _version so in-place param updates invalidate
     if tensor is None or (tensor.device == input.device and tensor.dtype == input.dtype): return tensor
@@ -14,18 +12,14 @@ def _cached_inference_tensor(module, name, tensor, input, version):
     casted = tensor.detach().to(device=input.device, dtype=input.dtype)
     cache[name] = (key, casted)
     return casted
-
 def _complex_from_ri(ri, dim): return torch.complex(*ri.float().unbind(dim=dim))
-
 def _complex_div_by_real(spec, denom): return torch.complex(spec.real / denom, spec.imag / denom)
-
 def pointwise_conv1d(input, conv):
     # 1x1 conv1d -> linear: faster on CUDA fp16/bf16 inference
     if (conv.kernel_size, conv.stride, conv.padding, conv.dilation, conv.groups) != ((1,), (1,), (0,), (1,), 1): return conv(input)
     weight, bias = conv.weight[:, :, 0], conv.bias
     if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16) and not torch.is_grad_enabled(): weight = _cached_inference_tensor(conv, 'pointwise_weight', weight, input, conv.weight._version); bias = _cached_inference_tensor(conv, 'pointwise_bias', bias, input, bias._version) if bias is not None else None
     return F.linear(input.transpose(1, 2), weight, bias).transpose(1, 2)
-
 class RMSNorm(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
@@ -40,7 +34,6 @@ class RMSNorm(nn.Module):
             return F.rms_norm(x, (N,), None, self.eps).transpose(1, 2).type_as(input) * self.weight.reshape(1, -1, 1)
         x = input.reshape(B, self.groups, -1, T).float()
         return (x * torch.rsqrt(x.pow(2).mean(-2, keepdim=True) + self.eps)).type_as(input).reshape(B, N, T) * self.weight.reshape(1, -1, 1)
-
 class RMVN(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
@@ -52,7 +45,6 @@ class RMVN(nn.Module):
         x = input.reshape(B, self.groups, N // self.groups, -1)
         norm = (x - x.mean(2).unsqueeze(2)) / (x.var(2).unsqueeze(2) + self.eps).sqrt()
         return (norm.reshape(B, N, x.shape[-1]) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)).reshape(input.shape)
-
 class Roformer(nn.Module):
     def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000, input_drop=0.0, attention_drop=0.0, causal=True):
         super().__init__()
@@ -96,7 +88,6 @@ class Roformer(nn.Module):
         output = pointwise_conv1d(attention_output.mT.reshape(B, -1, T), self.output) + input
         gate, z = self.MLP[2](pointwise_conv1d(self.MLP[0](output), self.MLP[1])).chunk(2, dim=1)
         return output + pointwise_conv1d(F.silu(gate) * z, self.MLP_output), (K_rot, V)
-
 class ConvActNorm1d(nn.Module):
     def __init__(self, in_channel, hidden_channel, kernel=7, causal=False):
         super().__init__()
@@ -105,13 +96,11 @@ class ConvActNorm1d(nn.Module):
     def forward(self, input):
         y = pointwise_conv1d(self.conv[3](pointwise_conv1d(self.conv[1](self.conv[0](input)), self.conv[2])), self.conv[4])
         return input + y[..., : -self.kernel + 1] if self.causal else input + y
-
 class ICB(nn.Module):
     def __init__(self, in_channel, kernel=7, causal=False):
         super().__init__()
         self.blocks = nn.Sequential(*[ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal) for _ in range(3)])
     def forward(self, input): return self.blocks(input)
-
 class BSNet(nn.Module):
     def __init__(self, feature_dim, kernel=7):
         super().__init__()
@@ -123,7 +112,6 @@ class BSNet(nn.Module):
         band, _ = self.band_net(input.permute(0, 3, 2, 1).reshape(B * T, -1, nband))
         band = band.reshape(B, T, -1, nband).permute(0, 3, 2, 1)
         return self.seq_net(band.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)
-
 class Apollo(MpsBackendMixin, nn.Module):
     def __init__(self, sr, win, feature_dim, layer):
         super().__init__()

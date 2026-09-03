@@ -1,15 +1,11 @@
 import math
-
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from ..mlx_backend import MpsBackendMixin
 from .separation import SeparationNet
-
 class Swish(nn.Module):
     def forward(self, x): return x * x.sigmoid()
-
 class ConvolutionModule(nn.Module):
     def __init__(self, channels, depth=2, compress=4, kernel=3):
         super().__init__()
@@ -19,13 +15,11 @@ class ConvolutionModule(nn.Module):
     def forward(self, x):
         for layer in self.layers: x = x + layer(x)
         return x
-
 class FusionLayer(nn.Module):
     def __init__(self, channels, kernel_size=3, stride=1, padding=1): super().__init__(); self.conv = nn.Conv2d(channels * 2, channels * 2, kernel_size, stride=stride, padding=padding)
     def forward(self, x, skip=None):
         if skip is not None: x = x + skip
         return F.glu(self.conv(x.repeat(1, 2, 1, 1)), dim=1)
-
 class SDlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs): super().__init__(); self.convs = nn.ModuleList([nn.Conv2d(channels_in, channels_out, (c["kernel"], 1), (c["stride"], 1)) for c in band_configs.values()]); self.strides = [c["stride"] for c in band_configs.values()]; self.kernels = [c["kernel"] for c in band_configs.values()]; self.SR_low, self.SR_mid = band_configs["low"]["SR"], band_configs["mid"]["SR"]
     def forward(self, x):
@@ -34,14 +28,12 @@ class SDlayer(nn.Module):
         outputs, original_lengths = [], []
         for conv, stride, kernel, (s, e) in zip(self.convs, self.strides, self.kernels, [(0, low), (low, mid), (mid, Fr)]): p = kernel - stride if stride == 1 else (stride - (e - s) % stride) % stride; outputs.append(conv(F.pad(x[:, :, s:e], (0, 0, p // 2, p - p // 2)))); original_lengths.append(e - s)
         return outputs, original_lengths
-
 class SUlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs): super().__init__(); self.convtrs = nn.ModuleList([nn.ConvTranspose2d(channels_in, channels_out, [c["kernel"], 1], [c["stride"], 1]) for c in band_configs.values()])
     def forward(self, x, lengths, origin_lengths):
         outs = []
         for idx, (convtr, (s, e)) in enumerate(zip(self.convtrs, [(0, lengths[0]), (lengths[0], lengths[0] + lengths[1]), (lengths[0] + lengths[1], None)])): out = convtr(x[:, :, s:e]); dist = abs(origin_lengths[idx] - out.shape[2]) // 2; outs.append(out[:, :, dist:dist + origin_lengths[idx]])
         return torch.cat(outs, dim=2)
-
 class SDblock(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs=None, conv_config=None, depths=None, kernel_size=3):
         if depths is None: depths = [3, 2, 1]
@@ -52,7 +44,6 @@ class SDblock(nn.Module):
         self.conv_modules = nn.ModuleList([ConvolutionModule(channels_out, depth, **conv_config) for depth in depths])
         self.globalconv = nn.Conv2d(channels_out, channels_out, kernel_size, 1, (kernel_size - 1) // 2)
     def forward(self, x): bands, original_lengths = self.SDlayer(x); bands = [F.gelu(conv(band.permute(0, 2, 1, 3).reshape(-1, band.shape[1], band.shape[3])) .view(band.shape[0], band.shape[2], band.shape[1], band.shape[3]).permute(0, 2, 1, 3)) for conv, band in zip(self.conv_modules, bands)]; full_band = torch.cat(bands, dim=2); return self.globalconv(full_band), full_band, [b.size(-2) for b in bands], original_lengths
-
 class SCNet(MpsBackendMixin, nn.Module):
     def __init__(self, sources=None, audio_channels=2, dims=None, nfft=4096, hop_size=1024, win_size=4096, normalized=True, band_SR=None, band_stride=None, band_kernel=None, conv_depths=None, compress=4, conv_kernel=3, num_dplayer=6, expand=1):
         if conv_depths is None: conv_depths = [3, 2, 1]

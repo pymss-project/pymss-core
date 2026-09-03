@@ -1,5 +1,4 @@
 __all__ = ("MultiMaskMultiSourceBandSplitRNNSimple",)
-
 def __getattr__(name):
     if name == "MultiMaskMultiSourceBandSplitRNNSimple":
         from .bsrnn.wrapper import MultiMaskMultiSourceBandSplitRNNSimple

@@ -1,14 +1,11 @@
 import torch
 from torch import nn
 from torch.nn.modules import activation
-
 from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
-
 def _resolve_channels(in_channels=None, in_channel=None):
     channels = in_channels if in_channels is not None else in_channel
     if channels is None: raise TypeError("in_channels is required")
     return channels
-
 class BaseNormMLP(nn.Module):
     def __init__(self, emb_dim, mlp_dim, bandwidth, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True):
         super().__init__()
@@ -19,7 +16,6 @@ class BaseNormMLP(nn.Module):
         self.in_channels = self.in_channel = _resolve_channels(in_channels, in_channel)
         self.complex_mask = complex_mask
         self.reim, self.glu_mult = 2 if complex_mask else 1, 2
-
 class NormMLP(BaseNormMLP):
     def __init__(self, emb_dim, mlp_dim, bandwidth, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, use_combined=False, use_checkpoint=False):
         super().__init__(emb_dim, mlp_dim, bandwidth, in_channels, in_channel, hidden_activation, hidden_activation_kwargs, complex_mask)
@@ -33,19 +29,14 @@ class NormMLP(BaseNormMLP):
         return mb.permute(0, 2, 3, 1)
     def forward(self, qb):
         from torch.utils.checkpoint import checkpoint_sequential
-        if hasattr(self, "combined"):
-            mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False) if self.use_checkpoint else self.combined(qb)
-        else:
-            mb = self.output(self.hidden(self.norm(qb)))
+        if hasattr(self, "combined"): mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False) if self.use_checkpoint else self.combined(qb)
+        else: mb = self.output(self.hidden(self.norm(qb)))
         return self.reshape_output(mb)
-
 class MultAddNormMLP(NormMLP):
     def __init__(self, emb_dim, mlp_dim, bandwidth, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True): super().__init__(emb_dim, mlp_dim, bandwidth, in_channels, in_channel, hidden_activation, hidden_activation_kwargs, complex_mask); self.output2 = nn.Sequential(nn.Linear(mlp_dim, self.bandwidth * self.in_channels * self.reim * 2), nn.GLU(dim=-1))
     def forward(self, qb): qb = self.hidden(self.norm(qb)); return self.reshape_output(self.output(qb)), self.reshape_output(self.output2(qb))
-
 class MaskEstimationModuleSuperBase(nn.Module):
     pass
-
 class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
     def __init__(self, band_specs, emb_dim, mlp_dim, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, norm_mlp_cls=NormMLP, norm_mlp_kwargs=None):
         super().__init__()
@@ -53,7 +44,6 @@ class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
         self.norm_mlp = nn.ModuleList([ norm_mlp_cls(bandwidth=bw, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=_resolve_channels(in_channels, in_channel), hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs or {}, complex_mask=complex_mask, **(norm_mlp_kwargs or {})) for bw in self.band_widths])
     def compute_masks(self, q): return [nmlp(q[:, b, :, :]) for b, nmlp in enumerate(self.norm_mlp)]
     def compute_mask(self, q, b): return self.norm_mlp[b](q[:, b, :, :])
-
 class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
     def __init__(self, band_specs, freq_weights, n_freq, emb_dim, mlp_dim, in_channels=None, in_channel=None, cond_dim=0, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, norm_mlp_cls=NormMLP, norm_mlp_kwargs=None, use_freq_weights=True, register_all_freq_weights=True, allow_cond=True, output_dtype="mask", compute_all_masks=True):
         check_nonzero_bandwidth(band_specs)
@@ -90,7 +80,6 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
             if self.use_freq_weights: mask = mask * self.get_buffer(f'freq_weights/{im}')[:, None]
             masks[:, :, fstart:fend, :] += mask
         return masks
-
 class MaskEstimationModule(OverlappingMaskEstimationModule):
     def __init__(self, band_specs, emb_dim, mlp_dim, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, **kwargs):
         check_nonzero_bandwidth(band_specs)

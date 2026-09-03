@@ -5,29 +5,22 @@ import sys
 import types
 from contextlib import contextmanager
 from pathlib import Path
-
 import torch
 import yaml
 from torch import nn
 from torch.nn import functional as F
-
 from .demucs_local import BLSTM, DConv, HDecLayer, HEncLayer, MultiWrap
 from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
 from .demucs_local import _freq_dconv as _dconv_freq
 from .demucs_local import rescale_module as _rescale_module
-
 LEGACY_STEMS_4,LEGACY_STEMS_2,EPS = ["drums", "bass", "other", "vocals"], ["vocals", "non_vocals"], 1e-8
-
 def center_trim(tensor, reference):
     if hasattr(reference, "size"): reference = reference.size(-1)
     delta = tensor.size(-1) - reference
     if delta < 0: raise ValueError(f"tensor must be larger than reference. Delta is {delta}.")
     return tensor[..., delta // 2 : -(delta - delta // 2)] if delta else tensor
-
 def _resample_x2(x): return F.interpolate(x, scale_factor=2, mode="linear", align_corners=False)
-
 def _downsample_x2(x, length): return F.interpolate(x, size=length, mode="linear", align_corners=False)
-
 def _unet_forward(model, x):
     saved = []
     for encode in model.encoder:
@@ -37,7 +30,6 @@ def _unet_forward(model, x):
     for decode in model.decoder:
         x = decode(x + center_trim(saved.pop(-1), x))
     return x
-
 def _valid_length(model, length, with_context):
     if model.resample: length *= 2
     for _ in range(model.depth):
@@ -46,7 +38,6 @@ def _valid_length(model, length, with_context):
     for _ in range(model.depth):
         length = (length - 1) * model.stride + model.kernel_size
     return math.ceil(length / 2) if model.resample else int(length)
-
 class LegacyDemucs(nn.Module):
     def __init__(self, sources=4, audio_channels=2, channels=64, depth=6, rewrite=True, glu=True, rescale=0.1, resample=True, upsample=None, kernel_size=8, stride=4, growth=2.0, lstm_layers=2, context=3, normalize=False, samplerate=44100, segment_length=4 * 10 * 44100, **_):
         super().__init__()
@@ -71,18 +62,14 @@ class LegacyDemucs(nn.Module):
     def valid_length(self, length): return _valid_length(self, length, True)
     def forward(self, mix):
         length, x = mix.shape[-1], mix
-        if self.normalize:
-            mono = mix.mean(dim=1, keepdim=True)
-            mean, std = mono.mean(dim=-1, keepdim=True), mono.std(dim=-1, keepdim=True)
-        else:
-            mean, std = 0, 1
+        if self.normalize: mono = mix.mean(dim=1, keepdim=True); mean, std = (mono.mean(dim=-1, keepdim=True), mono.std(dim=-1, keepdim=True))
+        else: mean, std = (0, 1)
         x = (x - mean) / (1e-5 + std)
         if self.resample: x = _resample_x2(x)
         x = _unet_forward(self, x)
         if self.resample: x = _downsample_x2(x, length)
         x = x * std + mean
         return x.view(x.size(0), len(self.sources), self.audio_channels, x.size(-1))
-
 class LegacyV3Demucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=64, growth=2.0, depth=6, rewrite=True, lstm_layers=0, kernel_size=8, stride=4, context=1, gelu=True, glu=True, norm_starts=4, norm_groups=4, dconv_mode=1, dconv_depth=2, dconv_comp=4, dconv_attn=4, dconv_lstm=4, dconv_init=1e-4, normalize=True, resample=True, rescale=0.1, samplerate=44100, segment=4 * 10, **_):
         super().__init__()
@@ -127,9 +114,7 @@ class LegacyV3Demucs(nn.Module):
         if self.resample: x = _downsample_x2(x, length + delta)
         x = center_trim(x * std + mean, length)
         return x.view(x.size(0), len(self.sources), self.audio_channels, x.size(-1))
-
 def LegacyDConv(channels, **kw): return DConv(channels, legacy=True, **kw)
-
 class LegacyLocalState(nn.Module):
     def __init__(self, channels, heads=4, nfreqs=0, ndecay=4):
         super().__init__()
@@ -154,10 +139,8 @@ class LegacyLocalState(nn.Module):
         result = torch.einsum("bhts,bhct->bhcs", weights, self.content(x).view(batch, heads, -1, time))
         if self.nfreqs: result = torch.cat([result, torch.einsum('bhts,fts->bhfs', weights, freq_kernel)], 2)
         return x + self.proj(result.reshape(batch, -1, time))
-
 class LegacyHEncLayer(HEncLayer):
     def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=0, dconv_kw=None, pad=True, rewrite=True): dconv_kw = dict(dconv_kw or {}, legacy=True); super().__init__(chin, chout, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, rewrite)
-
 class LegacyHDecLayer(HDecLayer):
     def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True): dconv_kw = dict(dconv_kw or {}, legacy=True); super().__init__(chin, chout, last, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, context_freq, rewrite)
     def forward(self, x, skip, length):
@@ -175,7 +158,6 @@ class LegacyHDecLayer(HDecLayer):
             z = z[..., self.pad : self.pad + length]
             assert z.shape[-1] == length
         return (z if self.last else F.gelu(z)), y
-
 class LegacyMultiWrap(MultiWrap):
     def forward(self, x, skip=None, length=None):
         if not self.conv:  # legacy dec path passes length through to the wrapped dec layer
@@ -194,7 +176,6 @@ class LegacyMultiWrap(MultiWrap):
             out = torch.cat(outs, dim=2)
             return out if last else F.gelu(out), None
         return super().forward(x, skip, length)
-
 def _pad1d(x, paddings, mode="constant", value=0.0):
     x0, length = x, x.shape[-1]
     left, right = paddings
@@ -208,11 +189,8 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
     assert out.shape[-1] == length + left + right
     assert (out[..., left : left + length] == x0).all()
     return out
-
 def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
-
 def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(n_fft // (1 + pad)).to(z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
-
 class LegacyHDemucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=48, channels_time=None, growth=2, nfft=4096, wiener_iters=0,
                  end_iters=0, wiener_residual=False, cac=True, depth=6, rewrite=True, hybrid=True, hybrid_old=False,
@@ -312,17 +290,13 @@ class LegacyHDemucs(nn.Module):
                 if index >= offset:
                     tdec = self.tdecoder[index - offset]
                     length_t = lengths_t.pop(-1)
-                    if tdec.empty:
-                        pre = pre[:, :, 0]
-                        xt, _ = tdec(pre, None, length_t)
-                    else:
-                        xt, _ = tdec(xt, saved_t.pop(-1), length_t)
+                    if tdec.empty: pre = pre[:, :, 0]; xt, _ = tdec(pre, None, length_t)
+                    else: xt, _ = tdec(xt, saved_t.pop(-1), length_t)
         sources = len(self.sources)
         x = x.view(batch, sources, -1, freqs, time) * std[:, None] + mean[:, None]
         x = self._ispec(self._mask(z, x), length)
         if self.hybrid: xt = xt.view(batch, sources, -1, length) * stdt[:, None] + meant[:, None]; x = xt + x
         return x
-
 def overlap_and_add(signal, frame_step):
     outer_dimensions, (frames, frame_length) = signal.size()[:-2], signal.size()[-2:]
     subframe_length = math.gcd(frame_length, frame_step)
@@ -332,7 +306,6 @@ def overlap_and_add(signal, frame_step):
     result = signal.new_zeros(*outer_dimensions, output_subframes, subframe_length)
     result.index_add_(-2, frame.long().contiguous().view(-1), signal.view(*outer_dimensions, -1, subframe_length))
     return result.view(*outer_dimensions, -1)
-
 class LegacyConvTasNet(nn.Module):
     def __init__(self, sources=None, N=256, L=20, B=256, H=512, P=3, X=8, R=4, C=4, audio_channels=2, norm_type="gLN", causal=False, mask_nonlinear="relu", samplerate=44100, segment_length=44100 * 2 * 4, **_):
         super().__init__()
@@ -348,15 +321,12 @@ class LegacyConvTasNet(nn.Module):
             if parameter.dim() > 1: nn.init.xavier_normal_(parameter)
     def valid_length(self, length): return length
     def forward(self, mixture): mixture_w = self.encoder(mixture); est_source = self.decoder(mixture_w, self.separator(mixture_w)); length = mixture.size(-1); delta = length - est_source.size(-1); return F.pad(est_source, (0, delta)) if delta >= 0 else est_source[..., :length]
-
 class Encoder(nn.Module):
     def __init__(self, L, N, audio_channels): super().__init__(); self.L, self.N = L, N; self.conv1d_U = nn.Conv1d(audio_channels, N, kernel_size=L, stride=L // 2, bias=False)
     def forward(self, mixture): return F.relu(self.conv1d_U(mixture))
-
 class Decoder(nn.Module):
     def __init__(self, N, L, audio_channels): super().__init__(); self.N, self.L, self.audio_channels = N, L, audio_channels; self.basis_signals = nn.Linear(N, audio_channels * L, bias=False)
     def forward(self, mixture_w, est_mask): source_w = torch.transpose(torch.unsqueeze(mixture_w, 1) * est_mask, 2, 3); est_source = self.basis_signals(source_w); batch, sources, frames, _ = est_source.size(); est_source = est_source.view(batch, sources, frames, self.audio_channels, -1).transpose(2, 3).contiguous(); return overlap_and_add(est_source, self.L // 2)
-
 class TemporalConvNet(nn.Module):
     def __init__(self, N, B, H, P, X, R, C, norm_type="gLN", causal=False, mask_nonlinear="relu"):
         super().__init__()
@@ -369,11 +339,9 @@ class TemporalConvNet(nn.Module):
         if self.mask_nonlinear == "softmax": return F.softmax(score, dim=1)
         if self.mask_nonlinear == "relu": return F.relu(score)
         raise ValueError("Unsupported mask non-linear function")
-
 class TemporalBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation, norm_type="gLN", causal=False): super().__init__(); self.net = nn.Sequential(nn.Conv1d(in_channels, out_channels, 1, bias=False), nn.PReLU(), _choose_norm(norm_type, out_channels), DepthwiseSeparableConv(out_channels, in_channels, kernel_size, stride, padding, dilation, norm_type, causal))
     def forward(self, x): return self.net(x) + x
-
 class DepthwiseSeparableConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation, norm_type="gLN", causal=False):
         super().__init__()
@@ -381,22 +349,17 @@ class DepthwiseSeparableConv(nn.Module):
         if causal: layers.append(Chomp1d(padding))
         self.net = nn.Sequential(*layers, nn.PReLU(), _choose_norm(norm_type, in_channels), nn.Conv1d(in_channels, out_channels, 1, bias=False))
     def forward(self, x): return self.net(x)
-
 class Chomp1d(nn.Module):
     def __init__(self, chomp_size): super().__init__(); self.chomp_size = chomp_size
     def forward(self, x): return x[:, :, : -self.chomp_size].contiguous()
-
 class ChannelwiseLayerNorm(nn.Module):
     def __init__(self, channel_size): super().__init__(); self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.reset_parameters()
     def reset_parameters(self): self.gamma.data.fill_(1); self.beta.data.zero_()
     def _stat(self, y): return torch.mean(y, dim=1, keepdim=True), torch.var(y, dim=1, keepdim=True, unbiased=False)
     def forward(self, y): mean, var = self._stat(y); return self.gamma * (y - mean) / torch.pow(var + EPS, 0.5) + self.beta
-
 class GlobalLayerNorm(ChannelwiseLayerNorm):
     def _stat(self, y): mean = y.mean(dim=1, keepdim=True).mean(dim=2, keepdim=True); return mean, torch.pow(y - mean, 2).mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
-
 def _choose_norm(norm_type, channel_size): klass = {"gLN": GlobalLayerNorm, "cLN": ChannelwiseLayerNorm, "id": nn.Identity}.get(norm_type, nn.BatchNorm1d); return klass(channel_size)
-
 class TensorChunk:
     def __init__(self, tensor, offset=0, length=None):
         total_length = tensor.shape[-1]
@@ -418,9 +381,7 @@ class TensorChunk:
         out = F.pad(self.tensor[..., correct_start:correct_end], (correct_start - start, end - correct_end))
         assert out.shape[-1] == target_length
         return out
-
 def tensor_chunk(tensor_or_chunk): return tensor_or_chunk if isinstance(tensor_or_chunk, TensorChunk) else TensorChunk(tensor_or_chunk)
-
 class LegacyBagOfModels(nn.Module):
     def __init__(self, models, weights=None, segment=None):
         super().__init__()
@@ -436,7 +397,6 @@ class LegacyBagOfModels(nn.Module):
         self.models = nn.ModuleList(models)
         self.weights = weights if weights is not None else [[1.0 for _ in self.sources] for _ in models]
     def forward(self, x): raise NotImplementedError("use apply_legacy_model for legacy Demucs bags")
-
 def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transition_power=1.0, progress=False):
     if isinstance(model, LegacyBagOfModels):
         estimates, totals = 0.0, [0.0] * len(model.sources)
@@ -476,9 +436,7 @@ def apply_legacy_model(model, mix, shifts=0, split=True, overlap=0.25, transitio
     padded_mix = tensor_chunk(mix).padded(model.valid_length(length))
     with torch.no_grad():
         return center_trim(model(padded_mix.unsqueeze(0))[0], length)
-
 def _stub_class(module_name, class_name): return type(class_name, (), {"__module__": module_name})
-
 @contextmanager
 def _legacy_pickle_modules():
     module_classes = { "demucs.model": {"Demucs": _stub_class("demucs.model", "Demucs")}, "demucs.demucs": {"Demucs": _stub_class("demucs.demucs", "Demucs")}, "demucs.tasnet": {"ConvTasNet": _stub_class("demucs.tasnet", "ConvTasNet")}, "demucs.hdemucs": {"HDemucs": _stub_class("demucs.hdemucs", "HDemucs")}, "demucs.htdemucs": {"HTDemucs": _stub_class("demucs.htdemucs", "HTDemucs")}, }
@@ -494,18 +452,14 @@ def _legacy_pickle_modules():
         yield module_classes
     finally:
         for name, module in previous.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-
+            if module is None: sys.modules.pop(name, None)
+            else: sys.modules[name] = module
 def _normalize_sources(sources):
     if isinstance(sources, int):
         if sources == 4: return LEGACY_STEMS_4.copy()
         if sources == 2: return LEGACY_STEMS_2.copy()
         return [f"source_{index}" for index in range(sources)]
     return list(sources)
-
 def _resolve_klass(klass):
     name = (getattr(klass, "__module__", ""), getattr(klass, "__name__", ""))
     if name == ("demucs.htdemucs", "HTDemucs"):
@@ -514,7 +468,6 @@ def _resolve_klass(klass):
     resolved = {("demucs.model", "Demucs"): LegacyDemucs, ("demucs.demucs", "Demucs"): LegacyV3Demucs, ("demucs.tasnet", "ConvTasNet"): LegacyConvTasNet, ("demucs.hdemucs", "HDemucs"): LegacyHDemucs}.get(name)
     if resolved is None: raise ValueError(f"Unsupported legacy Demucs checkpoint class: {name[0]}.{name[1]}")
     return resolved
-
 def _load_raw_checkpoint(model_path):
     try:
         with _legacy_pickle_modules():
@@ -522,9 +475,7 @@ def _load_raw_checkpoint(model_path):
     except ModuleNotFoundError as exc:
         if exc.name == "diffq": raise ValueError("DiffQ quantized legacy Demucs checkpoints are not supported without diffq") from exc
         raise
-
 def _drop_unsupported_kwargs(klass, kwargs): parameters = inspect.signature(klass).parameters; return {key: value for key, value in kwargs.items() if key in parameters}
-
 def _build_model_from_package(package, model_path=None):
     if isinstance(package, tuple) and len(package) >= 4:
         klass, args, kwargs, state = package[:4]
@@ -541,13 +492,11 @@ def _build_model_from_package(package, model_path=None):
     if isinstance(state, dict) and state.get("__quantized"): raise ValueError("DiffQ quantized legacy Demucs checkpoints are not supported without diffq")
     model.load_state_dict(state)
     return _ensure_legacy_metadata(model)
-
 def _ensure_legacy_metadata(model):
     if not hasattr(model, "segment_length"): model.segment_length = int(float(model.segment) * model.samplerate) if hasattr(model, 'segment') and hasattr(model, 'samplerate') else 44100 * 10
     if not hasattr(model, "samplerate"): model.samplerate = 44100
     if not hasattr(model, "audio_channels"): model.audio_channels = 2
     return model
-
 def _infer_state_dict_architecture(state, model_path):
     name = Path(model_path).stem
     if "encoder.conv1d_U.weight" in state and "decoder.basis_signals.weight" in state:
@@ -564,7 +513,6 @@ def _infer_state_dict_architecture(state, model_path):
         resample = (bool(state["decoder.0.2.weight"].shape[1] == state[f"encoder.{depth - 1}.0.weight"].shape[0]) if "decoder.0.2.weight" in state and f"encoder.{depth - 1}.0.weight" in state else False)
         return _stub_class("demucs.model", "Demucs"), (), { "sources": int(state[last_decoder_bias].numel() // first.shape[1]) if last_decoder_bias in state else 4, "audio_channels": int(first.shape[1]), "channels": int(first.shape[0]), "depth": int(depth), "lstm_layers": 2, "context": context, "resample": resample}
     raise ValueError(f"Cannot infer legacy Demucs architecture from state_dict-only checkpoint: {model_path}")
-
 def load_legacy_demucs_model(model_path, config_path=None):
     path = Path(model_path)
     bag_path = path if path.suffix.lower() in {".yaml", ".yml"} else Path(config_path) if config_path else None
@@ -580,7 +528,6 @@ def load_legacy_demucs_model(model_path, config_path=None):
         if path == bag_path: raise ValueError(f"Legacy Demucs YAML must contain a 'models' list: {bag_path}")
     model = _build_model_from_package(_load_raw_checkpoint(path), path)
     return model, _legacy_config_from_model(model)
-
 def _legacy_config_from_model(model):
     _ensure_legacy_metadata(model)
     sources = list(model.sources)

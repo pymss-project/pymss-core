@@ -1,9 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from . import layers
-
 class BaseASPPNet(nn.Module):
     def __init__(self, nn_architecture, nin, ch, dilations=(4, 8, 16)):
         super().__init__()
@@ -25,18 +23,13 @@ class BaseASPPNet(nn.Module):
         hidden_state, e2 = self.enc2(hidden_state)
         hidden_state, e3 = self.enc3(hidden_state)
         hidden_state, e4 = self.enc4(hidden_state)
-        if self.nn_architecture == 129605:
-            hidden_state, e5 = self.enc5(hidden_state)
-            hidden_state = self.dec5(self.aspp(hidden_state), e5)
-        else:
-            hidden_state = self.aspp(hidden_state)
+        if self.nn_architecture == 129605: hidden_state, e5 = self.enc5(hidden_state); hidden_state = self.dec5(self.aspp(hidden_state), e5)
+        else: hidden_state = self.aspp(hidden_state)
         hidden_state = self.dec4(hidden_state, e4)
         hidden_state = self.dec3(hidden_state, e3)
         hidden_state = self.dec2(hidden_state, e2)
         return self.dec1(hidden_state, e1)
-
 def determine_model_capacity(n_fft_bins, nn_architecture): ch = {31191: 16, 33966: 16, 123821: 32, 123812: 32, 537238: 64, 537227: 64}[nn_architecture]; caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch), (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]; return CascadedASPPNet(n_fft_bins, caps, nn_architecture)
-
 class CascadedASPPNet(nn.Module):
     def __init__(self, n_fft, model_capacity_data, nn_architecture):
         super().__init__()
