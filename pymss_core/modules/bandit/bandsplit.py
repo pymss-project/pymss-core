@@ -4,12 +4,10 @@ from torch.utils.checkpoint import checkpoint_sequential
 
 from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
 
-
 class NormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
-        if normalize_channel_independently:
-            raise NotImplementedError
+        if normalize_channel_independently: raise NotImplementedError
         self.treat_channel_as_feature = treat_channel_as_feature
         self.norm = nn.LayerNorm(in_channels * bandwidth * 2)
         fc_in = bandwidth * 2 * in_channels if treat_channel_as_feature else bandwidth * 2
@@ -17,25 +15,18 @@ class NormFC(nn.Module):
             assert emb_dim % in_channels == 0
             emb_dim //= in_channels
         self.fc = nn.Linear(fc_in, emb_dim)
-
     def forward(self, xb):
         b, t, c, ribw = xb.shape
         xb = self.norm(xb.reshape(b, t, c * ribw))
-        if self.treat_channel_as_feature:
-            return self.fc(xb)
+        if self.treat_channel_as_feature: return self.fc(xb)
         return self.fc(xb.reshape(b, t, c, ribw)).reshape(b, t, -1)
-
 
 class SequentialNormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
-        if not treat_channel_as_feature or normalize_channel_independently:
-            raise NotImplementedError
+        if not treat_channel_as_feature or normalize_channel_independently: raise NotImplementedError
         self.combined = nn.Sequential(nn.LayerNorm(in_channels * bandwidth * 2), nn.Linear(in_channels * bandwidth * 2, emb_dim))
-
-    def forward(self, xb):
-        return checkpoint_sequential(self.combined, 1, xb, use_reentrant=False)
-
+    def forward(self, xb): return checkpoint_sequential(self.combined, 1, xb, use_reentrant=False)
 
 class BandSplitModuleBase(nn.Module):
     def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input,
@@ -53,15 +44,11 @@ class BandSplitModuleBase(nn.Module):
             norm_fc_cls(emb_dim=emb_dim, bandwidth=bw, in_channels=in_channels,
                         normalize_channel_independently=normalize_channel_independently,
                         treat_channel_as_feature=treat_channel_as_feature) for bw in self.band_widths])
-
     def _band_view(self, x):
         xr = torch.view_as_real(x)
-        if self.complex_order == "reim_freq":
-            return xr.permute(0, 3, 1, 4, 2)
-        if self.complex_order == "freq_reim":
-            return xr.permute(0, 3, 1, 2, 4).contiguous()
+        if self.complex_order == "reim_freq": return xr.permute(0, 3, 1, 4, 2)
+        if self.complex_order == "freq_reim": return xr.permute(0, 3, 1, 2, 4).contiguous()
         raise ValueError(f"unsupported complex_order: {self.complex_order}")
-
     def forward(self, x):
         b, c, _, t = x.shape
         xr = self._band_view(x)
@@ -72,7 +59,6 @@ class BandSplitModuleBase(nn.Module):
                   else xr[:, :, :, f0:f1].reshape(b, t, -1))
             z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
-
 
 class _ConfiguredBandSplitModule(BandSplitModuleBase):
     def __init__(self, band_specs, emb_dim, in_channels, require_no_overlap=False, require_no_gap=True,

@@ -20,30 +20,24 @@ from .mlx_backend import (
 
 torch_to_mlx_input = to_mx
 
-
 def _spectral_stft(stft_module, raw_audio, dtype):
     n_fft, win_length, hop = int(stft_module.n_fft), int(stft_module.win_length), int(stft_module.hop_length)
     window = periodic_hann_window(win_length, dtype)
     if win_length < n_fft:
         import mlx.core as mx
-
         left = (n_fft - win_length) // 2
         window = mx.pad(window, [(left, n_fft - win_length - left)])
-    elif win_length > n_fft:
-        raise ValueError("MLX Bandit STFT does not support win_length > n_fft")
+    elif win_length > n_fft: raise ValueError("MLX Bandit STFT does not support win_length > n_fft")
     spec = stft(raw_audio, n_fft, hop, window, dtype, center=stft_module.center, pad_mode=stft_module.pad_mode,
                 normalized=stft_module.normalized)
     return spec, {"n_fft": n_fft, "hop": hop, "window": window, "normalized": stft_module.normalized,
                   "center": stft_module.center, "dtype": dtype}
 
-
 def _spectral_istft(istft_module, spec, context, length):
     return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"],
                  center=context["center"], normalized=context["normalized"])
 
-
 _activation = generic_activation
-
 
 def _norm_fc(module, xb, dtype):
     if hasattr(module, "combined"):
@@ -54,14 +48,11 @@ def _norm_fc(module, xb, dtype):
     xb = layer_norm(module.norm, xb.reshape(batch, n_time, in_channels * ribw), dtype)
     w = param(module.fc, "weight", module.fc.weight, dtype)
     b = param(module.fc, "bias", module.fc.bias, dtype)
-    if module.treat_channel_as_feature:
-        return linear(xb, w, b)
+    if module.treat_channel_as_feature: return linear(xb, w, b)
     return linear(xb.reshape(batch, n_time, in_channels, ribw), w, b).reshape(batch, n_time, -1)
-
 
 def _band_split(module, x, dtype):
     import mlx.core as mx
-
     batch, in_channels, _, n_time = x.shape
     xr = mx.stack((x.real, x.imag), axis=-1)
     if module.complex_order == "reim_freq":
@@ -78,10 +69,8 @@ def _band_split(module, x, dtype):
         outs.append(_norm_fc(nfm, xb.reshape(batch, n_time, -1) if module.flatten_input else xb, dtype))
     return mx.stack(outs, axis=1)
 
-
 def _residual_rnn(module, z, dtype):
     import mlx.core as mx
-
     z0 = z
     if module.use_layer_norm:
         z = layer_norm(module.norm, z, dtype)
@@ -94,7 +83,6 @@ def _residual_rnn(module, z, dtype):
     else:
         z = mx.stack([rnn_forward(module.rnn, z[:, i], dtype) for i in range(n_uncrossed)], axis=1)
     return linear(z, param(module.fc, "weight", module.fc.weight, dtype), param(module.fc, "bias", module.fc.bias, dtype)) + z0
-
 
 def _tf_model(module, z, dtype):
     if module.parallel_mode:
@@ -117,7 +105,6 @@ def _tf_model(module, z, dtype):
         z = z.swapaxes(1, 2)
     return z
 
-
 def _norm_mlp(module, qb, dtype):
     x = layer_norm(module.norm, qb, dtype)
     x = linear(x, param(module.hidden[0], "weight", module.hidden[0].weight, dtype),
@@ -133,26 +120,20 @@ def _norm_mlp(module, qb, dtype):
         x = x.reshape(batch, n_time, module.in_channels, module.bandwidth)
     return x.transpose(0, 2, 3, 1)
 
-
 def _append_cond(module, q, cond):
     import mlx.core as mx
-
     if cond is not None:
         batch, n_bands, n_time, _ = q.shape
         if cond.ndim == 2:
             cond = mx.broadcast_to(cond[:, None, None, :], (batch, n_bands, n_time, cond.shape[-1]))
-        elif cond.ndim != 3:
-            raise ValueError(f"Invalid cond shape: {cond.shape}")
+        elif cond.ndim != 3: raise ValueError(f"Invalid cond shape: {cond.shape}")
         return mx.concatenate((q, cond), axis=-1)
-    if module.cond_dim <= 0:
-        return q
+    if module.cond_dim <= 0: return q
     batch, n_bands, n_time, _ = q.shape
     return mx.concatenate((q, mx.ones((batch, n_bands, n_time, module.cond_dim), dtype=q.dtype)), axis=-1)
 
-
 def _mask_estimator(module, q, dtype, cond=None):
     import mlx.core as mx
-
     q = _append_cond(module, q, cond)
     if getattr(module, "n_freq", 0) <= 0:
         return mx.concatenate([_norm_mlp(nmlp, q[:, b], dtype) for b, nmlp in enumerate(module.norm_mlp)], axis=2)
@@ -170,13 +151,11 @@ def _mask_estimator(module, q, dtype, cond=None):
         mask_imag = mask_imag + mx.pad(mask.imag.astype(mask_imag.dtype), padding)
     return mask_real + (1j * mask_imag)
 
-
 def _bsrnn_core(module, x, dtype):
     _batch, _in_chan, n_freq, n_time = x.shape
     x = x.reshape(-1, 1, n_freq, n_time)
     q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype)
     return [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]
-
 
 def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     check_dtype(dtype, "Bandit")
@@ -193,9 +172,7 @@ def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     estimates = [_spectral_istft(module.istft, spec, context, length) for spec in specs]
     estimates = [estimate.reshape(-1, init_shape[1], init_shape[2]) for estimate in estimates]
     import mlx.core as mx
-
     return mx.stack(estimates, axis=1)
-
 
 def mlx_forward_bandit(module, raw_audio, dtype=torch.float16):
     return to_torch(mlx_forward_bandit_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

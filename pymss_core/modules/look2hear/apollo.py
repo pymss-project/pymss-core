@@ -4,28 +4,20 @@ from torch import nn
 
 from ..mlx_backend import MpsBackendMixin
 
-
 def _cached_inference_tensor(module, name, tensor, input, version):
     # fp16/bf16 CUDA inference: memoize casted weights; keyed on _version so in-place param updates invalidate
-    if tensor is None or (tensor.device == input.device and tensor.dtype == input.dtype):
-        return tensor
+    if tensor is None or (tensor.device == input.device and tensor.dtype == input.dtype): return tensor
     key = (name, input.device, input.dtype, version)
     cache = module.__dict__.setdefault("_apollo_inference_cache", {})
     cached = cache.get(name)
-    if cached is not None and cached[0] == key:
-        return cached[1]
+    if cached is not None and cached[0] == key: return cached[1]
     casted = tensor.detach().to(device=input.device, dtype=input.dtype)
     cache[name] = (key, casted)
     return casted
 
+def _complex_from_ri(ri, dim): return torch.complex(*ri.float().unbind(dim=dim))
 
-def _complex_from_ri(ri, dim):
-    return torch.complex(*ri.float().unbind(dim=dim))
-
-
-def _complex_div_by_real(spec, denom):
-    return torch.complex(spec.real / denom, spec.imag / denom)
-
+def _complex_div_by_real(spec, denom): return torch.complex(spec.real / denom, spec.imag / denom)
 
 def pointwise_conv1d(input, conv):
     # 1x1 conv1d -> linear: faster on CUDA fp16/bf16 inference
@@ -37,13 +29,11 @@ def pointwise_conv1d(input, conv):
         bias = _cached_inference_tensor(conv, "pointwise_bias", bias, input, bias._version) if bias is not None else None
     return F.linear(input.transpose(1, 2), weight, bias).transpose(1, 2)
 
-
 class RMSNorm(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dimension))
         self.groups, self.eps = groups, 1e-5
-
     def forward(self, input):
         B, N, T = input.shape
         assert N % self.groups == 0
@@ -56,20 +46,17 @@ class RMSNorm(nn.Module):
         x = input.reshape(B, self.groups, -1, T).float()
         return (x * torch.rsqrt(x.pow(2).mean(-2, keepdim=True) + self.eps)).type_as(input).reshape(B, N, T) * self.weight.reshape(1, -1, 1)
 
-
 class RMVN(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
         self.mean, self.std = nn.Parameter(torch.zeros(dimension)), nn.Parameter(torch.ones(dimension))
         self.groups, self.eps = groups, 1e-5
-
     def forward(self, input):
         B, N = input.shape[:2]
         assert N % self.groups == 0
         x = input.reshape(B, self.groups, N // self.groups, -1)
         norm = (x - x.mean(2).unsqueeze(2)) / (x.var(2).unsqueeze(2) + self.eps).sqrt()
         return (norm.reshape(B, N, x.shape[-1]) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)).reshape(input.shape)
-
 
 class Roformer(nn.Module):
     def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000, input_drop=0.0, attention_drop=0.0, causal=True):
@@ -87,12 +74,10 @@ class Roformer(nn.Module):
         self.output = nn.Conv1d(self.hidden_size * self.num_head, self.input_size, 1, bias=False)
         self.MLP = nn.Sequential(RMSNorm(self.input_size), nn.Conv1d(self.input_size, self.input_size * 8, 1, bias=False), nn.SiLU())
         self.MLP_output = nn.Conv1d(self.input_size * 4, self.input_size, 1, bias=False)
-
     def _calc_rotary_emb(self):
         freq = (1.0 / self.theta ** (torch.arange(0, self.hidden_size, 2)[: self.hidden_size // 2] / self.hidden_size)).reshape(1, -1)
         pos = torch.arange(self.window).reshape(-1, 1)
         return torch.cos(pos * freq).repeat_interleave(2, dim=-1), torch.sin(pos * freq).repeat_interleave(2, dim=-1)
-
     def _add_rotary_sequence(self, feature):
         T, N = feature.shape[-2:]
         x = feature.reshape(-1, T, N)
@@ -108,7 +93,6 @@ class Roformer(nn.Module):
             return output.reshape(feature.shape)
         neg = (x.reshape(-1, N // 2, 2).flip(-1) * self.reverse_sign.to(device=feature.device, dtype=feature.dtype)).reshape(-1, T, N)
         return (x * self.cos_freq[:T].unsqueeze(0) + neg * self.sin_freq[:T].unsqueeze(0)).reshape(feature.shape)
-
     def forward(self, input):
         B, _, T = input.shape
         qkv = pointwise_conv1d(self.input_drop(self.input_norm(input)), self.weight)
@@ -121,7 +105,6 @@ class Roformer(nn.Module):
         gate, z = self.MLP[2](pointwise_conv1d(self.MLP[0](output), self.MLP[1])).chunk(2, dim=1)
         return output + pointwise_conv1d(F.silu(gate) * z, self.MLP_output), (K_rot, V)
 
-
 class ConvActNorm1d(nn.Module):
     def __init__(self, in_channel, hidden_channel, kernel=7, causal=False):
         super().__init__()
@@ -130,19 +113,15 @@ class ConvActNorm1d(nn.Module):
             nn.Conv1d(in_channel, in_channel, kernel, padding=kernel - 1 if causal else (kernel - 1) // 2, groups=in_channel),
             RMSNorm(in_channel), nn.Conv1d(in_channel, hidden_channel, 1), nn.SiLU(), nn.Conv1d(hidden_channel, in_channel, 1),
         )
-
     def forward(self, input):
         y = pointwise_conv1d(self.conv[3](pointwise_conv1d(self.conv[1](self.conv[0](input)), self.conv[2])), self.conv[4])
         return input + y[..., : -self.kernel + 1] if self.causal else input + y
-
 
 class ICB(nn.Module):
     def __init__(self, in_channel, kernel=7, causal=False):
         super().__init__()
         self.blocks = nn.Sequential(*[ConvActNorm1d(in_channel, in_channel * 4, kernel, causal=causal) for _ in range(3)])
-
     def forward(self, input): return self.blocks(input)
-
 
 class BSNet(nn.Module):
     def __init__(self, feature_dim, kernel=7):
@@ -150,13 +129,11 @@ class BSNet(nn.Module):
         self.feature_dim = feature_dim
         self.band_net = Roformer(self.feature_dim, self.feature_dim, num_head=8, window=100, causal=False)
         self.seq_net = ICB(self.feature_dim, kernel=kernel)
-
     def forward(self, input):
         B, nband, _, T = input.shape
         band, _ = self.band_net(input.permute(0, 3, 2, 1).reshape(B * T, -1, nband))
         band = band.reshape(B, T, -1, nband).permute(0, 3, 2, 1)
         return self.seq_net(band.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)
-
 
 class Apollo(MpsBackendMixin, nn.Module):
     def __init__(self, sr, win, feature_dim, layer):
@@ -175,31 +152,22 @@ class Apollo(MpsBackendMixin, nn.Module):
         self.output = nn.ModuleList(
             [nn.Sequential(RMSNorm(self.feature_dim), nn.Conv1d(self.feature_dim, width * 4, 1), nn.GLU(dim=1)) for width in self.band_width]
         )
-
     def mlx_forward_mx(self, raw_audio):
         from ..apollo_mlx import mlx_forward_apollo_mx
-
         return mlx_forward_apollo_mx(self, raw_audio, self.mps_model_compute_dtype)
-
-    def _window(self, input):
-        return self.window.to(device=input.device)
-
+    def _window(self, input): return self.window.to(device=input.device)
     def _uniform_band_prefix(self):
         width = self.band_width[0]
         return next((i for i, w in enumerate(self.band_width) if w != width), self.nband), width
-
     def _use_packed_band_ops(self):
         return not self.training and not torch.is_grad_enabled() and self._uniform_band_prefix()[0] > 1
-
     def _stft(self, input):
         B, nch, nsample = input.shape
         return torch.stft(input.view(B * nch, nsample), n_fft=self.win, hop_length=self.stride, window=self._window(input), return_complex=True)
-
     def _band_norm_power(self, spec, band_idx, width):
         this_spec = spec[:, band_idx : band_idx + width]
         power = (this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1)  # B,1,T
         return _complex_div_by_real(this_spec, power), power
-
     def _cached_packed_modules(self, name, modules, count):
         conv = modules[0][1]
         key = (name, count, conv.weight.device, conv.weight.dtype)
@@ -217,20 +185,17 @@ class Apollo(MpsBackendMixin, nn.Module):
         }
         self._packed_cache[name] = packed
         return packed["norm_weight"], packed["conv_weight"], packed["conv_bias"], packed["groups"], packed["eps"]
-
     @staticmethod
     def _packed_rms_norm(input, weight, groups, eps):
         b, bands, c, frames = input.shape
         x = input.reshape(b, bands, groups, c // groups, frames).float()
         return (x * torch.rsqrt(x.pow(2).mean(3, keepdim=True) + eps)).to(dtype=input.dtype).reshape(b, bands, c, frames) * weight.reshape(1, bands, c, 1)
-
     def _packed_bn_prefix(self, input, count):
         b, bands, c, frames = input.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_modules("bn", self.BN, count)
         return F.conv1d(
             self._packed_rms_norm(input, norm_weight, groups, eps).reshape(b, bands * c, frames), conv_weight, conv_bias, groups=bands
         ).reshape(b, bands, self.feature_dim, frames)
-
     def _packed_output_prefix(self, feature, count, width):
         b, bands, c, frames = feature.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_modules("output", self.output, count)
@@ -239,14 +204,12 @@ class Apollo(MpsBackendMixin, nn.Module):
         ).reshape(b, bands, width * 4, frames)
         left, right = output.chunk(2, dim=2)
         return (left * torch.sigmoid(right)).reshape(b, bands, 2, width, frames)
-
     def spec_band_split(self, input):
         spec, norms, powers, band_idx = self._stft(input), [], [], 0
         for width in self.band_width:
             norm, power = self._band_norm_power(spec, band_idx, width)
             norms.append(norm); powers.append(power); band_idx += width
         return norms, torch.cat(powers, 1)
-
     def _spec_band_split_packed(self, input):
         spec = self._stft(input)
         count, width = self._uniform_band_prefix()
@@ -260,10 +223,8 @@ class Apollo(MpsBackendMixin, nn.Module):
             tail_power.append(power)
             band_idx += width
         return prefix_norm, prefix_power, tail_norm, tail_power
-
     def feature_extractor(self, input):
         return self._feature_extractor_packed(input) if self._use_packed_band_ops() else self._feature_extractor_by_band(input)
-
     def _feature_extractor_by_band(self, input):
         subband_norm, subband_power = self.spec_band_split(input)
         return torch.stack(
@@ -273,13 +234,11 @@ class Apollo(MpsBackendMixin, nn.Module):
             ],
             1,
         )
-
     def _feature_extractor_packed(self, input):
         prefix_norm, prefix_power, tail_norm, tail_power = self._spec_band_split_packed(input)
         count, _ = self._uniform_band_prefix()
         prefix = self._packed_bn_prefix(torch.cat([prefix_norm.real, prefix_norm.imag, torch.log(prefix_power).unsqueeze(2)], dim=2), count)
-        if count == self.nband:
-            return prefix
+        if count == self.nband: return prefix
         return torch.cat(
             [
                 prefix,
@@ -293,7 +252,6 @@ class Apollo(MpsBackendMixin, nn.Module):
             ],
             dim=1,
         )
-
     def _estimate_spec_by_band(self, feature, batch_channels):
         return torch.cat(
             [
@@ -302,12 +260,10 @@ class Apollo(MpsBackendMixin, nn.Module):
             ],
             1,
         )
-
     def _estimate_spec_packed(self, feature, batch_channels):
         count, width = self._uniform_band_prefix()
         prefix = _complex_from_ri(self._packed_output_prefix(feature[:, :count], count, width), dim=2).reshape(batch_channels, count * width, -1)
-        if count == self.nband:
-            return prefix
+        if count == self.nband: return prefix
         return torch.cat(
             [prefix]
             + [
@@ -316,17 +272,14 @@ class Apollo(MpsBackendMixin, nn.Module):
             ],
             1,
         )
-
     def forward(self, input):
         if self._use_mlx_full_forward(input):
             try:
                 from ..apollo_mlx import mlx_forward_apollo
-
                 return mlx_forward_apollo(self, input, self.mps_model_compute_dtype)
             except Exception as exc:
                 self._pymss_mlx_full_backend_error = repr(exc)
                 self.mps_model_backend = "torch"
-
         B, nch, nsample = input.shape
         feature = self.net(self.feature_extractor(input))
         est_spec = self._estimate_spec_packed(feature, B * nch) if self._use_packed_band_ops() else self._estimate_spec_by_band(feature, B * nch)

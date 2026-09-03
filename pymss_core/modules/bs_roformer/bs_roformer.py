@@ -19,12 +19,10 @@ from .common import (
     roformer_transformer_kwargs,
 )
 
-
 class BSRoformer(RoformerRuntimeMixin, Module):
     # One class covers bs_roformer / bs_conformer: conformer=True swaps Transformer->Conformer layers
     # (identical layers.N.{0,1} state_dict layout, so checkpoints load either way).
     mask_estimator_cls = MaskEstimator
-
     def __init__(self, dim, *, depth, stereo=False, num_stems=1, time_transformer_depth=2, freq_transformer_depth=2,
                  freqs_per_bands=DEFAULT_FREQS_PER_BANDS, dim_head=64, heads=8, attn_dropout=0.0, ff_dropout=0.0,
                  flash_attn=True, stft_n_fft=2048, stft_hop_length=512, stft_win_length=2048, stft_normalized=False,
@@ -55,10 +53,7 @@ class BSRoformer(RoformerRuntimeMixin, Module):
             self, dim=dim, freqs_per_bands_with_complex=roformer_freqs_per_bands_with_complex(self, freqs_per_bands, freqs),
             num_stems=num_stems, mask_estimator_cls=self.mask_estimator_cls, mask_estimator_depth=mask_estimator_depth,
             mlp_expansion_factor=mlp_expansion_factor)
-
-    def _forward_mask_core(self, stft_repr):
-        return forward_roformer_mask_core(self, stft_repr)
-
+    def _forward_mask_core(self, stft_repr): return forward_roformer_mask_core(self, stft_repr)
     def forward(self, raw_audio):
         if self._use_mlx_full_forward(raw_audio):
             try:

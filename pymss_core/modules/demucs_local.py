@@ -7,7 +7,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-
 def pad1d(x, paddings, mode="constant", value=0.0):
     x0, (left, right), length = x, paddings, x.shape[-1]
     if mode == "reflect" and length <= max(left, right):  # torch reflect pad breaks past half window: overpad then crop
@@ -19,7 +18,6 @@ def pad1d(x, paddings, mode="constant", value=0.0):
     assert out.shape[-1] == length + left + right and (out[..., left : left + length] == x0).all()
     return out
 
-
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps":
@@ -27,7 +25,6 @@ def spectro(x, n_fft=512, hop_length=None, pad=0):
     z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x),
                    win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
-
 
 def ispectro(z, hop_length=None, length=None, pad=0):
     *other, freqs, frames = z.shape
@@ -39,7 +36,6 @@ def ispectro(z, hop_length=None, length=None, pad=0):
                     win_length=win_length, normalized=True, length=length, center=True)
     return x.view(*other, x.shape[-1])
 
-
 def rescale_module(module, reference):
     for sub in module.modules():
         if isinstance(sub, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
@@ -48,11 +44,9 @@ def rescale_module(module, reference):
             if sub.bias is not None:
                 sub.bias.data /= scale
 
-
 def _freq_dconv(dconv, y):
     b, c, fr, t = y.shape
     return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
-
 
 class BLSTM(nn.Module):
     def __init__(self, dim, layers=1, max_steps=None, skip=False):
@@ -61,7 +55,6 @@ class BLSTM(nn.Module):
         self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim)
         self.linear = nn.Linear(2 * dim, dim)
         self.skip = skip
-
     def forward(self, x):
         y, framed = x, False
         if self.max_steps is not None and x.shape[-1] > self.max_steps:
@@ -79,26 +72,19 @@ class BLSTM(nn.Module):
                            for i in range(nframes)], -1)[..., :length]
         return x + y if self.skip else x
 
-
 class LegacyLayerScale(nn.Module):
     def __init__(self, channels, init=0):
         super().__init__()
         self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True))
         self.scale.data[:] = init
-
-    def forward(self, x):
-        return self.scale[:, None] * x
-
+    def forward(self, x): return self.scale[:, None] * x
 
 class LayerScale(nn.Module):
     def __init__(self, channels, init=0, channel_last=False):
         super().__init__()
         self.channel_last = channel_last
         self.scale = nn.Parameter(torch.full((channels,), init))
-
-    def forward(self, x):
-        return self.scale * x if self.channel_last else self.scale[:, None] * x
-
+    def forward(self, x): return self.scale * x if self.channel_last else self.scale[:, None] * x
 
 class DConv(nn.Module):
     def __init__(self, channels, compress=4, depth=2, init=1e-4, norm=True, gelu=True, kernel=3, legacy=False,
@@ -119,12 +105,10 @@ class DConv(nn.Module):
             if legacy and lstm:
                 mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
             self.layers.append(nn.Sequential(*mods))
-
     def forward(self, x):
         for layer in self.layers:
             x = x + layer(x)
         return x
-
 
 class ScaledEmbedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, scale=10.0, smooth=False):
@@ -135,14 +119,9 @@ class ScaledEmbedding(nn.Module):
             self.embedding.weight.data[:] = w / torch.arange(1, num_embeddings + 1).to(w).sqrt()[:, None]
         self.embedding.weight.data /= scale
         self.scale = scale
-
     @property
-    def weight(self):
-        return self.embedding.weight * self.scale
-
-    def forward(self, x):
-        return self.embedding(x) * self.scale
-
+    def weight(self): return self.embedding.weight * self.scale
+    def forward(self, x): return self.embedding(x) * self.scale
 
 class HEncLayer(nn.Module):
     def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True,
@@ -155,29 +134,25 @@ class HEncLayer(nn.Module):
         if freq:  # B,C,F,T conv: stride along freq only
             kernel_size, stride, pad = [kernel_size, 1], [stride, 1], [pad, 0]
         self.conv = klass(chin, chout, kernel_size, stride, pad)
-        if empty:
-            return
+        if empty: return
         self.norm1 = norm_fn(chout)
         self.rewrite = klass(chout, 2 * chout, 1 + 2 * context, 1, context) if rewrite else None
         if rewrite:
             self.norm2 = norm_fn(2 * chout)
         self.dconv = DConv(chout, **(dconv_kw or {})) if dconv else None
-
     def forward(self, x, inject=None):
         if not self.freq and x.dim() == 4:
             x = x.view(x.shape[0], -1, x.shape[-1])
         if not self.freq and x.shape[-1] % self.stride:
             x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
         y = self.conv(x)
-        if self.empty:
-            return y
+        if self.empty: return y
         if inject is not None:
             y = y + (inject[:, :, None] if inject.dim() == 3 and y.dim() == 4 else inject)
         y = F.gelu(self.norm1(y))
         if self.dconv:
             y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
-
 
 class HDecLayer(nn.Module):
     def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True,
@@ -191,15 +166,13 @@ class HDecLayer(nn.Module):
         k, s = ([kernel_size, 1], [stride, 1]) if freq else (kernel_size, stride)
         self.conv_tr = klass_tr(chin, chout, k, s)
         self.norm2 = norm_fn(chout)
-        if empty:
-            return
+        if empty: return
         self.rewrite = None
         if rewrite:
             self.rewrite = (klass(chin, 2 * chin, 1 + 2 * context, 1, context) if context_freq
                             else klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context]))
             self.norm1 = norm_fn(2 * chin)
         self.dconv = DConv(chin, **(dconv_kw or {})) if dconv else None
-
     def forward(self, x, skip, length):
         if self.freq and x.dim() == 3:
             x = x.view(x.shape[0], self.chin, -1, x.shape[-1])
@@ -217,12 +190,10 @@ class HDecLayer(nn.Module):
             assert z.shape[-1] == length
         return (z if self.last else F.gelu(z)), y
 
-
 class MultiWrap(nn.Module):
     def __init__(self, layer, split_ratios):
         super().__init__()
         self.split_ratios, self.conv = split_ratios, isinstance(layer, HEncLayer)
-
         def new_layer():
             lay = deepcopy(layer)
             if self.conv:
@@ -233,9 +204,7 @@ class MultiWrap(nn.Module):
                 if hasattr(m, "reset_parameters"):
                     m.reset_parameters()
             return lay
-
         self.layers = nn.ModuleList([new_layer() for _ in range(len(split_ratios) + 1)])
-
     def forward(self, x, skip=None, length=None):
         _, _, fr, _ = x.shape
         start, outs = 0, []
@@ -270,13 +239,11 @@ class MultiWrap(nn.Module):
         out = torch.cat(outs, dim=2)
         return out if self.conv else (out if last else F.gelu(out), None)
 
-
 def create_sin_embedding(length, dim, shift=0, device="cpu", max_period=10000):
     pos = shift + torch.arange(length, device=device).view(-1, 1, 1)
     half = dim // 2
     phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
-
 
 def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=10000):
     pe = torch.zeros(d_model, height, width)
@@ -288,7 +255,6 @@ def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=100
     pe[half::2] = torch.sin(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
     pe[half + 1 :: 2] = torch.cos(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
     return pe[None].to(device)
-
 
 def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, max_global_shift=0.0, max_local_shift=0.0,
                               max_scale=1.0, device="cpu", max_period=10000.0):
@@ -303,18 +269,14 @@ def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, 
     phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1)))
     return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1).float()
 
-
 class MyGroupNorm(nn.GroupNorm):
-    def forward(self, x):
-        return super().forward(x.transpose(1, 2)).transpose(1, 2)
-
+    def forward(self, x): return super().forward(x.transpose(1, 2)).transpose(1, 2)
 
 class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu, group_norm=0, norm_first=False,
                  norm_out=False, layer_norm_eps=1e-5, layer_scale=False, init_values=1e-4, batch_first=False, sparse=False,
                  **kwargs):
-        if sparse:
-            raise NotImplementedError("Sparse Demucs transformer is not supported")
+        if sparse: raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout, activation=activation,
                          layer_norm_eps=layer_norm_eps, batch_first=batch_first, norm_first=norm_first,
                          device=kwargs.get("device"), dtype=kwargs.get("dtype"))
@@ -323,7 +285,6 @@ class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
         self.norm_out = MyGroupNorm(int(norm_out), d_model) if self.norm_first & norm_out else None
         self.gamma_1 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.gamma_2 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
-
     def forward(self, src, src_mask=None, src_key_padding_mask=None):
         x = src
         if self.norm_first:
@@ -333,13 +294,11 @@ class MyTransformerEncoderLayer(nn.TransformerEncoderLayer):
         x = self.norm1(x + self.gamma_1(self._sa_block(x, src_mask, src_key_padding_mask)))
         return self.norm2(x + self.gamma_2(self._ff_block(x)))
 
-
 class CrossTransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation=F.relu, layer_norm_eps=1e-5,
                  layer_scale=False, init_values=1e-4, norm_first=False, group_norm=False, norm_out=False, sparse=False,
                  batch_first=False, **_):
-        if sparse:
-            raise NotImplementedError("Sparse Demucs transformer is not supported")
+        if sparse: raise NotImplementedError("Sparse Demucs transformer is not supported")
         super().__init__()
         self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first)
         self.linear1, self.dropout, self.linear2 = (nn.Linear(d_model, dim_feedforward), nn.Dropout(dropout),
@@ -352,7 +311,6 @@ class CrossTransformerEncoderLayer(nn.Module):
         self.gamma_1 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.gamma_2 = LayerScale(d_model, init_values, True) if layer_scale else nn.Identity()
         self.dropout1, self.dropout2, self.activation = nn.Dropout(dropout), nn.Dropout(dropout), activation
-
     def forward(self, q, k, mask=None):
         if self.norm_first:
             norm_q, norm_k = self.norm1(q), self.norm2(k)
@@ -365,17 +323,13 @@ class CrossTransformerEncoderLayer(nn.Module):
         x = self.norm1(q + self.gamma_1(self.dropout1(attn_out)))
         return self.norm2(x + self.gamma_2(self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(x)))))))
 
-
 class PositionEmbedding(nn.Module):
     def __init__(self, num_embeddings, embedding_dim, scale=1.0, boost=3.0):
         super().__init__()
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
         self.embedding.weight.data *= scale / boost
         self.boost = boost
-
-    def forward(self, x):
-        return self.embedding(x) * self.boost
-
+    def forward(self, x): return self.embedding(x) * self.boost
 
 class CrossTransformerEncoder(nn.Module):
     def __init__(self, dim, emb="sin", hidden_scale=4.0, num_heads=8, num_layers=6, cross_first=False, dropout=0.0,
@@ -410,7 +364,6 @@ class CrossTransformerEncoder(nn.Module):
             sparse = sparse_self_attn if klass is MyTransformerEncoderLayer else sparse_cross_attn
             self.layers.append(klass(**common, sparse=sparse))
             self.layers_t.append(klass(**common, sparse=sparse))
-
     def _get_pos_embedding(self, t, b, c, device):
         if self.emb == "sin":
             return create_sin_embedding(t, c, random.randrange(self.sin_random_shift + 1), device, self.max_period)
@@ -418,10 +371,8 @@ class CrossTransformerEncoder(nn.Module):
             s = self.cape_glob_loc_scale
             return create_sin_embedding_cape(t, c, b, self.cape_mean_normalize, self.training and self.cape_augment,
                                              s[0], s[1], s[2], device, self.max_period)
-        if self.emb == "scaled":
-            return self.position_embeddings(torch.arange(t, device=device))[:, None]
+        if self.emb == "scaled": return self.position_embeddings(torch.arange(t, device=device))[:, None]
         raise ValueError(f"unsupported Demucs positional embedding: {self.emb}")
-
     def forward(self, x, xt):
         b, c, fr, t1 = x.shape
         pos = create_2d_sin_embedding(c, fr, t1, x.device, self.max_period).permute(0, 3, 2, 1).reshape(1, t1 * fr, c)
@@ -436,7 +387,6 @@ class CrossTransformerEncoder(nn.Module):
                 old_x = x
                 x, xt = self.layers[idx](x, xt), self.layers_t[idx](xt, old_x)
         return x.reshape(b, t1, fr, c).permute(0, 3, 2, 1), xt.permute(0, 2, 1)
-
     def make_optim_group(self):
         group = {"params": list(self.parameters()), "weight_decay": self.weight_decay}
         if self.lr is not None:

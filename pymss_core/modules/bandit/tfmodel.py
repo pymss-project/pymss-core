@@ -2,10 +2,8 @@ import torch
 from torch import nn
 from torch.nn.modules import rnn as _rnn
 
-
 class TimeFrequencyModellingModule(nn.Module):
     pass
-
 
 class ResidualRNN(nn.Module):
     def __init__(self, emb_dim, rnn_dim, bidirectional=True, rnn_type="LSTM", use_batch_trick=True, use_layer_norm=True):
@@ -15,7 +13,6 @@ class ResidualRNN(nn.Module):
         self.rnn = _rnn.__dict__[rnn_type](input_size=emb_dim, hidden_size=rnn_dim, num_layers=1, batch_first=True,
                                            bidirectional=bidirectional)
         self.fc = nn.Linear(rnn_dim * (2 if bidirectional else 1), emb_dim)
-
     def forward(self, z0):
         z = self.norm(z0) if self.use_layer_norm else self.norm(z0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         b, n_uncrossed, n_across, emb_dim = z.shape
@@ -25,15 +22,11 @@ class ResidualRNN(nn.Module):
             z = torch.stack([self.rnn(z[:, i, :, :])[0] for i in range(n_uncrossed)], dim=1)
         return self.fc(z) + z0
 
-
 class Transpose(nn.Module):
     def __init__(self, dim0, dim1):
         super().__init__()
         self.dim0, self.dim1 = dim0, dim1
-
-    def forward(self, z):
-        return z.transpose(self.dim0, self.dim1)
-
+    def forward(self, z): return z.transpose(self.dim0, self.dim1)
 
 class SeqBandModellingModule(TimeFrequencyModellingModule):
     # three layouts: parallel (t/f ModuleList pairs), Sequential(rrn, Transpose)*n, or plain ModuleList with transpose
@@ -48,7 +41,6 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
             self.seqband = nn.Sequential(*[m for _ in range(2 * n_modules) for m in (rrn(), Transpose(1, 2))])
         else:
             self.seqband = nn.ModuleList([rrn() for _ in range(2 * n_modules)])
-
     def forward(self, z):
         from torch.utils.checkpoint import checkpoint_sequential
         if self.parallel_mode:
@@ -63,12 +55,9 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
             z = sbm(z).transpose(1, 2)
         return z
 
-
 class _SeqBandModellingPreset(SeqBandModellingModule):
     def __init__(self, n_modules=12, emb_dim=128, rnn_dim=256, bidirectional=True, rnn_type="LSTM", parallel_mode=False):
         super().__init__(n_modules=n_modules, emb_dim=emb_dim, rnn_dim=rnn_dim, bidirectional=bidirectional,
                          rnn_type=rnn_type, parallel_mode=parallel_mode, **self._preset_runtime_options(n_modules, parallel_mode))
-
     @staticmethod
-    def _preset_runtime_options(n_modules, parallel_mode):
-        return {"sequential_transpose": False, "checkpoint_segments": None}
+    def _preset_runtime_options(n_modules, parallel_mode): return {"sequential_transpose": False, "checkpoint_segments": None}

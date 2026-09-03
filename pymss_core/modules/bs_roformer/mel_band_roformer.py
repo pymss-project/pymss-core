@@ -17,7 +17,6 @@ from .common import (
     roformer_transformer_kwargs,
 )
 
-
 class MelBandRoformer(RoformerRuntimeMixin, Module):
     # One class covers mel_band_roformer / mel_band_conformer: conformer=True swaps Transformer->Conformer layers
     # (identical layers.N.{0,1} state_dict layout). Corner-fill differs per variant (edge0 vs 0.25*neighbor).
@@ -67,10 +66,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             num_stems=num_stems, mask_estimator_cls=MaskEstimator, mask_estimator_depth=mask_estimator_depth,
             mlp_expansion_factor=mlp_expansion_factor, mask_estimator_kwargs={"mlp_hidden_layers": mlp_hidden_layers})
         self.zero_dc, self.match_input_audio_length = zero_dc, match_input_audio_length
-
-    def _forward_mask_core(self, selected_stft_repr):
-        return forward_roformer_mask_core(self, selected_stft_repr)
-
+    def _forward_mask_core(self, selected_stft_repr): return forward_roformer_mask_core(self, selected_stft_repr)
     def _mask_stft_repr(self, stft_repr, context):
         x = stft_repr[torch.arange(context.batch, device=stft_repr.device)[..., None], self.freq_indices]
         self._warm_group_cache(x)
@@ -90,7 +86,6 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             masks_summed = stft_repr.new_zeros(b, s, f, t)
             masks_summed.scatter_add_(2, scatter_indices, masks)
         return stft_repr * (masks_summed / self.num_bands_per_channel_freq.clamp(min=1e-8))
-
     def forward(self, raw_audio):
         if self._use_mlx_full_forward(raw_audio):
             try:

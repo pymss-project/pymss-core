@@ -4,7 +4,6 @@ from torch import nn
 
 from . import layers
 
-
 class BaseASPPNet(nn.Module):
     def __init__(self, nn_architecture, nin, ch, dilations=(4, 8, 16)):
         super().__init__()
@@ -21,7 +20,6 @@ class BaseASPPNet(nn.Module):
         self.dec3 = layers.Decoder(ch * (4 + 8), ch * 4, 3, 1, 1)
         self.dec2 = layers.Decoder(ch * (2 + 4), ch * 2, 3, 1, 1)
         self.dec1 = layers.Decoder(ch * (1 + 2), ch, 3, 1, 1)
-
     def forward(self, input_tensor):
         hidden_state, e1 = self.enc1(input_tensor)
         hidden_state, e2 = self.enc2(hidden_state)
@@ -37,13 +35,11 @@ class BaseASPPNet(nn.Module):
         hidden_state = self.dec2(hidden_state, e2)
         return self.dec1(hidden_state, e1)
 
-
 def determine_model_capacity(n_fft_bins, nn_architecture):
     ch = {31191: 16, 33966: 16, 123821: 32, 123812: 32, 537238: 64, 537227: 64}[nn_architecture]
     caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch),
             (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]
     return CascadedASPPNet(n_fft_bins, caps, nn_architecture)
-
 
 class CascadedASPPNet(nn.Module):
     def __init__(self, n_fft, model_capacity_data, nn_architecture):
@@ -57,7 +53,6 @@ class CascadedASPPNet(nn.Module):
         self.stg3_full_band_net = BaseASPPNet(nn_architecture, *m[5])
         self.out, self.aux1_out, self.aux2_out = nn.Conv2d(*m[6], bias=False), nn.Conv2d(*m[7], bias=False), nn.Conv2d(*m[8], bias=False)
         self.max_bin, self.output_bin, self.offset = n_fft // 2, n_fft // 2 + 1, 128
-
     def forward(self, input_tensor):
         mix = input_tensor.detach()
         input_tensor = input_tensor.clone()[:, :, : self.max_bin]
@@ -72,7 +67,6 @@ class CascadedASPPNet(nn.Module):
             pad = lambda t: F.pad(t, (0, 0, 0, self.output_bin - t.size()[2]), mode="replicate")
             return mask * mix, pad(torch.sigmoid(self.aux1_out(aux1))) * mix, pad(torch.sigmoid(self.aux2_out(aux2))) * mix
         return mask
-
     def predict_mask(self, input_tensor):
         mask = self.forward(input_tensor)
         return mask[:, :, :, self.offset:-self.offset] if self.offset > 0 else mask

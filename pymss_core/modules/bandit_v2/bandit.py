@@ -6,7 +6,6 @@ from ..bandit.core.model.bsrnn.utils import MusicalBandsplitSpecification
 from ..mlx_backend import MpsBackendMixin
 from . import BandSplitModule, OverlappingMaskEstimationModule, SeqBandModellingModule
 
-
 class Bandit(MpsBackendMixin, _SpectralComponent):
     def __init__(self, in_channels, stems, fs=44100, band_type="musical", n_bands=64, require_no_overlap=False,
                  require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True,
@@ -31,19 +30,14 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
                 n_freq=n_fft // 2 + 1, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=in_channels,
                 hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs or {},
                 complex_mask=complex_mask, use_freq_weights=use_freq_weights) for stem in stems})
-
     def mlx_forward_mx(self, raw_audio):
         from ..bandit_mlx import mlx_forward_bandit_mx
         return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
-
     def _use_mlx_full_forward(self, batch):
         return (not self.training and self.mps_model_backend == "mlx_full" and not isinstance(batch, dict)
                 and batch.device.type == "mps")
-
     @staticmethod
-    def mask(x, m):
-        return x * m
-
+    def mask(x, m): return x * m
     def forward(self, batch, mode="train"):
         if self._use_mlx_full_forward(batch):
             try:
@@ -62,11 +56,9 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
                 batch["sources"][stem]["spectrogram"] = self.stft(batch["sources"][stem]["audio"])
         batch = self.separate(batch)
         return torch.stack([batch["estimates"][s]["audio"].view(-1, init_shape[1], init_shape[2]) for s in self.stems], dim=1)
-
     def encode(self, batch):
         x = batch["mixture"]["spectrogram"]
         return x, self.tf_model(self.band_split(x)), batch["mixture"]["audio"].shape[-1]
-
     def separate(self, batch):
         batch["estimates"] = {}
         x, q, length = self.encode(batch)

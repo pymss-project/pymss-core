@@ -26,19 +26,14 @@ from .mlx_backend import (
 
 torch_to_mlx_input = to_mx
 
-
 def _pad1d(x, paddings, mode="constant", value=0.0):
     return pad_last(x, paddings[0], paddings[1], mode=mode, value=value, extend=True)
 
-
-def _spectro(x, n_fft, hop, dtype):
-    return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
-
+def _spectro(x, n_fft, hop, dtype): return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
 
 def _ispectro(z, hop, length, dtype):
     n_fft = 2 * z.shape[-2] - 2
     return istft(z, periodic_hann_window(n_fft, dtype), hop, length, dtype, normalized=True)
-
 
 def _demucs_spec(module, x, dtype):
     hop = module.hop_length
@@ -47,10 +42,8 @@ def _demucs_spec(module, x, dtype):
     x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect")
     return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
 
-
 def _demucs_ispec(module, z, length, scale, dtype):
     import mlx.core as mx
-
     hop = module.hop_length // (4**scale)
     z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)])
     z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)])
@@ -58,94 +51,68 @@ def _demucs_ispec(module, z, length, scale, dtype):
     le = hop * math.ceil(length / hop) + 2 * pad
     return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 
-
 _linear_layer = linear_layer
 
-
-def _my_group_norm(module, x, dtype):
-    return group_norm(module, x.transpose(0, 2, 1), dtype).transpose(0, 2, 1)
-
+def _my_group_norm(module, x, dtype): return group_norm(module, x.transpose(0, 2, 1), dtype).transpose(0, 2, 1)
 
 def _norm(module, x, dtype):
-    if isinstance(module, MyGroupNorm):
-        return _my_group_norm(module, x, dtype)
-    if isinstance(module, torch.nn.GroupNorm):
-        return group_norm(module, x, dtype)
-    if isinstance(module, torch.nn.LayerNorm):
-        return layer_norm(module, x, dtype)
-    if isinstance(module, torch.nn.Identity):
-        return x
+    if isinstance(module, MyGroupNorm): return _my_group_norm(module, x, dtype)
+    if isinstance(module, torch.nn.GroupNorm): return group_norm(module, x, dtype)
+    if isinstance(module, torch.nn.LayerNorm): return layer_norm(module, x, dtype)
+    if isinstance(module, torch.nn.Identity): return x
     raise TypeError(f"unsupported Demucs norm for MLX full backend: {type(module).__name__}")
-
 
 def _activation(module, x):
 
     name = getattr(module, "__name__", None)
-    if name == "gelu" or isinstance(module, torch.nn.GELU):
-        return gelu(x)
-    if name == "relu" or isinstance(module, torch.nn.ReLU):
-        return relu(x)
-    if isinstance(module, torch.nn.Identity):
-        return x
+    if name == "gelu" or isinstance(module, torch.nn.GELU): return gelu(x)
+    if name == "relu" or isinstance(module, torch.nn.ReLU): return relu(x)
+    if isinstance(module, torch.nn.Identity): return x
     raise TypeError(f"unsupported Demucs activation for MLX full backend: {type(module).__name__}")
-
 
 def _layer_scale(module, x, dtype):
     scale = param(module, "scale", module.scale, dtype)
     return scale * x if module.channel_last else scale[:, None] * x
 
-
 def _module_forward(module, x, dtype):
     # F.gelu/F.relu raw functions (stored on CrossTransformerEncoderLayer) + MyGroupNorm/LayerScale are family-specific
     if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)) or module.__class__ in (torch.nn.GELU, torch.nn.ReLU):
         return _activation(module, x)
-    if isinstance(module, MyGroupNorm):
-        return _my_group_norm(module, x, dtype)
-    if isinstance(module, LayerScale):
-        return _layer_scale(module, x, dtype)
-    if isinstance(module, torch.nn.GroupNorm):
-        return group_norm(module, x, dtype)
-    if isinstance(module, torch.nn.LayerNorm):
-        return layer_norm(module, x, dtype)
-    if isinstance(module, torch.nn.Identity):
-        return x
+    if isinstance(module, MyGroupNorm): return _my_group_norm(module, x, dtype)
+    if isinstance(module, LayerScale): return _layer_scale(module, x, dtype)
+    if isinstance(module, torch.nn.GroupNorm): return group_norm(module, x, dtype)
+    if isinstance(module, torch.nn.LayerNorm): return layer_norm(module, x, dtype)
+    if isinstance(module, torch.nn.Identity): return x
     return generic_module_forward(module, x, dtype, _norm, extra=((LayerScale, _layer_scale),))
-
 
 def _seq(module, x, dtype):
     for child in module:
         x = _module_forward(child, x, dtype)
     return x
 
-
 def _dconv(module, x, dtype):
     for layer in module.layers:
         x = x + _seq(layer, x, dtype)
     return x
 
-
 def _freq_dconv(module, y, dtype):
     b, c, fr, t = y.shape
     return _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype).reshape(b, fr, c, t).transpose(0, 2, 1, 3)
 
-
 def _henc_layer(module, x, inject, dtype):
     import mlx.core as mx
-
     if not module.freq and x.ndim == 4:
         x = x.reshape(x.shape[0], -1, x.shape[-1])
     if not module.freq and x.shape[-1] % module.stride:
         x = mx.pad(x, [(0, 0), (0, 0), (0, module.stride - x.shape[-1] % module.stride)])
     y = _module_forward(module.conv, x, dtype)
-    if module.empty:
-        return y
+    if module.empty: return y
     if inject is not None:
         y = y + (inject[:, :, None] if inject.ndim == 3 and y.ndim == 4 else inject)
     y = gelu(_norm(module.norm1, y, dtype))
     if module.dconv:
         y = _freq_dconv(module, y, dtype) if module.freq else _dconv(module.dconv, y, dtype)
     return glu(_norm(module.norm2, _module_forward(module.rewrite, y, dtype), dtype), axis=1) if module.rewrite else y
-
 
 def _hdec_layer(module, x, skip, length, dtype):
 
@@ -164,10 +131,8 @@ def _hdec_layer(module, x, skip, length, dtype):
         z = z[..., module.pad : module.pad + length]
     return (z if module.last else gelu(z)), y
 
-
 def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
     import mlx.core as mx
-
     half = d_model // 2
     div = mx.exp(mx.arange(0.0, half, 2) * -(math.log(max_period) / half))
     pos_w, pos_h = mx.arange(0.0, width).reshape(-1, 1), mx.arange(0.0, height).reshape(-1, 1)
@@ -179,27 +144,20 @@ def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
         pe = pe.at[sl].add(mx.broadcast_to(val, (val.shape[0], height, width)))
     return pe[None].astype(dtype)
 
-
 def _create_sin_embedding(length, dim, dtype, max_period=10000):
     import mlx.core as mx
-
     half = dim // 2
     phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (
         max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1)))
     return mx.concatenate((mx.cos(phase), mx.sin(phase)), axis=-1).astype(dtype)
 
-
 def _attention_out(mha, out, q_in, dtype):
     return _linear_layer(mha.out_proj, out.transpose(0, 2, 1, 3).reshape(q_in.shape), dtype)
 
-
-def _split_heads(q, heads):
-    return q.reshape(q.shape[0], q.shape[1], heads, -1).transpose(0, 2, 1, 3)
-
+def _split_heads(q, heads): return q.reshape(q.shape[0], q.shape[1], heads, -1).transpose(0, 2, 1, 3)
 
 def _self_attention(mha, x, dtype):
     import mlx.core as mx
-
     qkv = linear(x, param(mha, "in_proj_weight", mha.in_proj_weight, dtype), param(mha, "in_proj_bias", mha.in_proj_bias, dtype))
     q, k, v = (mx.split(qkv, 3, axis=-1))
     head_dim = q.shape[-1] // mha.num_heads
@@ -207,10 +165,8 @@ def _self_attention(mha, x, dtype):
     out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
     return _attention_out(mha, out, x, dtype)
 
-
 def _cross_attention(mha, q_in, k_in, dtype):
     import mlx.core as mx
-
     w = param(mha, "in_proj_weight", mha.in_proj_weight, dtype)
     b = param(mha, "in_proj_bias", mha.in_proj_bias, dtype)
     qw, kw, vw = mx.split(w, 3, axis=0)
@@ -223,10 +179,8 @@ def _cross_attention(mha, q_in, k_in, dtype):
     out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
     return _attention_out(mha, out, q_in, dtype)
 
-
 def _ffn(module, x, dtype):
     return _module_forward(module.linear2, _activation(module.activation, _module_forward(module.linear1, x, dtype)), dtype)
-
 
 def _transformer_encoder_layer(module, x, dtype):
     if module.norm_first:
@@ -236,7 +190,6 @@ def _transformer_encoder_layer(module, x, dtype):
     x = _norm(module.norm1, x + _layer_scale(module.gamma_1, _self_attention(module.self_attn, x, dtype), dtype), dtype)
     return _norm(module.norm2, x + _layer_scale(module.gamma_2, _ffn(module, x, dtype), dtype), dtype)
 
-
 def _cross_transformer_layer(module, q, k, dtype):
     if module.norm_first:
         attn = _cross_attention(module.cross_attn, _norm(module.norm1, q, dtype), _norm(module.norm2, k, dtype), dtype)
@@ -245,7 +198,6 @@ def _cross_transformer_layer(module, q, k, dtype):
         return _norm(module.norm_out, x, dtype) if module.norm_out else x
     x = _norm(module.norm1, q + _layer_scale(module.gamma_1, _cross_attention(module.cross_attn, q, k, dtype), dtype), dtype)
     return _norm(module.norm2, x + _layer_scale(module.gamma_2, _ffn(module, x, dtype), dtype), dtype)
-
 
 def _cross_transformer(module, x, xt, dtype):
 
@@ -264,16 +216,13 @@ def _cross_transformer(module, x, xt, dtype):
             xt = _cross_transformer_layer(module.layers_t[idx], xt, old_x, dtype)
     return x.reshape(b, t1, fr, c).transpose(0, 3, 2, 1), xt.transpose(0, 2, 1)
 
-
 def _std(x, axes, keepdims):
     import mlx.core as mx
-
     mean = mx.mean(x, axis=axes, keepdims=True)
     n = 1
     for axis in axes:
         n *= x.shape[axis]
     return mx.sqrt(mx.sum(mx.square(x - mean), axis=axes, keepdims=keepdims) / max(1, n - 1))
-
 
 def _validate_supported(module):
     if module.num_subbands != 1 or not module.cac or module.wiener_iters != 0 or module.end_iters != 0:
@@ -283,10 +232,8 @@ def _validate_supported(module):
     if module.crosstransformer is not None and module.crosstransformer.emb != "sin":
         raise TypeError("MLX full HTDemucs supports sinusoidal transformer embeddings only")
 
-
 def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     import mlx.core as mx
-
     _validate_supported(module)
     check_dtype(dtype, "HTDemucs")
     dtype = mx_dtype(dtype)
@@ -298,17 +245,14 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
         if mix.shape[-1] < training_length:
             length_pre_pad = mix.shape[-1]
             mix = mx.pad(mix, [(0, 0), (0, 0), (0, training_length - length_pre_pad)])
-
     z = _demucs_spec(module, mix, dtype)
     b, c, fr, t = z.shape
     x = mx.stack((z.real, z.imag), axis=2).reshape(b, c * 2, fr, t)
     f_query = x.shape[2]
-
     mean, std = mx.mean(x, axis=(1, 2, 3), keepdims=True), _std(x, (1, 2, 3), keepdims=True)
     x = (x - mean) / (1e-5 + std)
     meant, stdt = mx.mean(mix, axis=(1, 2), keepdims=True), _std(mix, (1, 2), keepdims=True)
     xt = (mix - meant) / (1e-5 + stdt)
-
     saved, saved_t, lengths_t = [], [], []
     for idx, encode in enumerate(module.encoder):
         skip_length = x.shape[-1]
@@ -326,7 +270,6 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
             weight = param(module.freq_emb.embedding, "weight", module.freq_emb.embedding.weight, dtype) * module.freq_emb.scale
             x = x + module.freq_emb_scale * weight[: x.shape[-2]].transpose(1, 0)[None, :, :, None]
         saved.append((x, skip_length))
-
     if module.crosstransformer:
         if module.bottom_channels:
             b, c, f, t = x.shape
@@ -337,7 +280,6 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
             b, c, f, t = x.shape
             x = conv1d(module.channel_downsampler, x.reshape(b, c, f * t), dtype).reshape(b, -1, f, t)
             xt = conv1d(module.channel_downsampler_t, xt, dtype)
-
     for idx, decode in enumerate(module.decoder):
         skip, skip_length = saved.pop()
         x, pre = _hdec_layer(decode, x, skip, skip_length, dtype)
@@ -349,7 +291,6 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
                 xt, _ = _hdec_layer(tdec, pre[:, :, 0], None, length_t, dtype)
             else:
                 xt, _ = _hdec_layer(tdec, xt, saved_t.pop(), length_t, dtype)
-
     stems = len(module.sources)
     x = x.reshape(b, stems, -1, f_query, t)
     x = x * std[:, None] + mean[:, None]
@@ -360,7 +301,6 @@ def mlx_forward_demucs_mx(module, mix, dtype=torch.float16):
     xt = xt.reshape(b, stems, -1, out_len) * stdt[:, None] + meant[:, None]
     x_audio = xt + x_audio
     return x_audio[..., :length_pre_pad] if length_pre_pad else x_audio
-
 
 def mlx_forward_demucs(module, raw_audio, dtype=torch.float16):
     return to_torch(mlx_forward_demucs_mx(module, to_mx(raw_audio, dtype=dtype), dtype), raw_audio)

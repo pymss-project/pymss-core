@@ -12,10 +12,8 @@ from .utils import (
     VocalBandsplitSpecification,
 )
 
-
 def get_band_specs(band_specs, n_fft, fs, n_bands=None):
-    if not isinstance(band_specs, str):
-        return band_specs, None, False
+    if not isinstance(band_specs, str): return band_specs, None, False
     if band_specs in ("dnr:speech", "dnr:vox7", "musdb:vocals", "musdb:vox7"):
         return VocalBandsplitSpecification(nfft=n_fft, fs=fs).get_band_specs(), None, False
     for key, cls in (("tribark", TriangularBarkBandsplitSpecification), ("bark", BarkBandsplitSpecification),
@@ -27,7 +25,6 @@ def get_band_specs(band_specs, n_fft, fs, n_bands=None):
             return specs.get_band_specs(), specs.get_freq_weights(), True
     raise ValueError(f"Unsupported band_specs: {band_specs}")
 
-
 class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponent):
     def __init__(self, stems, band_specs, fs=44100, n_fft=2048, win_length=2048, hop_length=512,
                  window_fn="hann_window", wkwargs=None, power=None, center=True, normalized=True,
@@ -36,11 +33,9 @@ class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponen
                          power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided)
         self.band_specs, self.freq_weights, self.overlapping_band = get_band_specs(band_specs, n_fft, fs, n_bands)
         self.stems = stems
-
     def mlx_forward_mx(self, raw_audio):
         from .....bandit_mlx import mlx_forward_bandit_mx
         return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
-
     def forward(self, batch):
         if self._use_mlx_full_forward(batch):
             try:
@@ -53,7 +48,6 @@ class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponen
             x = self.stft(batch)
         estimates = [self.istft(spec, batch.shape[-1]) for spec in self.bsrnn(x, cond=None)["spectrogram"].values()]
         return torch.stack(estimates, dim=1)
-
 
 class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSimple):
     def __init__(self, in_channel, stems, band_specs, fs=44100, require_no_overlap=False, require_no_gap=True,

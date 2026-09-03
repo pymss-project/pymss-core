@@ -2,10 +2,7 @@ import json
 
 N_BINS = "n_bins"
 
-
-def int_keys(d):
-    return {int(key) if key.isdigit() else key: value for key, value in d}
-
+def int_keys(d): return {int(key) if key.isdigit() else key: value for key, value in d}
 
 class ModelParameters:
     def __init__(self, config_path=""):

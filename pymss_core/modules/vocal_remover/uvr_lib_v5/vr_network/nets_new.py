@@ -4,7 +4,6 @@ from torch import nn
 
 from . import layers_new as layers
 
-
 class BaseNet(nn.Module):
     def __init__(self, nin, nout, nin_lstm, nout_lstm, dilations=((4, 2), (8, 4), (12, 6))):
         super().__init__()
@@ -17,14 +16,12 @@ class BaseNet(nn.Module):
         self.dec2 = layers.Decoder(nout * (2 + 4), nout * 2, 3, 1, 1)
         self.lstm_dec2 = layers.LSTMModule(nout * 2, nin_lstm, nout_lstm)
         self.dec1 = layers.Decoder(nout * (1 + 2) + 1, nout, 3, 1, 1)
-
     def forward(self, input_tensor):
         e1 = self.enc1(input_tensor); e2 = self.enc2(e1); e3 = self.enc3(e2); e4 = self.enc4(e3); e5 = self.enc5(e4)
         bottleneck = self.dec4(self.aspp(e5), e4)
         bottleneck = self.dec3(bottleneck, e3)
         bottleneck = self.dec2(bottleneck, e2)
         return self.dec1(torch.cat([bottleneck, self.lstm_dec2(bottleneck)], dim=1), e1)
-
 
 class CascadedNet(nn.Module):
     def __init__(self, n_fft, nn_arch_size=51000, nout=32, nout_lstm=128):
@@ -40,7 +37,6 @@ class CascadedNet(nn.Module):
         self.stg3_full_band_net = BaseNet(3 * nout // 4 + 2, nout, self.nin_lstm, nout_lstm)
         self.out = nn.Conv2d(nout, 2, 1, bias=False)
         self.aux_out = nn.Conv2d(3 * nout // 4, 2, 1, bias=False)
-
     def forward(self, input_tensor):
         input_tensor = input_tensor[:, :, : self.max_bin]
         bandw = input_tensor.size()[2] // 2
@@ -57,14 +53,12 @@ class CascadedNet(nn.Module):
             aux = F.pad(aux, (0, 0, 0, self.output_bin - aux.size()[2]), mode="replicate")
             return mask, aux
         return mask
-
     def predict_mask(self, input_tensor):
         mask = self.forward(input_tensor)
         if self.offset > 0:
             mask = mask[:, :, :, self.offset:-self.offset]
             assert mask.size()[3] > 0
         return mask
-
     def predict(self, input_tensor):
         pred_mag = input_tensor * self.forward(input_tensor)
         if self.offset > 0:
