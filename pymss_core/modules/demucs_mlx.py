@@ -4,7 +4,7 @@ import torch
 
 from .demucs_local import LayerScale, MyGroupNorm
 from .mlx_backend import (
-    linear_layer,
+    generic_module_forward, linear_layer,
     check_dtype, conv1d, conv2d, conv_transpose1d, conv_transpose2d, gelu, glu, group_norm, istft, layer_norm,
     linear, mx_dtype, pad_last, param, periodic_hann_window, relu, stft, to_mx, to_torch,
 )
@@ -52,7 +52,6 @@ def _my_group_norm(module, x, dtype):
 
 
 def _norm(module, x, dtype):
-
     if isinstance(module, MyGroupNorm):
         return _my_group_norm(module, x, dtype)
     if isinstance(module, torch.nn.GroupNorm):
@@ -82,27 +81,20 @@ def _layer_scale(module, x, dtype):
 
 
 def _module_forward(module, x, dtype):
-    if isinstance(module, torch.nn.Sequential):
-        return _seq(module, x, dtype)
-    if isinstance(module, torch.nn.Conv1d):
-        return conv1d(module, x, dtype)
-    if isinstance(module, torch.nn.ConvTranspose1d):
-        return conv_transpose1d(module, x, dtype)
-    if isinstance(module, torch.nn.Conv2d):
-        return conv2d(module, x, dtype)
-    if isinstance(module, torch.nn.ConvTranspose2d):
-        return conv_transpose2d(module, x, dtype)
-    if isinstance(module, torch.nn.Linear):
-        return _linear_layer(module, x, dtype)
-    if isinstance(module, (torch.nn.GroupNorm, torch.nn.LayerNorm, MyGroupNorm, torch.nn.Identity)):
-        return _norm(module, x, dtype)
-    if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)):
+    # F.gelu/F.relu raw functions (stored on CrossTransformerEncoderLayer) + MyGroupNorm/LayerScale are family-specific
+    if isinstance(module, (torch.nn.GELU, torch.nn.ReLU)) or module.__class__ in (torch.nn.GELU, torch.nn.ReLU):
         return _activation(module, x)
-    if isinstance(module, torch.nn.GLU):
-        return glu(x, module.dim)
+    if isinstance(module, MyGroupNorm):
+        return _my_group_norm(module, x, dtype)
     if isinstance(module, LayerScale):
         return _layer_scale(module, x, dtype)
-    raise TypeError(f"unsupported Demucs layer for MLX full backend: {type(module).__name__}")
+    if isinstance(module, torch.nn.GroupNorm):
+        return group_norm(module, x, dtype)
+    if isinstance(module, torch.nn.LayerNorm):
+        return layer_norm(module, x, dtype)
+    if isinstance(module, torch.nn.Identity):
+        return x
+    return generic_module_forward(module, x, dtype, _norm, extra=((LayerScale, _layer_scale),))
 
 
 def _seq(module, x, dtype):

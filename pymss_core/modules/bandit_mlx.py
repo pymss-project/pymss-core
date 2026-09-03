@@ -1,7 +1,7 @@
 import torch
 
 from .bandit.tfmodel import ResidualRNN, Transpose
-from .mlx_backend import check_dtype, gelu, glu, layer_norm, group_norm, istft, linear, mx_dtype, param, periodic_hann_window, relu, rnn_forward, stft, to_mx, to_torch
+from .mlx_backend import check_dtype, generic_activation, gelu, glu, layer_norm, group_norm, istft, linear, mx_dtype, param, periodic_hann_window, relu, rnn_forward, stft, to_mx, to_torch
 
 torch_to_mlx_input = to_mx
 
@@ -27,20 +27,7 @@ def _spectral_istft(istft_module, spec, context, length):
                  center=context["center"], normalized=context["normalized"])
 
 
-def _activation(module, x):
-    import mlx.core as mx
-
-    if isinstance(module, torch.nn.Tanh):
-        return mx.tanh(x)
-    if isinstance(module, torch.nn.ReLU):
-        return relu(x)
-    if isinstance(module, torch.nn.GELU):
-        return gelu(x)
-    if isinstance(module, torch.nn.ELU):
-        return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
-    if isinstance(module, torch.nn.Identity):
-        return x
-    raise TypeError(f"unsupported Bandit activation for MLX full backend: {type(module).__name__}")
+_activation = generic_activation
 
 
 def _norm_fc(module, xb, dtype):

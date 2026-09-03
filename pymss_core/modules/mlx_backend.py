@@ -68,6 +68,60 @@ def linear_layer(module, x, dtype):
                   None if module.bias is None else param(module, "bias", module.bias, dtype))
 
 
+def generic_activation(module, x, extra_swish=False):
+    # shared activation dispatch: Tanh/ReLU/GELU/ELU/Identity/Swish, ordered by per-family frequency
+    import mlx.core as mx
+
+    if isinstance(module, torch.nn.Tanh):
+        return mx.tanh(x)
+    if isinstance(module, torch.nn.ReLU):
+        return relu(x)
+    if isinstance(module, torch.nn.GELU):
+        if module.approximate != "none":
+            raise TypeError("MLX bridge only supports exact GELU")
+        return gelu(x)
+    if isinstance(module, torch.nn.SiLU):
+        return silu(x)
+    if isinstance(module, torch.nn.Identity):
+        return x
+    if extra_swish and type(module).__name__ == "Swish":
+        return swish(x)
+    if isinstance(module, torch.nn.ELU):
+        return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
+    raise TypeError(f"unsupported activation for MLX full backend: {type(module).__name__}")
+
+
+def generic_module_forward(module, x, dtype, norm_fn, swish_cls=None, extra=()):
+    # shared isinstance dispatch for conv/linear/norm/activation trees used by every per-family adapter.
+    # norm_fn handles the family-specific norm set; extra maps family classes to handlers (type, fn) pairs.
+    for klass, fn in extra:
+        if isinstance(module, klass):
+            return fn(module, x, dtype)
+    if isinstance(module, torch.nn.Sequential):
+        for child in module:
+            x = generic_module_forward(child, x, dtype, norm_fn, swish_cls, extra)
+        return x
+    if isinstance(module, torch.nn.Conv1d):
+        return conv1d(module, x, dtype)
+    if isinstance(module, torch.nn.Conv2d):
+        return conv2d(module, x, dtype)
+    if isinstance(module, torch.nn.ConvTranspose1d):
+        return conv_transpose1d(module, x, dtype)
+    if isinstance(module, torch.nn.ConvTranspose2d):
+        return conv_transpose2d(module, x, dtype)
+    if isinstance(module, torch.nn.Linear):
+        return linear_layer(module, x, dtype)
+    if isinstance(module, (torch.nn.GroupNorm, torch.nn.LayerNorm, torch.nn.InstanceNorm2d, torch.nn.BatchNorm2d)):
+        return norm_fn(module, x, dtype)
+    if isinstance(module, torch.nn.GLU):
+        return glu(x, module.dim)
+    if isinstance(module, torch.nn.SiLU):
+        return silu(x)
+    if swish_cls is not None and isinstance(module, swish_cls):
+        return swish(x)
+    return generic_activation(module, x)
+
+
 def rms_norm(x, gamma):
     import mlx.core as mx
 

@@ -2,7 +2,7 @@ import torch
 
 from .mdx23c_tfc_tdf_v3 import Downscale, TFC_TDF, Upscale
 from .mlx_backend import (
-    linear_layer,
+    generic_activation, generic_module_forward, linear_layer,
     batch_norm,
     check_dtype,
     conv2d,
@@ -55,20 +55,9 @@ def _subband_istft(module, x, context):
     return audio.reshape(*batch_dims, 2, audio.shape[-1])
 
 
-def _activation(module, x):
-    import mlx.core as mx
-
-    if isinstance(module, torch.nn.GELU):
-        if module.approximate != "none":
-            raise TypeError("MLX MDX23C only supports exact GELU")
-        return gelu(x)
-    if isinstance(module, torch.nn.ReLU):
-        return mx.maximum(x, 0)
-    if isinstance(module, torch.nn.ELU):
-        return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
-    if isinstance(module, torch.nn.Identity):
-        return x
-    raise TypeError(f"unsupported MDX23C activation for MLX full backend: {type(module).__name__}")
+_norm = lambda module, x, dtype: (group_norm if isinstance(module, torch.nn.GroupNorm) else
+                                  batch_norm if isinstance(module, torch.nn.BatchNorm2d) else instance_norm2d)(module, x, dtype)
+_activation = generic_activation
 
 
 def _module_forward(module, x, dtype):
@@ -76,25 +65,9 @@ def _module_forward(module, x, dtype):
         return _tfc_tdf(module, x, dtype)
     if isinstance(module, (Downscale, Upscale)):
         return _module_forward(module.conv, x, dtype)
-    if isinstance(module, torch.nn.Sequential):
-        for child in module:
-            x = _module_forward(child, x, dtype)
-        return x
-    if isinstance(module, torch.nn.Conv2d):
-        return conv2d(module, x, dtype)
-    if isinstance(module, torch.nn.ConvTranspose2d):
-        return conv_transpose2d(module, x, dtype)
-    if isinstance(module, torch.nn.Linear):
-        return _linear_layer(module, x, dtype)
-    if isinstance(module, torch.nn.InstanceNorm2d):
-        return instance_norm2d(module, x, dtype)
-    if isinstance(module, torch.nn.BatchNorm2d):
-        return batch_norm(module, x, dtype)
-    if isinstance(module, torch.nn.GroupNorm):
-        return group_norm(module, x, dtype)
-    if isinstance(module, (torch.nn.GELU, torch.nn.ReLU, torch.nn.ELU, torch.nn.Identity)):
-        return _activation(module, x)
-    raise TypeError(f"unsupported MDX23C layer for MLX full backend: {type(module).__name__}")
+    return generic_module_forward(module, x, dtype, _norm,
+                                  extra=((torch.nn.InstanceNorm2d, instance_norm2d), (torch.nn.BatchNorm2d, batch_norm),
+                                         (torch.nn.GroupNorm, group_norm)))
 
 
 def _tfc_tdf(module, x, dtype):
