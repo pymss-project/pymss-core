@@ -176,9 +176,7 @@ def _sequence_model(module, x, dtype):
 
 
 def _final_norm(module, x, dtype):
-    import mlx.core as mx
-
-    if isinstance(module.final_norm, mx.mod.Module) if False else isinstance(module.final_norm, torch.nn.Identity):
+    if isinstance(module.final_norm, torch.nn.Identity):
         return x
     return _rms_norm(x, to_mx(module.final_norm.gamma, dtype))
 
@@ -399,23 +397,12 @@ def _segm_model(module, x, dtype):
 
 
 def _segm_module(module, x, dtype):
-
-    if isinstance(module, torch.nn.Sequential):
-        return _seq(module, x, dtype)
-    if isinstance(module, hyperace_segm.Conv):
-        return _conv_block(module, x, dtype)
-    if isinstance(module, hyperace_segm.DSConv):
-        return _dsconv_block(module, x, dtype)
-    if isinstance(module, hyperace_segm.DS_Bottleneck):
-        return _ds_bottleneck(module, x, dtype)
-    if isinstance(module, hyperace_segm.DS_C3k):
-        return _ds_c3k(module, x, dtype)
-    if isinstance(module, hyperace_segm.DS_C3k2):
-        return _ds_c3k2(module, x, dtype)
-    if isinstance(module, hyperace_segm.TFC_TDF):
-        return _tfc_tdf(module, x, dtype)
-    if isinstance(module, torch.nn.InstanceNorm2d):
-        return instance_norm2d(module, x, dtype)
+    handlers = {torch.nn.Sequential: _seq, hyperace_segm.Conv: _conv_block, hyperace_segm.DSConv: _dsconv_block,
+                hyperace_segm.DS_Bottleneck: _ds_bottleneck, hyperace_segm.DS_C3k: _ds_c3k,
+                hyperace_segm.DS_C3k2: _ds_c3k2, hyperace_segm.TFC_TDF: _tfc_tdf, torch.nn.InstanceNorm2d: instance_norm2d}
+    for klass, fn in handlers.items():
+        if isinstance(module, klass):
+            return fn(module, x, dtype)
     if isinstance(module, torch.nn.SiLU):
         return silu(x)
     if isinstance(module, torch.nn.Conv2d):

@@ -10,17 +10,8 @@ class ConfigLoader(yaml.FullLoader):
 # FullLoader only resolves floats with a dot/exponent; configs also use bare "1e-4"-style values.
 ConfigLoader.add_implicit_resolver(
     "tag:yaml.org,2002:float",
-    re.compile(
-        r"""^[-+]?(
-            ([0-9][0-9_]*)?\.[0-9_]+([eE][-+]?[0-9]+)?
-            |[0-9][0-9_]*[eE][-+]?[0-9]+
-            |\.(inf|Inf|INF)
-            |\.(nan|NaN|NAN)
-        )$""",
-        re.X,
-    ),
-    list("-+0123456789."),
-)
+    re.compile(r"""^[-+]?( ([0-9][0-9_]*)?\.[0-9_]+([eE][-+]?[0-9]+)? |[0-9][0-9_]*[eE][-+]?[0-9]+ |\.(inf|Inf|INF) |\.(nan|NaN|NAN) )$""", re.X),
+    list("-+0123456789."))
 
 
 class AttrDict(dict):
