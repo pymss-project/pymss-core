@@ -248,8 +248,7 @@ class ProgressiveUpsampleHead(nn.Module):
 
     def forward(self, x):
         x = self.block4(self.block3(self.block2(self.block1(x))))
-        return self.final_conv(x if x.shape[-1] == self.target_bins
-                               else _interp(x, (x.shape[2], self.target_bins)))
+        return self.final_conv(x if x.shape[-1] == self.target_bins else _interp(x, (x.shape[2], self.target_bins)))
 
 
 class SegmModel(nn.Module):

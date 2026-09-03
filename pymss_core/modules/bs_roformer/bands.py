@@ -116,14 +116,7 @@ class BandSplit(Module):
         )
 
 
-def MLP(
-    dim_in,
-    dim_out,
-    dim_hidden=None,
-    depth=1,
-    activation=nn.Tanh,
-    hidden_layers=None,
-):
+def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_layers=None):
     dim_hidden, hidden_layers = default(dim_hidden, dim_in), default(hidden_layers, max(depth - 1, 0))
     dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out)
     return nn.Sequential(
@@ -140,14 +133,7 @@ def MLP(
 
 
 class MaskEstimator(Module):
-    def __init__(
-        self,
-        dim,
-        dim_inputs: Tuple[int, ...],
-        depth,
-        mlp_expansion_factor=4,
-        mlp_hidden_layers=None,
-    ):
+    def __init__(self, dim, dim_inputs: Tuple[int, ...], depth, mlp_expansion_factor=4, mlp_hidden_layers=None):
         super().__init__()
         self.dim_inputs = dim_inputs
         self._dim_total = sum(dim_inputs)

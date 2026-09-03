@@ -8,13 +8,7 @@ from .bands import contiguous_dim_groups
 from .bs_roformer_hyperace import BSRoformerHyperACE
 from .conformer import Conformer
 from .mel_band_roformer import MelBandRoformer
-from .mlx_attention import (
-    _COMPUTE_DTYPE,
-    _mlx_attention,
-    _mlx_feed_forward,
-    _mlx_output_norm,
-    _rms_norm,
-)
+from .mlx_attention import (_COMPUTE_DTYPE, _mlx_attention, _mlx_feed_forward, _mlx_output_norm, _rms_norm)
 
 torch_to_mlx_input = to_mx
 
