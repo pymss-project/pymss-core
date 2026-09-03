@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from torch.nn.modules import activation
-from torch.utils.checkpoint import checkpoint_sequential
 
 from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
 
@@ -24,8 +23,7 @@ class BaseNormMLP(nn.Module):
         self.bandwidth = bandwidth
         self.in_channels = self.in_channel = _resolve_channels(in_channels, in_channel)
         self.complex_mask = complex_mask
-        self.reim = 2 if complex_mask else 1
-        self.glu_mult = 2
+        self.reim, self.glu_mult = 2 if complex_mask else 1, 2
 
 
 class NormMLP(BaseNormMLP):
@@ -46,6 +44,7 @@ class NormMLP(BaseNormMLP):
         return mb.permute(0, 2, 3, 1)
 
     def forward(self, qb):
+        from torch.utils.checkpoint import checkpoint_sequential
         if hasattr(self, "combined"):
             mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False) if self.use_checkpoint else self.combined(qb)
         else:
@@ -73,15 +72,11 @@ class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
     def __init__(self, band_specs, emb_dim, mlp_dim, in_channels=None, in_channel=None, hidden_activation="Tanh",
                  hidden_activation_kwargs=None, complex_mask=True, norm_mlp_cls=NormMLP, norm_mlp_kwargs=None):
         super().__init__()
-        channels = _resolve_channels(in_channels, in_channel)
-        self.band_widths = band_widths_from_specs(band_specs)
-        self.n_bands = len(band_specs)
+        self.band_widths, self.n_bands = band_widths_from_specs(band_specs), len(band_specs)
         self.norm_mlp = nn.ModuleList([
-            norm_mlp_cls(bandwidth=bw, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=channels,
+            norm_mlp_cls(bandwidth=bw, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=_resolve_channels(in_channels, in_channel),
                          hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs or {},
-                         complex_mask=complex_mask, **(norm_mlp_kwargs or {}))
-            for bw in self.band_widths
-        ])
+                         complex_mask=complex_mask, **(norm_mlp_kwargs or {})) for bw in self.band_widths])
 
     def compute_masks(self, q):
         return [nmlp(q[:, b, :, :]) for b, nmlp in enumerate(self.norm_mlp)]
@@ -102,13 +97,9 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
         super().__init__(band_specs, emb_dim + cond_dim, mlp_dim, _resolve_channels(in_channels, in_channel),
                          hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs,
                          complex_mask=complex_mask, norm_mlp_cls=norm_mlp_cls, norm_mlp_kwargs=norm_mlp_kwargs)
-        self.n_freq = n_freq
-        self.band_specs = band_specs
+        self.n_freq, self.band_specs, self.cond_dim, self.allow_cond = n_freq, band_specs, cond_dim, allow_cond
         self.in_channels = self.in_channel = _resolve_channels(in_channels, in_channel)
-        self.cond_dim = cond_dim
-        self.allow_cond = allow_cond
-        self.output_dtype = output_dtype
-        self.compute_all_masks = compute_all_masks
+        self.output_dtype, self.compute_all_masks = output_dtype, compute_all_masks
         self.use_freq_weights = bool(freq_weights is not None and use_freq_weights)
         if freq_weights is not None and (register_all_freq_weights or use_freq_weights):
             for i, fw in enumerate(freq_weights):

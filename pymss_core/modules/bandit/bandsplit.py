@@ -12,11 +12,10 @@ class NormFC(nn.Module):
             raise NotImplementedError
         self.treat_channel_as_feature = treat_channel_as_feature
         self.norm = nn.LayerNorm(in_channels * bandwidth * 2)
-        if treat_channel_as_feature:
-            fc_in = bandwidth * 2 * in_channels
-        else:
+        fc_in = bandwidth * 2 * in_channels if treat_channel_as_feature else bandwidth * 2
+        if not treat_channel_as_feature:
             assert emb_dim % in_channels == 0
-            fc_in, emb_dim = bandwidth * 2, emb_dim // in_channels
+            emb_dim //= in_channels
         self.fc = nn.Linear(fc_in, emb_dim)
 
     def forward(self, xb):
@@ -48,18 +47,12 @@ class BandSplitModuleBase(nn.Module):
             check_no_gap(band_specs)
         if require_no_overlap:
             check_no_overlap(band_specs)
-        self.band_specs = band_specs
-        self.band_widths = band_widths_from_specs(band_specs)
-        self.n_bands = len(band_specs)
-        self.emb_dim = emb_dim
-        self.complex_order = complex_order
-        self.flatten_input = flatten_input
+        self.band_specs, self.band_widths, self.n_bands = band_specs, band_widths_from_specs(band_specs), len(band_specs)
+        self.emb_dim, self.complex_order, self.flatten_input = emb_dim, complex_order, flatten_input
         self.norm_fc_modules = nn.ModuleList([
             norm_fc_cls(emb_dim=emb_dim, bandwidth=bw, in_channels=in_channels,
                         normalize_channel_independently=normalize_channel_independently,
-                        treat_channel_as_feature=treat_channel_as_feature)
-            for bw in self.band_widths
-        ])
+                        treat_channel_as_feature=treat_channel_as_feature) for bw in self.band_widths])
 
     def _band_view(self, x):
         xr = torch.view_as_real(x)
@@ -75,10 +68,8 @@ class BandSplitModuleBase(nn.Module):
         z = torch.zeros(b, self.n_bands, t, self.emb_dim, device=x.device)
         for i, nfm in enumerate(self.norm_fc_modules):
             f0, f1 = self.band_specs[i]
-            if self.complex_order == "reim_freq":
-                xb = xr[..., f0:f1].reshape(b, t, c, -1)
-            else:
-                xb = xr[:, :, :, f0:f1].reshape(b, t, -1)
+            xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq"
+                  else xr[:, :, :, f0:f1].reshape(b, t, -1))
             z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
 
