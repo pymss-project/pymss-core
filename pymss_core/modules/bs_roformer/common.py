@@ -6,7 +6,7 @@ from torch import nn
 from ..mlx_backend import MpsBackendMixin
 from .bands import BandSplit, MaskEstimator
 from .conformer import Conformer
-from .transformer import RMSNorm, Transformer
+from .transformer import RMSNorm, Transformer  # noqa: F401 (RMSNorm re-export is part of the package surface)
 
 DEFAULT_FREQS_PER_BANDS = (2,) * 24 + (4,) * 12 + (12,) * 8 + (24,) * 8 + (48,) * 8 + (128, 129)
 
@@ -119,8 +119,8 @@ def init_conformer_layers(module, *, depth, time_conformer_depth, freq_conformer
 
 
 def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
-    module.stft_kwargs = dict(n_fft=stft_n_fft, hop_length=stft_hop_length, win_length=stft_win_length,
-                              normalized=stft_normalized)
+    module.stft_kwargs = {"n_fft": stft_n_fft, "hop_length": stft_hop_length, "win_length": stft_win_length,
+                              "normalized": stft_normalized}
     module.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
     module._stft_window_cache = {}
 

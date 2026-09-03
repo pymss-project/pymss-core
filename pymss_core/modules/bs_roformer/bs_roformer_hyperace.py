@@ -1,8 +1,8 @@
+import torch
+
 from .bs_roformer import BSRoformer
 from .common import MaskEstimator as RoformerMaskEstimator
 from .hyperace_segm import SegmModel
-
-import torch
 
 
 class MaskEstimator(RoformerMaskEstimator):

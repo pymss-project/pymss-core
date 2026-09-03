@@ -4,7 +4,6 @@ import random
 import sys
 import types
 from contextlib import contextmanager
-from copy import deepcopy
 from pathlib import Path
 
 import torch
@@ -12,8 +11,10 @@ import yaml
 from torch import nn
 from torch.nn import functional as F
 
-from .demucs_local import (BLSTM, DConv, HDecLayer, HEncLayer, LayerScale, LegacyLayerScale, MultiWrap,
-                            ScaledEmbedding as LegacyScaledEmbedding, _freq_dconv as _dconv_freq, rescale_module as _rescale_module)
+from .demucs_local import BLSTM, DConv, HDecLayer, HEncLayer, MultiWrap
+from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
+from .demucs_local import _freq_dconv as _dconv_freq
+from .demucs_local import rescale_module as _rescale_module
 
 LEGACY_STEMS_4 = ["drums", "bass", "other", "vocals"]
 LEGACY_STEMS_2 = ["vocals", "non_vocals"]
@@ -58,7 +59,7 @@ def _valid_length(model, length, with_context):
             length += model.context - 1
     for _ in range(model.depth):
         length = (length - 1) * model.stride + model.kernel_size
-    return int(math.ceil(length / 2)) if model.resample else int(length)
+    return math.ceil(length / 2) if model.resample else int(length)
 
 
 class LegacyDemucs(nn.Module):
@@ -253,7 +254,7 @@ class LegacyMultiWrap(MultiWrap):
             freqs = x.shape[2]
             start, outs = 0, []
             for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
-                limit = freqs if ratio == 1 else int(round(freqs * ratio))
+                limit = freqs if ratio == 1 else round(freqs * ratio)
                 last, layer.last = layer.last, True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], length)
                 if outs:
@@ -379,7 +380,7 @@ class LegacyHDemucs(nn.Module):
     def _spec(self, x):
         hl, nfft = self.hop_length, self.nfft
         if self.hybrid:
-            le = int(math.ceil(x.shape[-1] / hl))
+            le = math.ceil(x.shape[-1] / hl)
             pad = hl // 2 * 3
             x = _pad1d(x, (pad, pad + le * hl - x.shape[-1]), mode="constant" if self.hybrid_old else "reflect")
         z = _spectro(x, nfft, hl)[..., :-1, :]
@@ -391,7 +392,7 @@ class LegacyHDemucs(nn.Module):
         if self.hybrid:
             z = F.pad(z, (2, 2))
             pad = hl // 2 * 3
-            le = hl * int(math.ceil(length / hl)) + (0 if self.hybrid_old else 2 * pad)
+            le = hl * math.ceil(length / hl) + (0 if self.hybrid_old else 2 * pad)
             x = _ispectro(z, hl, length=le)
             return x[..., :length] if self.hybrid_old else x[..., pad : pad + length]
         return _ispectro(z, hl, length)
@@ -405,7 +406,7 @@ class LegacyHDemucs(nn.Module):
     def _mask(self, z, m):
         if not self.cac:
             raise ValueError("legacy HDemucs loader supports only CaC checkpoints")
-        batch, sources, channels, freqs, time = m.shape
+        batch, sources, _channels, freqs, time = m.shape
         out = m.view(batch, sources, -1, 2, freqs, time).permute(0, 1, 2, 4, 5, 3)
         return torch.view_as_complex(out.contiguous())
 

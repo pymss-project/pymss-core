@@ -29,6 +29,6 @@ class _SpectralComponent(nn.Module):
                  center=True, normalized=True, pad_mode="constant", onesided=True, **kwargs):
         super().__init__()
         assert power is None
-        kwargs = dict(n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=torch.__dict__[window_fn],
-                      wkwargs=wkwargs, normalized=normalized, center=center, pad_mode=pad_mode, onesided=onesided)
+        kwargs = {"n_fft": n_fft, "win_length": win_length, "hop_length": hop_length, "window_fn": torch.__dict__[window_fn],
+                      "wkwargs": wkwargs, "normalized": normalized, "center": center, "pad_mode": pad_mode, "onesided": onesided}
         self.stft, self.istft = _TorchSpectrogram(**kwargs), _TorchInverseSpectrogram(**kwargs)

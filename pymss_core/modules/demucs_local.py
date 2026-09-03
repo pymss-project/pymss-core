@@ -241,7 +241,7 @@ class MultiWrap(nn.Module):
         start, outs = 0, []
         for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
             if self.conv:
-                pad, limit = layer.kernel_size // 4, fr if ratio == 1 else int(round(fr * ratio))
+                pad, limit = layer.kernel_size // 4, fr if ratio == 1 else round(fr * ratio)
                 if ratio != 1:
                     le = limit - start + (pad if start == 0 else 0)
                     limit = start + (round((le - layer.kernel_size) / layer.stride + 1) - 1) * layer.stride \
@@ -254,7 +254,7 @@ class MultiWrap(nn.Module):
                 outs.append(layer(y))
                 start = limit - layer.kernel_size + layer.stride
             else:
-                limit, last = fr if ratio == 1 else int(round(fr * ratio)), layer.last
+                limit, last = fr if ratio == 1 else round(fr * ratio), layer.last
                 layer.last = True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], None)
                 if outs:
@@ -399,11 +399,11 @@ class CrossTransformerEncoder(nn.Module):
         else:
             norm_fn = lambda: nn.Identity()
         self.norm_in, self.norm_in_t = norm_fn(), norm_fn()
-        common = dict(d_model=dim, nhead=num_heads, dim_feedforward=int(dim * hidden_scale), dropout=dropout,
-                      activation=F.gelu if gelu else F.relu, group_norm=group_norm, norm_first=norm_first, norm_out=norm_out,
-                      layer_scale=layer_scale, mask_type=mask_type, mask_random_seed=mask_random_seed,
-                      sparse_attn_window=sparse_attn_window, global_window=global_window, sparsity=sparsity,
-                      auto_sparsity=auto_sparsity, batch_first=True)
+        common = {"d_model": dim, "nhead": num_heads, "dim_feedforward": int(dim * hidden_scale), "dropout": dropout,
+                      "activation": F.gelu if gelu else F.relu, "group_norm": group_norm, "norm_first": norm_first, "norm_out": norm_out,
+                      "layer_scale": layer_scale, "mask_type": mask_type, "mask_random_seed": mask_random_seed,
+                      "sparse_attn_window": sparse_attn_window, "global_window": global_window, "sparsity": sparsity,
+                      "auto_sparsity": auto_sparsity, "batch_first": True}
         self.layers, self.layers_t = nn.ModuleList(), nn.ModuleList()
         for idx in range(num_layers):
             klass = MyTransformerEncoderLayer if idx % 2 == self.classic_parity else CrossTransformerEncoderLayer

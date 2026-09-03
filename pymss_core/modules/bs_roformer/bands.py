@@ -1,15 +1,13 @@
 import os
 from collections import defaultdict
-from itertools import accumulate
-from typing import Tuple
+from itertools import accumulate, pairwise
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
-import torch.nn.functional as F
 
 from .transformer import RMSNorm
-
 
 EXPERIMENTAL_TRAIN_GROUPED_BANDS_ENV = "PYMSS_CORE_EXPERIMENTAL_TRAIN_GROUPED_BANDS"
 EXPERIMENTAL_DEEP_MASK_GROUPING_ENV = "PYMSS_CORE_EXPERIMENTAL_DEEP_MASK_GROUPING"
@@ -37,7 +35,7 @@ def dim_input_offsets(dim_inputs):
 
 def contiguous_dim_groups(dim_inputs):
     breaks = [0] + [i for i in range(1, len(dim_inputs)) if dim_inputs[i] != dim_inputs[i - 1]] + [len(dim_inputs)]
-    return tuple((s, e, dim_inputs[s]) for s, e in zip(breaks, breaks[1:]))
+    return tuple((s, e, dim_inputs[s]) for s, e in pairwise(breaks))
 
 
 def grouped_linear(x, weight, bias):
@@ -65,7 +63,7 @@ def stack_linears(linears, device, dtype):
 
 
 class BandSplit(Module):
-    def __init__(self, dim, dim_inputs: Tuple[int, ...]):
+    def __init__(self, dim, dim_inputs: tuple[int, ...]):
         super().__init__()
         self.dim_inputs, self._dim_offsets = dim_inputs, dim_input_offsets(dim_inputs)
         self._dim_groups, self._group_cache = contiguous_dim_groups(dim_inputs), {}
@@ -122,7 +120,7 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_la
     return nn.Sequential(
         *[
             layer
-            for ind, (layer_dim_in, layer_dim_out) in enumerate(zip(dims[:-1], dims[1:]))
+            for ind, (layer_dim_in, layer_dim_out) in enumerate(pairwise(dims))
             for layer in (
                 (nn.Linear(layer_dim_in, layer_dim_out),)
                 if ind == len(dims) - 2
@@ -133,7 +131,7 @@ def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_la
 
 
 class MaskEstimator(Module):
-    def __init__(self, dim, dim_inputs: Tuple[int, ...], depth, mlp_expansion_factor=4, mlp_hidden_layers=None):
+    def __init__(self, dim, dim_inputs: tuple[int, ...], depth, mlp_expansion_factor=4, mlp_hidden_layers=None):
         super().__init__()
         self.dim_inputs = dim_inputs
         self._dim_total = sum(dim_inputs)
@@ -198,7 +196,6 @@ class MaskEstimator(Module):
         self._layer_group_plan_ready = True
         self._layer_group_plan_allow_deep = allow_deep_grouping
         self._layer_group_plan = None
-        return None
 
     def _layer_grouping_plan(self):
         allow_deep_grouping = self.training and experimental_deep_mask_grouping()
@@ -224,7 +221,7 @@ class MaskEstimator(Module):
                 return self._plan_bail(allow_deep_grouping)
             groups = defaultdict(list)
             for band_index, layers in enumerate(band_layers):
-                kind, layer = layers[layer_index]
+                _kind, layer = layers[layer_index]
                 groups[(layer.in_features, layer.out_features, layer.bias is not None)].append(band_index)
             plan.append(("linear", tuple((signature, tuple(indices)) for signature, indices in groups.items())))
 

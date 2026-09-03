@@ -3,9 +3,20 @@ import math
 import torch
 
 from .mlx_backend import (
-    generic_module_forward, linear_layer,
-    check_dtype, conv1d, conv2d, conv_transpose2d, gelu, glu, group_norm, istft, linear, mx_dtype, param,
-    relu, rnn_forward, stft, swish, to_mx, to_torch,
+    check_dtype,
+    conv2d,
+    conv_transpose2d,
+    gelu,
+    generic_module_forward,
+    glu,
+    group_norm,
+    istft,
+    linear_layer,
+    mx_dtype,
+    rnn_forward,
+    stft,
+    to_mx,
+    to_torch,
 )
 from .scnet.scnet import Swish
 

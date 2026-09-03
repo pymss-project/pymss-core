@@ -1,10 +1,16 @@
 import torch
 
+from .....mlx_backend import MpsBackendMixin
 from .._spectral import _SpectralComponent
 from .core import MultiSourceMultiMaskBandSplitCoreRNN
-from .utils import (BarkBandsplitSpecification, EquivalentRectangularBandsplitSpecification, MelBandsplitSpecification,
-                    MusicalBandsplitSpecification, TriangularBarkBandsplitSpecification, VocalBandsplitSpecification)
-from .....mlx_backend import MpsBackendMixin
+from .utils import (
+    BarkBandsplitSpecification,
+    EquivalentRectangularBandsplitSpecification,
+    MelBandsplitSpecification,
+    MusicalBandsplitSpecification,
+    TriangularBarkBandsplitSpecification,
+    VocalBandsplitSpecification,
+)
 
 
 def get_band_specs(band_specs, n_fft, fs, n_bands=None):

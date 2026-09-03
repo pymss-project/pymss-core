@@ -1,10 +1,9 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
-import torch.nn.functional as F
 
 from .attend import Attend
-
 
 _CUDA_ATTENTION_BACKEND_ALIASES = {"auto": "auto", "torch": "default", "default": "default", "sdpa": "default", "flash": "flash",
     "flash_attention": "flash", "cudnn": "cudnn", "cudnn_attn": "cudnn", "cudnn_attention": "cudnn", "efficient": "efficient",

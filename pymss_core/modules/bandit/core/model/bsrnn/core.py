@@ -20,11 +20,11 @@ class MultiMaskBandSplitCoreBase(nn.Module):
         if mult_add_mask:
             raise NotImplementedError("Bandit mult_add_mask is not supported by the inference-only wrapper")
         stems = [stem for stem in stems if stem != "mne:+"]
-        kwargs = dict(emb_dim=emb_dim, mlp_dim=mlp_dim, in_channel=in_channel, hidden_activation=hidden_activation,
-                      hidden_activation_kwargs=hidden_activation_kwargs or {}, complex_mask=complex_mask)
+        kwargs = {"emb_dim": emb_dim, "mlp_dim": mlp_dim, "in_channel": in_channel, "hidden_activation": hidden_activation,
+                      "hidden_activation_kwargs": hidden_activation_kwargs or {}, "complex_mask": complex_mask}
         cls = (OverlappingMaskEstimationModule if overlapping_band else MaskEstimationModule)
-        extra = dict(freq_weights=freq_weights, n_freq=n_freq, use_freq_weights=use_freq_weights) if overlapping_band \
-            else dict(cond_dim=cond_dim)
+        extra = {"freq_weights": freq_weights, "n_freq": n_freq, "use_freq_weights": use_freq_weights} if overlapping_band \
+            else {"cond_dim": cond_dim}
         self.mask_estim = nn.ModuleDict({stem: cls(band_specs=band_specs, **extra, **kwargs) for stem in stems})
 
     def instantiate_bandsplit(self, in_channel, band_specs, require_no_overlap=False, require_no_gap=True,

@@ -57,7 +57,7 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
             batch = {"mixture": {"audio": batch.view(-1, 1, batch.shape[-1])}}
         with torch.no_grad():
             mixture = batch["mixture"]["audio"]
-            batch["mixture"]["spectrogram"] = x = self.stft(mixture)
+            batch["mixture"]["spectrogram"] = self.stft(mixture)
             for stem in batch.get("sources", {}):
                 batch["sources"][stem]["spectrogram"] = self.stft(batch["sources"][stem]["audio"])
         batch = self.separate(batch)

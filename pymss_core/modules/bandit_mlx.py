@@ -1,7 +1,22 @@
 import torch
 
 from .bandit.tfmodel import ResidualRNN, Transpose
-from .mlx_backend import check_dtype, generic_activation, gelu, glu, layer_norm, group_norm, istft, linear, mx_dtype, param, periodic_hann_window, relu, rnn_forward, stft, to_mx, to_torch
+from .mlx_backend import (
+    check_dtype,
+    generic_activation,
+    glu,
+    group_norm,
+    istft,
+    layer_norm,
+    linear,
+    mx_dtype,
+    param,
+    periodic_hann_window,
+    rnn_forward,
+    stft,
+    to_mx,
+    to_torch,
+)
 
 torch_to_mlx_input = to_mx
 
@@ -157,7 +172,7 @@ def _mask_estimator(module, q, dtype, cond=None):
 
 
 def _bsrnn_core(module, x, dtype):
-    batch, in_chan, n_freq, n_time = x.shape
+    _batch, _in_chan, n_freq, n_time = x.shape
     x = x.reshape(-1, 1, n_freq, n_time)
     q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype)
     return [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]

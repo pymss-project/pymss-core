@@ -1,13 +1,13 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from . import layers
 
 
 class BaseASPPNet(nn.Module):
     def __init__(self, nn_architecture, nin, ch, dilations=(4, 8, 16)):
-        super(BaseASPPNet, self).__init__()
+        super().__init__()
         self.nn_architecture = nn_architecture
         enc = lambda i, o: layers.Encoder(i, o, 3, 2, 1)
         self.enc1, self.enc2, self.enc3, self.enc4 = enc(nin, ch), enc(ch, ch * 2), enc(ch * 2, ch * 4), enc(ch * 4, ch * 8)
@@ -47,7 +47,7 @@ def determine_model_capacity(n_fft_bins, nn_architecture):
 
 class CascadedASPPNet(nn.Module):
     def __init__(self, n_fft, model_capacity_data, nn_architecture):
-        super(CascadedASPPNet, self).__init__()
+        super().__init__()
         m = model_capacity_data
         self.stg1_low_band_net = BaseASPPNet(nn_architecture, *m[0])
         self.stg1_high_band_net = BaseASPPNet(nn_architecture, *m[1])

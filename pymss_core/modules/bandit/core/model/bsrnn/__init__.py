@@ -1,6 +1,14 @@
-from ....bandsplit import NormFC as _NormFC, _ConfiguredBandSplitModule
-from ....maskestim import (BaseNormMLP, MaskEstimationModule, MaskEstimationModuleBase, MaskEstimationModuleSuperBase,
-                           MultAddNormMLP, NormMLP, OverlappingMaskEstimationModule)
+from ....bandsplit import NormFC as _NormFC
+from ....bandsplit import _ConfiguredBandSplitModule
+from ....maskestim import (
+    BaseNormMLP,
+    MaskEstimationModule,
+    MaskEstimationModuleBase,
+    MaskEstimationModuleSuperBase,
+    MultAddNormMLP,
+    NormMLP,
+    OverlappingMaskEstimationModule,
+)
 from ....tfmodel import ResidualRNN, TimeFrequencyModellingModule, Transpose, _SeqBandModellingPreset
 
 

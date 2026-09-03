@@ -1,6 +1,6 @@
 import torch
 
-from .look2hear.apollo import BSNet, ConvActNorm1d, ICB, RMSNorm
+from .look2hear.apollo import ICB, BSNet, ConvActNorm1d, RMSNorm
 from .mlx_backend import check_dtype, conv1d, istft, mx_dtype, param, reflect_pad_last, silu, stft, to_mx, to_torch
 
 torch_to_mlx_input = to_mx

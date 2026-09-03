@@ -1,13 +1,13 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from . import layers_new as layers
 
 
 class BaseNet(nn.Module):
     def __init__(self, nin, nout, nin_lstm, nout_lstm, dilations=((4, 2), (8, 4), (12, 6))):
-        super(BaseNet, self).__init__()
+        super().__init__()
         e = lambda i, o: layers.Encoder(i, o, 3, 2, 1)
         self.enc1 = layers.Conv2DBNActiv(nin, nout, 3, 1, 1)
         self.enc2, self.enc3, self.enc4, self.enc5 = e(nout, nout * 2), e(nout * 2, nout * 4), e(nout * 4, nout * 6), e(nout * 6, nout * 8)
@@ -28,7 +28,7 @@ class BaseNet(nn.Module):
 
 class CascadedNet(nn.Module):
     def __init__(self, n_fft, nn_arch_size=51000, nout=32, nout_lstm=128):
-        super(CascadedNet, self).__init__()
+        super().__init__()
         self.max_bin, self.output_bin = n_fft // 2, n_fft // 2 + 1
         self.nin_lstm, self.offset = self.max_bin // 2, 64
         nout = 64 if nn_arch_size == 218409 else nout

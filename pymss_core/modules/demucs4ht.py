@@ -7,7 +7,15 @@ from torch.nn import functional as F
 
 from ..config import to_plain
 from .demucs_local import (
-    CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, rescale_module, spectro,
+    CrossTransformerEncoder,
+    HDecLayer,
+    HEncLayer,
+    MultiWrap,
+    ScaledEmbedding,
+    ispectro,
+    pad1d,
+    rescale_module,
+    spectro,
 )
 from .mlx_backend import MpsBackendMixin
 
@@ -23,10 +31,12 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         t_max_positions=10000, t_norm_in=True, t_norm_in_group=False, t_group_norm=False, t_norm_first=True,
         t_norm_out=True, t_max_period=10000.0, t_weight_decay=0.0, t_lr=None, t_layer_scale=True, t_gelu=True,
         t_weight_pos_embed=1.0, t_sin_random_shift=0, t_cape_mean_normalize=True, t_cape_augment=True,
-        t_cape_glob_loc_scale=[5000.0, 1.0, 1.4], t_sparse_self_attn=False, t_sparse_cross_attn=False,
+        t_cape_glob_loc_scale=None, t_sparse_self_attn=False, t_sparse_cross_attn=False,
         t_mask_type="diag", t_mask_random_seed=42, t_sparse_attn_window=500, t_global_window=100, t_sparsity=0.95,
         t_auto_sparsity=False, t_cross_first=False, rescale=0.1, samplerate=44100, segment=10, use_train_segment=False,
     ):
+        if t_cape_glob_loc_scale is None:
+            t_cape_glob_loc_scale = [5000.0, 1.0, 1.4]
         super().__init__()
         self.num_subbands, self.cac, self.wiener_residual, self.audio_channels, self.sources = (
             num_subbands, cac, wiener_residual, audio_channels, sources)
@@ -37,7 +47,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         self.encoder, self.decoder, self.tencoder, self.tdecoder = (nn.ModuleList(), nn.ModuleList(),
                                                                     nn.ModuleList(), nn.ModuleList())
         chin = audio_channels
-        zmul = (2 if cac else 1) * (num_subbands if num_subbands > 1 else 1)  # freq branch channels: CaC x subbands
+        zmul = (2 if cac else 1) * (max(1, num_subbands))  # freq branch channels: CaC x subbands
         chin_z, freqs = chin * zmul, nfft // 2
         chout, chout_z = channels_time or channels, channels
 
@@ -121,7 +131,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
     def _spec(self, x):
         hl, nfft = self.hop_length, self.nfft
         assert hl == nfft // 4
-        le = int(math.ceil(x.shape[-1] / hl))
+        le = math.ceil(x.shape[-1] / hl)
         pad = hl // 2 * 3
         x = pad1d(x, (pad, pad + le * hl - x.shape[-1]), mode="reflect")
         z = spectro(x, nfft, hl)[..., :-1, :]
@@ -132,7 +142,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         hl = self.hop_length // (4**scale)
         z = F.pad(F.pad(z, (0, 0, 0, 1)), (2, 2))
         pad = hl // 2 * 3
-        le = hl * int(math.ceil(length / hl)) + 2 * pad
+        le = hl * math.ceil(length / hl) + 2 * pad
         return ispectro(z, hl, length=le)[..., pad : pad + length]
 
     def _magnitude(self, z):
@@ -144,7 +154,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
     def _mask(self, z, m):
         niters = self.end_iters if self.training else self.wiener_iters
         if self.cac:
-            B, S, C, Fr, T = m.shape
+            B, S, _C, Fr, T = m.shape
             return torch.view_as_complex(m.view(B, S, -1, 2, Fr, T).permute(0, 1, 2, 4, 5, 3).contiguous())
         if niters < 0:
             z = z[:, None]

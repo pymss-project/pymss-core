@@ -1,6 +1,6 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 
 def crop_center(h1, h2):
@@ -12,7 +12,7 @@ def crop_center(h1, h2):
 
 class Conv2DBNActiv(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
-        super(Conv2DBNActiv, self).__init__()
+        super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False),
             nn.BatchNorm2d(nout), activ())
@@ -22,7 +22,7 @@ class Conv2DBNActiv(nn.Module):
 
 class SeperableConv2DBNActiv(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
-        super(SeperableConv2DBNActiv, self).__init__()
+        super().__init__()
         self.conv = nn.Sequential(
             nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False),
             nn.Conv2d(nin, nout, kernel_size=1, bias=False), nn.BatchNorm2d(nout), activ())
@@ -32,7 +32,7 @@ class SeperableConv2DBNActiv(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.LeakyReLU):
-        super(Encoder, self).__init__()
+        super().__init__()
         self.conv1 = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ)
         self.conv2 = Conv2DBNActiv(nout, nout, ksize, stride, pad, activ=activ)
 
@@ -43,7 +43,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.ReLU, dropout=False):
-        super(Decoder, self).__init__()
+        super().__init__()
         self.conv = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ)
         self.dropout = nn.Dropout2d(0.1) if dropout else None
 
@@ -56,7 +56,7 @@ class Decoder(nn.Module):
 
 class ASPPModule(nn.Module):
     def __init__(self, nn_architecture, nin, nout, dilations=(4, 8, 16), activ=nn.ReLU):
-        super(ASPPModule, self).__init__()
+        super().__init__()
         sep = lambda d: SeperableConv2DBNActiv(nin, nin, 3, 1, d, d, activ=activ)
         self.conv1 = nn.Sequential(nn.AdaptiveAvgPool2d((1, None)), Conv2DBNActiv(nin, nin, 1, 1, 0, activ=activ))
         self.nn_architecture = nn_architecture

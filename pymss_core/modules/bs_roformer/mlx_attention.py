@@ -3,8 +3,32 @@
 import torch
 
 from ..mlx_backend import (
-    compile_cached, gelu as _gelu, linear as _linear, mx_dtype as _mlx_dtype, rms_norm as _rms_norm,
-    sigmoid as _sigmoid, to_mx as _torch_to_mlx_array, to_mx_raw as torch_mps_to_mlx, to_torch as mlx_to_torch_mps, torch_dtype,
+    compile_cached,
+    torch_dtype,
+)
+from ..mlx_backend import (
+    gelu as _gelu,
+)
+from ..mlx_backend import (
+    linear as _linear,
+)
+from ..mlx_backend import (
+    mx_dtype as _mlx_dtype,
+)
+from ..mlx_backend import (
+    rms_norm as _rms_norm,
+)
+from ..mlx_backend import (
+    sigmoid as _sigmoid,
+)
+from ..mlx_backend import (
+    to_mx as _torch_to_mlx_array,
+)
+from ..mlx_backend import (
+    to_mx_raw as torch_mps_to_mlx,
+)
+from ..mlx_backend import (
+    to_torch as mlx_to_torch_mps,
 )
 
 _COMPUTE_DTYPE = torch.float16

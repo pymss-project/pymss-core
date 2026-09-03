@@ -1,7 +1,9 @@
 import math
+
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
+from torch import nn
+
 from ..mlx_backend import MpsBackendMixin
 from .separation import SeparationNet
 
@@ -70,7 +72,13 @@ class SUlayer(nn.Module):
 
 
 class SDblock(nn.Module):
-    def __init__(self, channels_in, channels_out, band_configs={}, conv_config={}, depths=[3, 2, 1], kernel_size=3):
+    def __init__(self, channels_in, channels_out, band_configs=None, conv_config=None, depths=None, kernel_size=3):
+        if depths is None:
+            depths = [3, 2, 1]
+        if conv_config is None:
+            conv_config = {}
+        if band_configs is None:
+            band_configs = {}
         super().__init__()
         self.SDlayer = SDlayer(channels_in, channels_out, band_configs)
         self.conv_modules = nn.ModuleList([ConvolutionModule(channels_out, depth, **conv_config) for depth in depths])
@@ -86,10 +94,22 @@ class SDblock(nn.Module):
 
 
 class SCNet(MpsBackendMixin, nn.Module):
-    def __init__(self, sources=["drums", "bass", "other", "vocals"], audio_channels=2, dims=[4, 32, 64, 128],
-                 nfft=4096, hop_size=1024, win_size=4096, normalized=True, band_SR=[0.175, 0.392, 0.433],
-                 band_stride=[1, 4, 16], band_kernel=[3, 4, 16], conv_depths=[3, 2, 1], compress=4, conv_kernel=3,
+    def __init__(self, sources=None, audio_channels=2, dims=None,
+                 nfft=4096, hop_size=1024, win_size=4096, normalized=True, band_SR=None,
+                 band_stride=None, band_kernel=None, conv_depths=None, compress=4, conv_kernel=3,
                  num_dplayer=6, expand=1):
+        if conv_depths is None:
+            conv_depths = [3, 2, 1]
+        if band_kernel is None:
+            band_kernel = [3, 4, 16]
+        if band_stride is None:
+            band_stride = [1, 4, 16]
+        if band_SR is None:
+            band_SR = [0.175, 0.392, 0.433]
+        if dims is None:
+            dims = [4, 32, 64, 128]
+        if sources is None:
+            sources = ["drums", "bass", "other", "vocals"]
         super().__init__()
         self.sources, self.audio_channels, self.dims = sources, audio_channels, dims
         self.band_configs = {k: {"SR": sr, "stride": st, "kernel": k2}
@@ -123,7 +143,7 @@ class SCNet(MpsBackendMixin, nn.Module):
         x = torch.view_as_real(torch.stft(x.reshape(-1, x.shape[-1]), **self.stft_config, return_complex=True))
         x = x.permute(0, 3, 1, 2).reshape(
             x.shape[0] // self.audio_channels, x.shape[3] * self.audio_channels, x.shape[1], x.shape[2])
-        B, C, Fr, T = x.shape
+        B, _C, Fr, T = x.shape
         saved = []
         for sd_layer in self.encoder:
             x, skip, lengths, original_lengths = sd_layer(x)

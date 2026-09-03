@@ -1,5 +1,5 @@
-from torch import nn, einsum
 import torch.nn.functional as F
+from torch import einsum, nn
 
 
 class Attend(nn.Module):

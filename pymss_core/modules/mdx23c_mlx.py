@@ -1,19 +1,17 @@
 import torch
 
-from .mdx23c_tfc_tdf_v3 import Downscale, TFC_TDF, Upscale
+from .mdx23c_tfc_tdf_v3 import TFC_TDF, Downscale, Upscale
 from .mlx_backend import (
-    generic_activation, generic_module_forward, linear_layer,
     batch_norm,
     check_dtype,
     conv2d,
-    conv_transpose2d,
-    gelu,
+    generic_activation,
+    generic_module_forward,
     group_norm,
     instance_norm2d,
     istft,
-    linear,
+    linear_layer,
     mx_dtype,
-    param,
     periodic_hann_window,
     reflect_pad_last,
     stft,
@@ -43,7 +41,7 @@ def _subband_istft(module, x, context):
     import mlx.core as mx
 
     batch_dims = x.shape[:-3]
-    channels, freq_bins, time_bins = x.shape[-3:]
+    _channels, freq_bins, time_bins = x.shape[-3:]
     n_fft = context["n_fft"]
     full_freq_bins = n_fft // 2 + 1
     if freq_bins < full_freq_bins:

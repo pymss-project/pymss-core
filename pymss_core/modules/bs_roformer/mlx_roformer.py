@@ -1,14 +1,25 @@
 import torch
 
 from ..mlx_backend import (
-    conv1d, conv2d, glu, instance_norm2d, linear, overlap_add, param, periodic_hann_window, reflect_pad_last, silu, to_mx, to_torch,
+    conv1d,
+    conv2d,
+    glu,
+    instance_norm2d,
+    linear,
+    overlap_add,
+    param,
+    periodic_hann_window,
+    reflect_pad_last,
+    silu,
+    to_mx,
+    to_torch,
 )
 from . import hyperace_segm
 from .bands import contiguous_dim_groups
 from .bs_roformer_hyperace import BSRoformerHyperACE
 from .conformer import Conformer
 from .mel_band_roformer import MelBandRoformer
-from .mlx_attention import (_COMPUTE_DTYPE, _mlx_attention, _mlx_feed_forward, _mlx_output_norm, _rms_norm)
+from .mlx_attention import _COMPUTE_DTYPE, _mlx_attention, _mlx_feed_forward, _mlx_output_norm, _rms_norm
 
 torch_to_mlx_input = to_mx
 
@@ -30,9 +41,8 @@ def _padded_window(win_length, n_fft, dtype):
 
 
 def _stft_roformer(module, raw_audio, dtype):
-    import numpy as np
-
     import mlx.core as mx
+    import numpy as np
 
     if raw_audio.ndim == 2:
         raw_audio = raw_audio[:, None, :]

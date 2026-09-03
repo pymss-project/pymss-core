@@ -1,11 +1,25 @@
-from ..bandit.core.model.bsrnn.utils import (BandsplitSpecification, BassBandsplitSpecification, DrumBandsplitSpecification,
-    MelBandsplitSpecification, MusicalBandsplitSpecification, OtherBandsplitSpecification, PerceptualBandsplitSpecification,
-    VocalBandsplitSpecification, band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth,
-    mel_filterbank, musical_filterbank)
-from ..bandit.bandsplit import SequentialNormFC as NormFC, _ConfiguredBandSplitModule
-from ..bandit.maskestim import (BaseNormMLP, MaskEstimationModule as _MaskEstimationModule,
-    MaskEstimationModuleBase, MaskEstimationModuleSuperBase, NormMLP as _NormMLP,
-    OverlappingMaskEstimationModule as _OverlappingMaskEstimationModule)
+from ..bandit.bandsplit import SequentialNormFC as NormFC
+from ..bandit.bandsplit import _ConfiguredBandSplitModule
+from ..bandit.core.model.bsrnn.utils import (
+    BandsplitSpecification,
+    BassBandsplitSpecification,
+    DrumBandsplitSpecification,
+    MelBandsplitSpecification,
+    MusicalBandsplitSpecification,
+    OtherBandsplitSpecification,
+    PerceptualBandsplitSpecification,
+    VocalBandsplitSpecification,
+    band_widths_from_specs,
+    check_no_gap,
+    check_no_overlap,
+    check_nonzero_bandwidth,
+    mel_filterbank,
+    musical_filterbank,
+)
+from ..bandit.maskestim import BaseNormMLP, MaskEstimationModuleBase, MaskEstimationModuleSuperBase
+from ..bandit.maskestim import MaskEstimationModule as _MaskEstimationModule
+from ..bandit.maskestim import NormMLP as _NormMLP
+from ..bandit.maskestim import OverlappingMaskEstimationModule as _OverlappingMaskEstimationModule
 from ..bandit.tfmodel import ResidualRNN, TimeFrequencyModellingModule, Transpose, _SeqBandModellingPreset
 
 
@@ -47,7 +61,14 @@ class SeqBandModellingModule(_SeqBandModellingPreset):
         return {"sequential_transpose": not parallel_mode, "checkpoint_segments": None if parallel_mode else n_modules}
 
 
-from .bandit import Bandit  # noqa: E402
+from .bandit import Bandit
 
-__all__ = ("Bandit", "BandSplitModule", "MaskEstimationModule", "NormFC", "NormMLP",
-           "OverlappingMaskEstimationModule", "SeqBandModellingModule")
+__all__ = (
+    "BandSplitModule",
+    "Bandit",
+    "MaskEstimationModule",
+    "NormFC",
+    "NormMLP",
+    "OverlappingMaskEstimationModule",
+    "SeqBandModellingModule",
+)

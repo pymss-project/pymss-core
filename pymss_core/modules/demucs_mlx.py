@@ -4,9 +4,24 @@ import torch
 
 from .demucs_local import LayerScale, MyGroupNorm
 from .mlx_backend import (
-    generic_module_forward, linear_layer,
-    check_dtype, conv1d, conv2d, conv_transpose1d, conv_transpose2d, gelu, glu, group_norm, istft, layer_norm,
-    linear, mx_dtype, pad_last, param, periodic_hann_window, relu, stft, to_mx, to_torch,
+    check_dtype,
+    conv1d,
+    gelu,
+    generic_module_forward,
+    glu,
+    group_norm,
+    istft,
+    layer_norm,
+    linear,
+    linear_layer,
+    mx_dtype,
+    pad_last,
+    param,
+    periodic_hann_window,
+    relu,
+    stft,
+    to_mx,
+    to_torch,
 )
 
 torch_to_mlx_input = to_mx
@@ -27,7 +42,7 @@ def _ispectro(z, hop, length, dtype):
 
 def _demucs_spec(module, x, dtype):
     hop = module.hop_length
-    le = int(math.ceil(x.shape[-1] / hop))
+    le = math.ceil(x.shape[-1] / hop)
     pad = hop // 2 * 3
     x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect")
     return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
@@ -40,7 +55,7 @@ def _demucs_ispec(module, z, length, scale, dtype):
     z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)])
     z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)])
     pad = hop // 2 * 3
-    le = hop * int(math.ceil(length / hop)) + 2 * pad
+    le = hop * math.ceil(length / hop) + 2 * pad
     return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 
 

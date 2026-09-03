@@ -1,10 +1,13 @@
+import functools
+import operator
 import os
 import pickle
 
 import numpy as np
 import torch
 
-from ....._dsp import hz_to_midi, mel_filterbank as _mel_filterbank, midi_to_hz
+from ....._dsp import hz_to_midi, midi_to_hz
+from ....._dsp import mel_filterbank as _mel_filterbank
 
 
 def band_widths_from_specs(band_specs):
@@ -74,7 +77,7 @@ class BandsplitSpecification:
         return band_specs
 
     def bands(self, *segments):
-        return sum((self.get_band_specs_with_bandwidth(start, end, bandwidth) for start, end, bandwidth in segments), [])
+        return functools.reduce(operator.iadd, (self.get_band_specs_with_bandwidth(start, end, bandwidth) for start, end, bandwidth in segments), [])
 
 
 class VocalBandsplitSpecification(BandsplitSpecification):

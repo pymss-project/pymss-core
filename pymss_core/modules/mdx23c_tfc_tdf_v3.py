@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+from torch import nn
 
 from .mlx_backend import MpsBackendMixin
 from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
