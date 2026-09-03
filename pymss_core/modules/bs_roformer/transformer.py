@@ -77,21 +77,6 @@ def qkv_to_bnhd(qkv, heads):
     b, n, _ = qkv.shape
     return qkv.view(b, n, 3, heads, -1).unbind(dim=2)
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, theta=10000):
-        super().__init__()
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-        self.freqs = nn.Parameter(freqs, requires_grad=False)
-        self.cache = {}
-    def get_seq_pos(self, seq_len, device, dtype, offset=0): return torch.arange(seq_len, device=device, dtype=dtype) + offset
-    def forward(self, t, cache_key=None):
-        if cache_key in self.cache: return self.cache[cache_key]
-        t = t() if callable(t) else t
-        freqs = (t.to(self.freqs.dtype)[:, None] * self.freqs[None]).repeat_interleave(2, -1)
-        if cache_key is not None:
-            self.cache[cache_key] = freqs
-        return freqs
-
 class RMSNorm(Module):
     def __init__(self, dim):
         super().__init__()
