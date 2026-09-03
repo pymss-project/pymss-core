@@ -28,8 +28,7 @@ def _istft_scnet(module, spec, context, length): return istft(spec, context["win
 _linear_layer = linear_layer
 
 def _seq(module, x, dtype):
-    for child in module:
-        x = _module_forward(child, x, dtype)
+    for child in module: x = _module_forward(child, x, dtype)
     return x
 
 _module_forward = lambda module, x, dtype: generic_module_forward(module, x, dtype, group_norm, swish_cls=Swish)
@@ -39,29 +38,20 @@ def _sdlayer(module, x, dtype):
     fr = x.shape[2]
     low, mid = math.ceil(fr * module.SR_low), math.ceil(fr * (module.SR_low + module.SR_mid))
     outputs, original_lengths = [], []
-    for conv, stride, kernel, (start, end) in zip(module.convs, module.strides, module.kernels, [(0, low), (low, mid), (mid, fr)]):
-        extracted = x[:, :, start:end, :]
-        original_lengths.append(end - start)
-        total_padding = kernel - stride if stride == 1 else (stride - extracted.shape[2] % stride) % stride
-        pad_left = total_padding // 2
-        outputs.append(conv2d(conv, mx.pad(extracted, [(0, 0), (0, 0), (pad_left, total_padding - pad_left), (0, 0)]), dtype))
+    for conv, stride, kernel, (start, end) in zip(module.convs, module.strides, module.kernels, [(0, low), (low, mid), (mid, fr)]): extracted = x[:, :, start:end, :]; original_lengths.append(end - start); total_padding = kernel - stride if stride == 1 else (stride - extracted.shape[2] % stride) % stride; pad_left = total_padding // 2; outputs.append(conv2d(conv, mx.pad(extracted, [(0, 0), (0, 0), (pad_left, total_padding - pad_left), (0, 0)]), dtype))
     return outputs, original_lengths
 
 def _sdblock(module, x, dtype):
     import mlx.core as mx
     bands, original_lengths = _sdlayer(module.SDlayer, x, dtype)
     outs = []
-    for conv, band in zip(module.conv_modules, bands):
-        b, c, f, t = band.shape
-        out = _convolution_module(conv, band.transpose(0, 2, 1, 3).reshape(b * f, c, t), dtype)
-        outs.append(gelu(out.reshape(b, f, c, t).transpose(0, 2, 1, 3)))
+    for conv, band in zip(module.conv_modules, bands): b, c, f, t = band.shape; out = _convolution_module(conv, band.transpose(0, 2, 1, 3).reshape(b * f, c, t), dtype); outs.append(gelu(out.reshape(b, f, c, t).transpose(0, 2, 1, 3)))
     lengths = [band.shape[-2] for band in outs]
     full_band = mx.concatenate(outs, axis=2)
     return conv2d(module.globalconv, full_band, dtype), full_band, lengths, original_lengths
 
 def _convolution_module(module, x, dtype):
-    for layer in module.layers:
-        x = x + _seq(layer, x, dtype)
+    for layer in module.layers: x = x + _seq(layer, x, dtype)
     return x
 
 def _dual_path_rnn(module, x, dtype):
@@ -86,8 +76,7 @@ def _feature_conversion(module, x):
     return mx.concatenate((x.real, x.imag), axis=1)
 
 def _separation_net(module, x, dtype):
-    for dp_module, feature_conversion in zip(module.dp_modules, module.feature_conversion):
-        x = _feature_conversion(feature_conversion, _dual_path_rnn(dp_module, x, dtype))
+    for dp_module, feature_conversion in zip(module.dp_modules, module.feature_conversion): x = _feature_conversion(feature_conversion, _dual_path_rnn(dp_module, x, dtype))
     return x
 
 def _fusion_layer(module, x, skip, dtype):
@@ -100,10 +89,7 @@ def _sulayer(module, x, lengths, origin_lengths, dtype):
     import mlx.core as mx
     ranges = [(0, lengths[0]), (lengths[0], lengths[0] + lengths[1]), (lengths[0] + lengths[1], None)]
     outs = []
-    for idx, (convtr, (start, end)) in enumerate(zip(module.convtrs, ranges)):
-        out = conv_transpose2d(convtr, x[:, :, start:end, :], dtype)
-        dist = abs(origin_lengths[idx] - out.shape[2]) // 2
-        outs.append(out[:, :, dist : dist + origin_lengths[idx], :])
+    for idx, (convtr, (start, end)) in enumerate(zip(module.convtrs, ranges)): out = conv_transpose2d(convtr, x[:, :, start:end, :], dtype); dist = abs(origin_lengths[idx] - out.shape[2]) // 2; outs.append(out[:, :, dist : dist + origin_lengths[idx], :])
     return mx.concatenate(outs, axis=2)
 
 def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
@@ -121,13 +107,9 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     x = ri.transpose(0, 3, 1, 2).reshape(ri.shape[0] // module.audio_channels, ri.shape[3] * module.audio_channels, ri.shape[1], ri.shape[2])
     _, _, freq_bins, time_bins = x.shape
     saved = []
-    for sd_layer in module.encoder:
-        x, skip, lengths, original_lengths = _sdblock(sd_layer, x, dtype)
-        saved.append((skip, lengths, original_lengths))
+    for sd_layer in module.encoder: x, skip, lengths, original_lengths = _sdblock(sd_layer, x, dtype); saved.append((skip, lengths, original_lengths))
     x = _separation_net(module.separation_net, x, dtype)
-    for fusion_layer, su_layer in module.decoder:
-        skip, lengths, original_lengths = saved.pop()
-        x = _sulayer(su_layer, _fusion_layer(fusion_layer, x, skip, dtype), lengths, original_lengths, dtype)
+    for fusion_layer, su_layer in module.decoder: skip, lengths, original_lengths = saved.pop(); x = _sulayer(su_layer, _fusion_layer(fusion_layer, x, skip, dtype), lengths, original_lengths, dtype)
     x = x.reshape(batch, module.dims[0], -1, freq_bins, time_bins).reshape(-1, 2, freq_bins, time_bins)
     spec_out = x.transpose(0, 2, 3, 1)
     spec_out = spec_out[..., 0] + (1j * spec_out[..., 1])

@@ -5,9 +5,7 @@ from .common import MaskEstimator as RoformerMaskEstimator
 from .hyperace_segm import SegmModel
 
 class MaskEstimator(RoformerMaskEstimator):
-    def __init__(self, dim, dim_inputs, depth, mlp_expansion_factor=4):
-        super().__init__(dim=dim, dim_inputs=dim_inputs, depth=depth, mlp_expansion_factor=mlp_expansion_factor)
-        self.segm = SegmModel(in_bands=len(dim_inputs), in_dim=dim, out_bins=sum(dim_inputs) // 4)
+    def __init__(self, dim, dim_inputs, depth, mlp_expansion_factor=4): super().__init__(dim=dim, dim_inputs=dim_inputs, depth=depth, mlp_expansion_factor=mlp_expansion_factor); self.segm = SegmModel(in_bands=len(dim_inputs), in_dim=dim, out_bins=sum(dim_inputs) // 4)
     def forward(self, x, mode="full"):
         if mode == "no_segm": return super().forward(x)
         if mode not in ("full", "segm_only"): raise ValueError("HyperACE mask_mode must be one of: full, no_segm, segm_only")

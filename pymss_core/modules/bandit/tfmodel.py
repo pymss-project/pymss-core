@@ -22,9 +22,7 @@ class ResidualRNN(nn.Module):
         return self.fc(z) + z0
 
 class Transpose(nn.Module):
-    def __init__(self, dim0, dim1):
-        super().__init__()
-        self.dim0, self.dim1 = dim0, dim1
+    def __init__(self, dim0, dim1): super().__init__(); self.dim0, self.dim1 = dim0, dim1
     def forward(self, z): return z.transpose(self.dim0, self.dim1)
 
 class SeqBandModellingModule(TimeFrequencyModellingModule):
@@ -42,18 +40,15 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
     def forward(self, z):
         from torch.utils.checkpoint import checkpoint_sequential
         if self.parallel_mode:
-            for sbm_t, sbm_f in self.seqband:
-                z = sbm_t(z) + sbm_f(z.transpose(1, 2)).transpose(1, 2)
+            for sbm_t, sbm_f in self.seqband: z = sbm_t(z) + sbm_f(z.transpose(1, 2)).transpose(1, 2)
             return z
         if isinstance(self.seqband, nn.Sequential):
             if self.checkpoint_segments: return checkpoint_sequential(self.seqband, self.checkpoint_segments, z, use_reentrant=False)
             return self.seqband(z)
-        for sbm in self.seqband:
-            z = sbm(z).transpose(1, 2)
+        for sbm in self.seqband: z = sbm(z).transpose(1, 2)
         return z
 
 class _SeqBandModellingPreset(SeqBandModellingModule):
-    def __init__(self, n_modules=12, emb_dim=128, rnn_dim=256, bidirectional=True, rnn_type="LSTM", parallel_mode=False):
-        super().__init__(n_modules=n_modules, emb_dim=emb_dim, rnn_dim=rnn_dim, bidirectional=bidirectional, rnn_type=rnn_type, parallel_mode=parallel_mode, **self._preset_runtime_options(n_modules, parallel_mode))
+    def __init__(self, n_modules=12, emb_dim=128, rnn_dim=256, bidirectional=True, rnn_type="LSTM", parallel_mode=False): super().__init__(n_modules=n_modules, emb_dim=emb_dim, rnn_dim=rnn_dim, bidirectional=bidirectional, rnn_type=rnn_type, parallel_mode=parallel_mode, **self._preset_runtime_options(n_modules, parallel_mode))
     @staticmethod
     def _preset_runtime_options(n_modules, parallel_mode): return {"sequential_transpose": False, "checkpoint_segments": None}

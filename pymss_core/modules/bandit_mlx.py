@@ -42,10 +42,7 @@ def _band_split(module, x, dtype):
     else:
         raise ValueError(f"unsupported complex_order: {module.complex_order}")
     outs = []
-    for i, nfm in enumerate(module.norm_fc_modules):
-        fstart, fend = module.band_specs[i]
-        xb = (xr[..., fstart:fend] if module.complex_order == "reim_freq" else xr[:, :, :, fstart:fend]).reshape(batch, n_time, in_channels, -1)
-        outs.append(_norm_fc(nfm, xb.reshape(batch, n_time, -1) if module.flatten_input else xb, dtype))
+    for i, nfm in enumerate(module.norm_fc_modules): fstart, fend = module.band_specs[i]; xb = (xr[..., fstart:fend] if module.complex_order == "reim_freq" else xr[:, :, :, fstart:fend]).reshape(batch, n_time, in_channels, -1); outs.append(_norm_fc(nfm, xb.reshape(batch, n_time, -1) if module.flatten_input else xb, dtype))
     return mx.stack(outs, axis=1)
 
 def _residual_rnn(module, z, dtype):
@@ -65,10 +62,7 @@ def _residual_rnn(module, z, dtype):
 
 def _tf_model(module, z, dtype):
     if module.parallel_mode:
-        for sbm_t, sbm_f in module.seqband:
-            zt = _residual_rnn(sbm_t, z, dtype)
-            zf = _residual_rnn(sbm_f, z.transpose(0, 2, 1, 3), dtype)
-            z = zt + zf.transpose(0, 2, 1, 3)
+        for sbm_t, sbm_f in module.seqband: zt = _residual_rnn(sbm_t, z, dtype); zf = _residual_rnn(sbm_f, z.transpose(0, 2, 1, 3), dtype); z = zt + zf.transpose(0, 2, 1, 3)
         return z
     if isinstance(module.seqband, torch.nn.Sequential):
         for layer in module.seqband:
@@ -79,9 +73,7 @@ def _tf_model(module, z, dtype):
             else:
                 raise TypeError(f"unsupported Bandit TF layer for MLX full backend: {type(layer).__name__}")
         return z
-    for sbm in module.seqband:
-        z = _residual_rnn(sbm, z, dtype)
-        z = z.swapaxes(1, 2)
+    for sbm in module.seqband: z = _residual_rnn(sbm, z, dtype); z = z.swapaxes(1, 2)
     return z
 
 def _norm_mlp(module, qb, dtype):
@@ -128,11 +120,7 @@ def _mask_estimator(module, q, dtype, cond=None):
         mask_imag = mask_imag + mx.pad(mask.imag.astype(mask_imag.dtype), padding)
     return mask_real + (1j * mask_imag)
 
-def _bsrnn_core(module, x, dtype):
-    _batch, _in_chan, n_freq, n_time = x.shape
-    x = x.reshape(-1, 1, n_freq, n_time)
-    q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype)
-    return [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]
+def _bsrnn_core(module, x, dtype): _batch, _in_chan, n_freq, n_time = x.shape; x = x.reshape(-1, 1, n_freq, n_time); q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype); return [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]
 
 def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     check_dtype(dtype, "Bandit")

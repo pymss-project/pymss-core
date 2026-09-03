@@ -75,33 +75,20 @@ def _band_split_cache(module, dtype):
     module._pymss_mlx_full_band_split_cache = cache
     return cache
 
-def _grouped_linear(x, weight, bias):
-    import mlx.core as mx
-    out = mx.einsum("...gi,goi->...go", x, weight)
-    return out if bias is None else out + bias
+def _grouped_linear(x, weight, bias): import mlx.core as mx; out = mx.einsum("...gi,goi->...go", x, weight); return out if bias is None else out + bias
 
 def _band_split(module, x, dtype):
     import mlx.core as mx
     outs = []
-    for group in _band_split_cache(module, dtype)["groups"]:
-        group_x = x[..., group["offset_start"] : group["offset_end"]]
-        group_x = group_x.reshape(*group_x.shape[:-1], group["end"] - group["start"], group["dim_in"])
-        outs.append(_grouped_linear(_rms_norm(group_x, group["gamma"]), group["weight"], group["bias"]))
+    for group in _band_split_cache(module, dtype)["groups"]: group_x = x[..., group["offset_start"] : group["offset_end"]]; group_x = group_x.reshape(*group_x.shape[:-1], group["end"] - group["start"], group["dim_in"]); outs.append(_grouped_linear(_rms_norm(group_x, group["gamma"]), group["weight"], group["bias"]))
     return mx.concatenate(outs, axis=-2)
 
 def _transformer(module, x, dtype):
-    for attn, ff in module.layers:
-        x = _mlx_attention(attn, x, dtype) + x
-        x = _mlx_feed_forward(ff, x, dtype) + x
+    for attn, ff in module.layers: x = _mlx_attention(attn, x, dtype) + x; x = _mlx_feed_forward(ff, x, dtype) + x
     return _mlx_output_norm(module.norm, x, dtype)
 
 def _conformer(module, x, dtype):
-    for block in module.layers:
-        x = x + _macaron_ff(block.ff1, x, dtype)
-        x = x + _mlx_attention(block.attn, x, dtype)
-        x = x + _conformer_conv(block.conv, x, dtype)
-        x = x + _macaron_ff(block.ff2, x, dtype)
-        x = _mlx_output_norm(block.out_norm, x, dtype)
+    for block in module.layers: x = x + _macaron_ff(block.ff1, x, dtype); x = x + _mlx_attention(block.attn, x, dtype); x = x + _conformer_conv(block.conv, x, dtype); x = x + _macaron_ff(block.ff2, x, dtype); x = _mlx_output_norm(block.out_norm, x, dtype)
     return _mlx_output_norm(module.norm, x, dtype)
 
 def _macaron_ff(module, x, dtype): return _mlx_feed_forward(module.ff, x, dtype) * module.scale
@@ -130,9 +117,7 @@ def batch_norm1d(module, x, dtype):
 
 def _sequence_model(module, x, dtype): return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
 
-def _final_norm(module, x, dtype):
-    if isinstance(module.final_norm, torch.nn.Identity): return x
-    return _rms_norm(x, to_mx(module.final_norm.gamma, dtype))
+def _final_norm(module, x, dtype): return x if (isinstance(module.final_norm, torch.nn.Identity)) else _rms_norm(x, to_mx(module.final_norm.gamma, dtype))
 
 def _mask_estimator_layers(mlp_with_glu):
     layers = []
@@ -170,27 +155,15 @@ def _mask_estimator(estimator, x, dtype):
     outs = []
     for band_index, layers in enumerate(_mask_estimator_cache(estimator, dtype)["band_layers"]):
         group_x = x[:, :, band_index, :]
-        for kind, weight, bias in layers:
-            group_x = mx.tanh(group_x) if kind == "tanh" else linear(group_x, weight, bias)
+        for kind, weight, bias in layers: group_x = mx.tanh(group_x) if kind == "tanh" else linear(group_x, weight, bias)
         outs.append(glu(group_x, axis=-1))
     return mx.concatenate(outs, axis=-1)
 
-def _conv_block(module, x, dtype):
-    x = conv2d(module.conv, x, dtype)
-    x = instance_norm2d(module.bn, x, dtype)
-    return x if isinstance(module.act, torch.nn.Identity) else silu(x)
+def _conv_block(module, x, dtype): x = conv2d(module.conv, x, dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 
-def _dsconv_block(module, x, dtype):
-    x = conv2d(module.pwconv, conv2d(module.dwconv, x, dtype), dtype)
-    x = instance_norm2d(module.bn, x, dtype)
-    return x if isinstance(module.act, torch.nn.Identity) else silu(x)
+def _dsconv_block(module, x, dtype): x = conv2d(module.pwconv, conv2d(module.dwconv, x, dtype), dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 
-def _resize_positions(in_size, out_size):
-    import mlx.core as mx
-    pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5
-    lower = mx.floor(pos)
-    weight = pos - lower
-    return (mx.clip(lower, 0, in_size - 1).astype(mx.int32), mx.clip(lower + 1, 0, in_size - 1).astype(mx.int32), weight)
+def _resize_positions(in_size, out_size): import mlx.core as mx; pos = (mx.arange(out_size, dtype=mx.float32) + 0.5) * (in_size / out_size) - 0.5; lower = mx.floor(pos); weight = pos - lower; return (mx.clip(lower, 0, in_size - 1).astype(mx.int32), mx.clip(lower + 1, 0, in_size - 1).astype(mx.int32), weight)
 
 def _resize_bilinear_nchw(x, size):
     import mlx.core as mx
@@ -204,17 +177,12 @@ def _resize_bilinear_nchw(x, size):
     return (corner(y0, x0) * (1 - wy) * (1 - wx) + corner(y0, x1) * (1 - wy) * wx + corner(y1, x0) * wy * (1 - wx) + corner(y1, x1) * wy * wx)
 
 def _seq(module, x, dtype):
-    for child in module:
-        x = _segm_module(child, x, dtype)
+    for child in module: x = _segm_module(child, x, dtype)
     return x
 
-def _ds_bottleneck(module, x, dtype):
-    y = _dsconv_block(module.dsconv2, _dsconv_block(module.dsconv1, x, dtype), dtype)
-    return x + y if module.shortcut else y
+def _ds_bottleneck(module, x, dtype): y = _dsconv_block(module.dsconv2, _dsconv_block(module.dsconv1, x, dtype), dtype); return x + y if module.shortcut else y
 
-def _ds_c3k(module, x, dtype):
-    import mlx.core as mx
-    return _conv_block(module.cv3, mx.concatenate((_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1), dtype)
+def _ds_c3k(module, x, dtype): import mlx.core as mx; return _conv_block(module.cv3, mx.concatenate((_seq(module.m, _conv_block(module.cv1, x, dtype), dtype), _conv_block(module.cv2, x, dtype)), axis=1), dtype)
 
 def _ds_c3k2(module, x, dtype): return _conv_block(module.cv2, _ds_c3k(module.m, _conv_block(module.cv1, x, dtype), dtype), dtype)
 
@@ -235,15 +203,9 @@ def _hypergraph_convolution(module, x, a, dtype):
     hidden = linear(a.transpose(0, 2, 1) @ hidden, param(module.W_v, "weight", module.W_v.weight, dtype))
     return x + silu(hidden)
 
-def _adaptive_hypergraph_computation(module, x, dtype):
-    b, _, h, w = x.shape
-    x_flat = x.reshape(b, x.shape[1], h * w).transpose(0, 2, 1)
-    a = _adaptive_hyperedge_generation(module.adaptive_hyperedge_gen, x_flat, dtype)
-    return _hypergraph_convolution(module.hypergraph_conv, x_flat, a, dtype).transpose(0, 2, 1).reshape(b, -1, h, w)
+def _adaptive_hypergraph_computation(module, x, dtype): b, _, h, w = x.shape; x_flat = x.reshape(b, x.shape[1], h * w).transpose(0, 2, 1); a = _adaptive_hyperedge_generation(module.adaptive_hyperedge_gen, x_flat, dtype); return _hypergraph_convolution(module.hypergraph_conv, x_flat, a, dtype).transpose(0, 2, 1).reshape(b, -1, h, w)
 
-def _c3ah(module, x, dtype):
-    import mlx.core as mx
-    return _conv_block(module.cv3, mx.concatenate((_adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype), _conv_block(module.cv1, x, dtype)), axis=1), dtype)
+def _c3ah(module, x, dtype): import mlx.core as mx; return _conv_block(module.cv3, mx.concatenate((_adaptive_hypergraph_computation(module.ahc, _conv_block(module.cv2, x, dtype), dtype), _conv_block(module.cv1, x, dtype)), axis=1), dtype)
 
 def _hyperace(module, features, dtype):
     import mlx.core as mx
@@ -256,11 +218,7 @@ def _hyperace(module, features, dtype):
 
 def _gated_fusion(module, f_in, h, dtype): return f_in + param(module, "gamma", module.gamma, dtype) * h
 
-def _backbone(module, x, dtype):
-    x2 = _seq(module.p2, _dsconv_block(module.stem, x, dtype), dtype)
-    x3 = _seq(module.p3, x2, dtype)
-    x4 = _seq(module.p4, x3, dtype)
-    return [x2, x3, x4, _seq(module.p5, x4, dtype)]
+def _backbone(module, x, dtype): x2 = _seq(module.p2, _dsconv_block(module.stem, x, dtype), dtype); x3 = _seq(module.p3, x2, dtype); x4 = _seq(module.p4, x3, dtype); return [x2, x3, x4, _seq(module.p5, x4, dtype)]
 
 def _decoder(module, enc_feats, h_ace, dtype):
     p2, p3, p4, p5 = enc_feats
@@ -274,18 +232,10 @@ def _decoder(module, enc_feats, h_ace, dtype):
     return _ds_c3k2(module.final_d2, d2, dtype)
 
 def _tfc_tdf(module, x, dtype):
-    for block in module.blocks:
-        shortcut = conv2d(block.shortcut, x, dtype)
-        x = _segm_module(block.tfc1, x, dtype)
-        x = _segm_module(block.tfc2, x + _segm_module(block.tdf, x, dtype), dtype) + shortcut
+    for block in module.blocks: shortcut = conv2d(block.shortcut, x, dtype); x = _segm_module(block.tfc1, x, dtype); x = _segm_module(block.tfc2, x + _segm_module(block.tdf, x, dtype), dtype) + shortcut
     return x
 
-def _freq_pixel_shuffle(module, x, dtype):
-    x = _dsconv_block(module.conv, x, dtype)
-    b, c_r, h, w = x.shape
-    out_c = c_r // module.scale
-    x = x.reshape(b, out_c, module.scale, h, w).transpose(0, 1, 3, 4, 2).reshape(b, out_c, h, w * module.scale)
-    return _tfc_tdf(module.out_conv, x, dtype)
+def _freq_pixel_shuffle(module, x, dtype): x = _dsconv_block(module.conv, x, dtype); b, c_r, h, w = x.shape; out_c = c_r // module.scale; x = x.reshape(b, out_c, module.scale, h, w).transpose(0, 1, 3, 4, 2).reshape(b, out_c, h, w * module.scale); return _tfc_tdf(module.out_conv, x, dtype)
 
 def _progressive_upsample_head(module, x, dtype):
     x = _freq_pixel_shuffle(module.block1, x, dtype)
@@ -296,11 +246,7 @@ def _progressive_upsample_head(module, x, dtype):
         x = _resize_bilinear_nchw(x, (x.shape[2], module.target_bins))
     return conv2d(module.final_conv, x, dtype)
 
-def _segm_model(module, x, dtype):
-    enc_feats = _backbone(module.backbone, x, dtype)
-    dec_feat = _decoder(module.decoder, enc_feats, _hyperace(module.hyperace, enc_feats, dtype), dtype)
-    dec_feat = _resize_bilinear_nchw(dec_feat, (x.shape[2], dec_feat.shape[-1]))
-    return _progressive_upsample_head(module.upsample_head, dec_feat, dtype)
+def _segm_model(module, x, dtype): enc_feats = _backbone(module.backbone, x, dtype); dec_feat = _decoder(module.decoder, enc_feats, _hyperace(module.hyperace, enc_feats, dtype), dtype); dec_feat = _resize_bilinear_nchw(dec_feat, (x.shape[2], dec_feat.shape[-1])); return _progressive_upsample_head(module.upsample_head, dec_feat, dtype)
 
 def _segm_module(module, x, dtype):
     handlers = {torch.nn.Sequential: _seq, hyperace_segm.Conv: _conv_block, hyperace_segm.DSConv: _dsconv_block, hyperace_segm.DS_Bottleneck: _ds_bottleneck, hyperace_segm.DS_C3k: _ds_c3k, hyperace_segm.DS_C3k2: _ds_c3k2, hyperace_segm.TFC_TDF: _tfc_tdf, torch.nn.InstanceNorm2d: instance_norm2d}
@@ -317,10 +263,7 @@ def _estimate_masks(module, x, dtype):
     if isinstance(module, BSRoformerHyperACE) and module.mask_mode != "no_segm":
         masks = []
         segm_input = x.transpose(0, 3, 1, 2)
-        for estimator in module.mask_estimators:
-            segm = _segm_model(estimator.segm, segm_input, dtype)
-            segm = segm.transpose(0, 2, 3, 1).reshape(segm.shape[0], segm.shape[2], -1)
-            masks.append(segm if module.mask_mode == "segm_only" else _mask_estimator(estimator, x, dtype) + segm)
+        for estimator in module.mask_estimators: segm = _segm_model(estimator.segm, segm_input, dtype); segm = segm.transpose(0, 2, 3, 1).reshape(segm.shape[0], segm.shape[2], -1); masks.append(segm if module.mask_mode == "segm_only" else _mask_estimator(estimator, x, dtype) + segm)
         return mx.stack(masks, axis=1)
     return mx.stack([_mask_estimator(estimator, x, dtype) for estimator in module.mask_estimators], axis=1)
 
@@ -332,8 +275,7 @@ def _forward_mask_core(module, stft_repr, dtype):
     residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
         if residual_store is not None:
-            for residual in residual_store:
-                x = x + residual
+            for residual in residual_store: x = x + residual
         b, t, f, d = x.shape
         x = _sequence_model(time_transformer, x.transpose(0, 2, 1, 3).reshape(b * f, t, d), dtype)
         x = x.reshape(b, f, t, d).transpose(0, 2, 1, 3)
@@ -344,13 +286,9 @@ def _forward_mask_core(module, stft_repr, dtype):
 
 def _complex_from_ri(x): return x[..., 0] + (1j * x[..., 1])
 
-def _ri_from_complex(x):
-    import mlx.core as mx
-    return mx.stack((x.real, x.imag), axis=-1)
+def _ri_from_complex(x): import mlx.core as mx; return mx.stack((x.real, x.imag), axis=-1)
 
-def _mask_stft_repr_bsr(module, stft_repr, dtype):
-    mask = _forward_mask_core(module, stft_repr, dtype)
-    return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(mask)
+def _mask_stft_repr_bsr(module, stft_repr, dtype): mask = _forward_mask_core(module, stft_repr, dtype); return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(mask)
 
 def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     import mlx.core as mx

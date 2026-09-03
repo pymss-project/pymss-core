@@ -20,9 +20,7 @@ class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponen
         super().__init__(n_fft=n_fft, win_length=win_length, hop_length=hop_length, window_fn=window_fn, wkwargs=wkwargs, power=power, center=center, normalized=normalized, pad_mode=pad_mode, onesided=onesided)
         self.band_specs, self.freq_weights, self.overlapping_band = get_band_specs(band_specs, n_fft, fs, n_bands)
         self.stems = stems
-    def mlx_forward_mx(self, raw_audio):
-        from .....bandit_mlx import mlx_forward_bandit_mx
-        return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
+    def mlx_forward_mx(self, raw_audio): from .....bandit_mlx import mlx_forward_bandit_mx; return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
     def forward(self, batch):
         if self._use_mlx_full_forward(batch):
             try:
@@ -56,5 +54,4 @@ class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSi
         self.normalize_input, self.cond_dim = normalize_input, cond_dim
         if freeze_encoder:
             for module in (self.bsrnn.band_split, self.bsrnn.tf_model):
-                for param in module.parameters():
-                    param.requires_grad = False
+                for param in module.parameters(): param.requires_grad = False

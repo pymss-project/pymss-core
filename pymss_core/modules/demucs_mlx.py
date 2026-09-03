@@ -11,25 +11,11 @@ def _pad1d(x, paddings, mode="constant", value=0.0): return pad_last(x, paddings
 
 def _spectro(x, n_fft, hop, dtype): return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
 
-def _ispectro(z, hop, length, dtype):
-    n_fft = 2 * z.shape[-2] - 2
-    return istft(z, periodic_hann_window(n_fft, dtype), hop, length, dtype, normalized=True)
+def _ispectro(z, hop, length, dtype): n_fft = 2 * z.shape[-2] - 2; return istft(z, periodic_hann_window(n_fft, dtype), hop, length, dtype, normalized=True)
 
-def _demucs_spec(module, x, dtype):
-    hop = module.hop_length
-    le = math.ceil(x.shape[-1] / hop)
-    pad = hop // 2 * 3
-    x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect")
-    return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
+def _demucs_spec(module, x, dtype): hop = module.hop_length; le = math.ceil(x.shape[-1] / hop); pad = hop // 2 * 3; x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect"); return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
 
-def _demucs_ispec(module, z, length, scale, dtype):
-    import mlx.core as mx
-    hop = module.hop_length // (4**scale)
-    z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)])
-    z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)])
-    pad = hop // 2 * 3
-    le = hop * math.ceil(length / hop) + 2 * pad
-    return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
+def _demucs_ispec(module, z, length, scale, dtype): import mlx.core as mx; hop = module.hop_length // (4**scale); z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)]); z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)]); pad = hop // 2 * 3; le = hop * math.ceil(length / hop) + 2 * pad; return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 
 _linear_layer = linear_layer
 
@@ -50,9 +36,7 @@ def _activation(module, x):
     if isinstance(module, torch.nn.Identity): return x
     raise TypeError(f"unsupported Demucs activation for MLX full backend: {type(module).__name__}")
 
-def _layer_scale(module, x, dtype):
-    scale = param(module, "scale", module.scale, dtype)
-    return scale * x if module.channel_last else scale[:, None] * x
+def _layer_scale(module, x, dtype): scale = param(module, "scale", module.scale, dtype); return scale * x if module.channel_last else scale[:, None] * x
 
 def _module_forward(module, x, dtype):
     # F.gelu/F.relu raw functions (stored on CrossTransformerEncoderLayer) + MyGroupNorm/LayerScale are family-specific
@@ -65,18 +49,14 @@ def _module_forward(module, x, dtype):
     return generic_module_forward(module, x, dtype, _norm, extra=((LayerScale, _layer_scale),))
 
 def _seq(module, x, dtype):
-    for child in module:
-        x = _module_forward(child, x, dtype)
+    for child in module: x = _module_forward(child, x, dtype)
     return x
 
 def _dconv(module, x, dtype):
-    for layer in module.layers:
-        x = x + _seq(layer, x, dtype)
+    for layer in module.layers: x = x + _seq(layer, x, dtype)
     return x
 
-def _freq_dconv(module, y, dtype):
-    b, c, fr, t = y.shape
-    return _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype).reshape(b, fr, c, t).transpose(0, 2, 1, 3)
+def _freq_dconv(module, y, dtype): b, c, fr, t = y.shape; return _dconv(module.dconv, y.transpose(0, 2, 1, 3).reshape(-1, c, t), dtype).reshape(b, fr, c, t).transpose(0, 2, 1, 3)
 
 def _henc_layer(module, x, inject, dtype):
     import mlx.core as mx
@@ -116,28 +96,16 @@ def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
     div = mx.exp(mx.arange(0.0, half, 2) * -(math.log(max_period) / half))
     pos_w, pos_h = mx.arange(0.0, width).reshape(-1, 1), mx.arange(0.0, height).reshape(-1, 1)
     pe = mx.zeros((d_model, height, width), dtype=mx.float32)
-    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]), (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]), (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]), (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])):
-        pe = pe.at[sl].add(mx.broadcast_to(val, (val.shape[0], height, width)))
+    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]), (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]), (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]), (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])): pe = pe.at[sl].add(mx.broadcast_to(val, (val.shape[0], height, width)))
     return pe[None].astype(dtype)
 
-def _create_sin_embedding(length, dim, dtype, max_period=10000):
-    import mlx.core as mx
-    half = dim // 2
-    phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1)))
-    return mx.concatenate((mx.cos(phase), mx.sin(phase)), axis=-1).astype(dtype)
+def _create_sin_embedding(length, dim, dtype, max_period=10000): import mlx.core as mx; half = dim // 2; phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1))); return mx.concatenate((mx.cos(phase), mx.sin(phase)), axis=-1).astype(dtype)
 
 def _attention_out(mha, out, q_in, dtype): return _linear_layer(mha.out_proj, out.transpose(0, 2, 1, 3).reshape(q_in.shape), dtype)
 
 def _split_heads(q, heads): return q.reshape(q.shape[0], q.shape[1], heads, -1).transpose(0, 2, 1, 3)
 
-def _self_attention(mha, x, dtype):
-    import mlx.core as mx
-    qkv = linear(x, param(mha, "in_proj_weight", mha.in_proj_weight, dtype), param(mha, "in_proj_bias", mha.in_proj_bias, dtype))
-    q, k, v = (mx.split(qkv, 3, axis=-1))
-    head_dim = q.shape[-1] // mha.num_heads
-    q, k, v = _split_heads(q, mha.num_heads), _split_heads(k, mha.num_heads), _split_heads(v, mha.num_heads)
-    out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5)
-    return _attention_out(mha, out, x, dtype)
+def _self_attention(mha, x, dtype): import mlx.core as mx; qkv = linear(x, param(mha, "in_proj_weight", mha.in_proj_weight, dtype), param(mha, "in_proj_bias", mha.in_proj_bias, dtype)); q, k, v = (mx.split(qkv, 3, axis=-1)); head_dim = q.shape[-1] // mha.num_heads; q, k, v = _split_heads(q, mha.num_heads), _split_heads(k, mha.num_heads), _split_heads(v, mha.num_heads); out = mx.fast.scaled_dot_product_attention(q, k, v, scale=head_dim**-0.5); return _attention_out(mha, out, x, dtype)
 
 def _cross_attention(mha, q_in, k_in, dtype):
     import mlx.core as mx
@@ -193,8 +161,7 @@ def _std(x, axes, keepdims):
     import mlx.core as mx
     mean = mx.mean(x, axis=axes, keepdims=True)
     n = 1
-    for axis in axes:
-        n *= x.shape[axis]
+    for axis in axes: n *= x.shape[axis]
     return mx.sqrt(mx.sum(mx.square(x - mean), axis=axes, keepdims=keepdims) / max(1, n - 1))
 
 def _validate_supported(module):

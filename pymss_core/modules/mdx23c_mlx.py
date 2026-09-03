@@ -38,23 +38,15 @@ def _module_forward(module, x, dtype):
     return generic_module_forward(module, x, dtype, _norm, extra=((torch.nn.InstanceNorm2d, instance_norm2d), (torch.nn.BatchNorm2d, batch_norm), (torch.nn.GroupNorm, group_norm)))
 
 def _tfc_tdf(module, x, dtype):
-    for block in module.blocks:
-        shortcut = conv2d(block.shortcut, x, dtype)
-        x = _module_forward(block.tfc1, x, dtype)
-        x = _module_forward(block.tfc2, x + _module_forward(block.tdf, x, dtype), dtype) + shortcut
+    for block in module.blocks: shortcut = conv2d(block.shortcut, x, dtype); x = _module_forward(block.tfc1, x, dtype); x = _module_forward(block.tfc2, x + _module_forward(block.tdf, x, dtype), dtype) + shortcut
     return x
 
 def _forward_core(module, x, dtype):
     import mlx.core as mx
     encoder_outputs = []
-    for block in module.encoder_blocks:
-        x = _tfc_tdf(block.tfc_tdf, x, dtype)
-        encoder_outputs.append(x)
-        x = _module_forward(block.downscale, x, dtype)
+    for block in module.encoder_blocks: x = _tfc_tdf(block.tfc_tdf, x, dtype); encoder_outputs.append(x); x = _module_forward(block.downscale, x, dtype)
     x = _tfc_tdf(module.bottleneck_block, x, dtype)
-    for block in module.decoder_blocks:
-        x = _module_forward(block.upscale, x, dtype)
-        x = _tfc_tdf(block.tfc_tdf, mx.concatenate((x, encoder_outputs.pop()), axis=1), dtype)
+    for block in module.decoder_blocks: x = _module_forward(block.upscale, x, dtype); x = _tfc_tdf(block.tfc_tdf, mx.concatenate((x, encoder_outputs.pop()), axis=1), dtype)
     return x
 
 def mlx_forward_mdx23c_mx(module, raw_audio, dtype=torch.float16):

@@ -184,14 +184,10 @@ class LegacyLocalState(nn.Module):
         return x + self.proj(result.reshape(batch, -1, time))
 
 class LegacyHEncLayer(HEncLayer):
-    def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=0, dconv_kw=None, pad=True, rewrite=True):
-        dconv_kw = dict(dconv_kw or {}, legacy=True)
-        super().__init__(chin, chout, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, rewrite)
+    def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=0, dconv_kw=None, pad=True, rewrite=True): dconv_kw = dict(dconv_kw or {}, legacy=True); super().__init__(chin, chout, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, rewrite)
 
 class LegacyHDecLayer(HDecLayer):
-    def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True):
-        dconv_kw = dict(dconv_kw or {}, legacy=True)
-        super().__init__(chin, chout, last, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, context_freq, rewrite)
+    def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True): dconv_kw = dict(dconv_kw or {}, legacy=True); super().__init__(chin, chout, last, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, context_freq, rewrite)
     def forward(self, x, skip, length):
         if self.freq and x.dim() == 3:
             x = x.view(x.shape[0], self.chin, -1, x.shape[-1])
@@ -247,16 +243,9 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
     assert (out[..., left : left + length] == x0).all()
     return out
 
-def _spectro(x, n_fft=512, hop_length=None, pad=0):
-    *other, length = x.shape
-    z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
-    return z.view(*other, z.shape[-2], z.shape[-1])
+def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
 
-def _ispectro(z, hop_length=None, length=None, pad=0):
-    *other, freqs, frames = z.shape
-    n_fft = 2 * freqs - 2
-    x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(n_fft // (1 + pad)).to(z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True)
-    return x.view(*other, x.shape[-1])
+def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(n_fft // (1 + pad)).to(z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
 
 class LegacyHDemucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=48, channels_time=None, growth=2, nfft=4096, wiener_iters=0,
@@ -423,31 +412,15 @@ class LegacyConvTasNet(nn.Module):
             if parameter.dim() > 1:
                 nn.init.xavier_normal_(parameter)
     def valid_length(self, length): return length
-    def forward(self, mixture):
-        mixture_w = self.encoder(mixture)
-        est_source = self.decoder(mixture_w, self.separator(mixture_w))
-        length = mixture.size(-1)
-        delta = length - est_source.size(-1)
-        return F.pad(est_source, (0, delta)) if delta >= 0 else est_source[..., :length]
+    def forward(self, mixture): mixture_w = self.encoder(mixture); est_source = self.decoder(mixture_w, self.separator(mixture_w)); length = mixture.size(-1); delta = length - est_source.size(-1); return F.pad(est_source, (0, delta)) if delta >= 0 else est_source[..., :length]
 
 class Encoder(nn.Module):
-    def __init__(self, L, N, audio_channels):
-        super().__init__()
-        self.L, self.N = L, N
-        self.conv1d_U = nn.Conv1d(audio_channels, N, kernel_size=L, stride=L // 2, bias=False)
+    def __init__(self, L, N, audio_channels): super().__init__(); self.L, self.N = L, N; self.conv1d_U = nn.Conv1d(audio_channels, N, kernel_size=L, stride=L // 2, bias=False)
     def forward(self, mixture): return F.relu(self.conv1d_U(mixture))
 
 class Decoder(nn.Module):
-    def __init__(self, N, L, audio_channels):
-        super().__init__()
-        self.N, self.L, self.audio_channels = N, L, audio_channels
-        self.basis_signals = nn.Linear(N, audio_channels * L, bias=False)
-    def forward(self, mixture_w, est_mask):
-        source_w = torch.transpose(torch.unsqueeze(mixture_w, 1) * est_mask, 2, 3)
-        est_source = self.basis_signals(source_w)
-        batch, sources, frames, _ = est_source.size()
-        est_source = est_source.view(batch, sources, frames, self.audio_channels, -1).transpose(2, 3).contiguous()
-        return overlap_and_add(est_source, self.L // 2)
+    def __init__(self, N, L, audio_channels): super().__init__(); self.N, self.L, self.audio_channels = N, L, audio_channels; self.basis_signals = nn.Linear(N, audio_channels * L, bias=False)
+    def forward(self, mixture_w, est_mask): source_w = torch.transpose(torch.unsqueeze(mixture_w, 1) * est_mask, 2, 3); est_source = self.basis_signals(source_w); batch, sources, frames, _ = est_source.size(); est_source = est_source.view(batch, sources, frames, self.audio_channels, -1).transpose(2, 3).contiguous(); return overlap_and_add(est_source, self.L // 2)
 
 class TemporalConvNet(nn.Module):
     def __init__(self, N, B, H, P, X, R, C, norm_type="gLN", causal=False, mask_nonlinear="relu"):
@@ -463,9 +436,7 @@ class TemporalConvNet(nn.Module):
         raise ValueError("Unsupported mask non-linear function")
 
 class TemporalBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation, norm_type="gLN", causal=False):
-        super().__init__()
-        self.net = nn.Sequential(nn.Conv1d(in_channels, out_channels, 1, bias=False), nn.PReLU(), _choose_norm(norm_type, out_channels), DepthwiseSeparableConv(out_channels, in_channels, kernel_size, stride, padding, dilation, norm_type, causal))
+    def __init__(self, in_channels, out_channels, kernel_size, stride, padding, dilation, norm_type="gLN", causal=False): super().__init__(); self.net = nn.Sequential(nn.Conv1d(in_channels, out_channels, 1, bias=False), nn.PReLU(), _choose_norm(norm_type, out_channels), DepthwiseSeparableConv(out_channels, in_channels, kernel_size, stride, padding, dilation, norm_type, causal))
     def forward(self, x): return self.net(x) + x
 
 class DepthwiseSeparableConv(nn.Module):
@@ -478,33 +449,19 @@ class DepthwiseSeparableConv(nn.Module):
     def forward(self, x): return self.net(x)
 
 class Chomp1d(nn.Module):
-    def __init__(self, chomp_size):
-        super().__init__()
-        self.chomp_size = chomp_size
+    def __init__(self, chomp_size): super().__init__(); self.chomp_size = chomp_size
     def forward(self, x): return x[:, :, : -self.chomp_size].contiguous()
 
 class ChannelwiseLayerNorm(nn.Module):
-    def __init__(self, channel_size):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1))
-        self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1))
-        self.reset_parameters()
-    def reset_parameters(self):
-        self.gamma.data.fill_(1)
-        self.beta.data.zero_()
+    def __init__(self, channel_size): super().__init__(); self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.reset_parameters()
+    def reset_parameters(self): self.gamma.data.fill_(1); self.beta.data.zero_()
     def _stat(self, y): return torch.mean(y, dim=1, keepdim=True), torch.var(y, dim=1, keepdim=True, unbiased=False)
-    def forward(self, y):
-        mean, var = self._stat(y)
-        return self.gamma * (y - mean) / torch.pow(var + EPS, 0.5) + self.beta
+    def forward(self, y): mean, var = self._stat(y); return self.gamma * (y - mean) / torch.pow(var + EPS, 0.5) + self.beta
 
 class GlobalLayerNorm(ChannelwiseLayerNorm):
-    def _stat(self, y):
-        mean = y.mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
-        return mean, torch.pow(y - mean, 2).mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
+    def _stat(self, y): mean = y.mean(dim=1, keepdim=True).mean(dim=2, keepdim=True); return mean, torch.pow(y - mean, 2).mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
 
-def _choose_norm(norm_type, channel_size):
-    klass = {"gLN": GlobalLayerNorm, "cLN": ChannelwiseLayerNorm, "id": nn.Identity}.get(norm_type, nn.BatchNorm1d)
-    return klass(channel_size)
+def _choose_norm(norm_type, channel_size): klass = {"gLN": GlobalLayerNorm, "cLN": ChannelwiseLayerNorm, "id": nn.Identity}.get(norm_type, nn.BatchNorm1d); return klass(channel_size)
 
 class TensorChunk:
     def __init__(self, tensor, offset=0, length=None):
@@ -634,9 +591,7 @@ def _load_raw_checkpoint(model_path):
         if exc.name == "diffq": raise ValueError("DiffQ quantized legacy Demucs checkpoints are not supported without diffq") from exc
         raise
 
-def _drop_unsupported_kwargs(klass, kwargs):
-    parameters = inspect.signature(klass).parameters
-    return {key: value for key, value in kwargs.items() if key in parameters}
+def _drop_unsupported_kwargs(klass, kwargs): parameters = inspect.signature(klass).parameters; return {key: value for key, value in kwargs.items() if key in parameters}
 
 def _build_model_from_package(package, model_path=None):
     if isinstance(package, tuple) and len(package) >= 4:
@@ -704,10 +659,7 @@ def _legacy_config_from_model(model):
     sources = list(model.sources)
     return {
         "model": {"stereo": model.audio_channels == 2, "legacy_demucs": True},
-        "training": {"instruments": sources, "target_instrument": None, "samplerate": int(model.samplerate),
-                     "segment": float(model.segment_length) / float(model.samplerate),
-                     "channels": int(model.audio_channels), "use_amp": True},
+        "training": {"instruments": sources, "target_instrument": None, "samplerate": int(model.samplerate), "segment": float(model.segment_length) / float(model.samplerate), "channels": int(model.audio_channels), "use_amp": True},
         "audio": {"sample_rate": int(model.samplerate), "chunk_size": int(model.segment_length)},
-        "inference": {"batch_size": 1, "overlap_size": int(model.segment_length * 0.25), "normalize": False,
-                      "shifts": 0, "split": True},
+        "inference": {"batch_size": 1, "overlap_size": int(model.segment_length * 0.25), "normalize": False, "shifts": 0, "split": True},
     }

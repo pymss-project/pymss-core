@@ -12,8 +12,7 @@ class AttrDict(dict):
     """dict with recursive attribute access: AttrDict({"audio": {"chunk": 1}}).audio.chunk."""
     def __init__(self, data=None, **kwargs):
         super().__init__()
-        for key, value in dict(data or {}, **kwargs).items():
-            self[key] = value
+        for key, value in dict(data or {}, **kwargs).items(): self[key] = value
     def __getattr__(self, key):
         try:
             return self[key]

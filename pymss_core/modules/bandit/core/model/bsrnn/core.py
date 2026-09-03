@@ -5,10 +5,7 @@ from . import BandSplitModule, MaskEstimationModule, OverlappingMaskEstimationMo
 class MultiMaskBandSplitCoreBase(nn.Module):
     @staticmethod
     def mask(x, m): return x * m
-    def forward(self, x, cond=None, compute_residual=True):
-        batch, in_chan, n_freq, n_time = x.shape
-        q = self.tf_model(self.band_split(x.reshape(-1, 1, n_freq, n_time)))
-        return {"spectrogram": {stem: self.mask(x, mask_estimator(q, cond=cond)).reshape(batch, in_chan, n_freq, n_time) for stem, mask_estimator in self.mask_estim.items()}}
+    def forward(self, x, cond=None, compute_residual=True): batch, in_chan, n_freq, n_time = x.shape; q = self.tf_model(self.band_split(x.reshape(-1, 1, n_freq, n_time))); return {"spectrogram": {stem: self.mask(x, mask_estimator(q, cond=cond)).reshape(batch, in_chan, n_freq, n_time) for stem, mask_estimator in self.mask_estim.items()}}
     def instantiate_mask_estim(self, in_channel, stems, band_specs, emb_dim, mlp_dim, cond_dim, hidden_activation, hidden_activation_kwargs=None, complex_mask=True, overlapping_band=False, freq_weights=None, n_freq=None, use_freq_weights=True, mult_add_mask=False):
         if mult_add_mask: raise NotImplementedError("Bandit mult_add_mask is not supported by the inference-only wrapper")
         stems = [stem for stem in stems if stem != "mne:+"]

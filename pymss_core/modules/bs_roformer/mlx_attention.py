@@ -14,10 +14,7 @@ from ..mlx_backend import (to_torch as mlx_to_torch_mps,)
 
 _COMPUTE_DTYPE,_ROTARY_METAL_KERNEL,_ROTARY_METAL_UNAVAILABLE = torch.float16, None, False
 
-def mlx_bridge_sdpa(q, k, v):
-    import mlx.core as mx
-    out = mx.fast.scaled_dot_product_attention(torch_mps_to_mlx(q), torch_mps_to_mlx(k), torch_mps_to_mlx(v), scale=q.shape[-1] ** -0.5)
-    return mlx_to_torch_mps(out, q)
+def mlx_bridge_sdpa(q, k, v): import mlx.core as mx; out = mx.fast.scaled_dot_product_attention(torch_mps_to_mlx(q), torch_mps_to_mlx(k), torch_mps_to_mlx(v), scale=q.shape[-1] ** -0.5); return mlx_to_torch_mps(out, q)
 
 def _rotary_metal_kernel():
     global _ROTARY_METAL_KERNEL, _ROTARY_METAL_UNAVAILABLE
@@ -55,9 +52,7 @@ def _rotary_metal_kernel():
 
 def _apply_rotary_fallback(q, k, cos, sin):
     import mlx.core as mx
-    def rotate(t):
-        even, odd = t[..., ::2], t[..., 1::2]
-        return mx.stack((even * cos - odd * sin, odd * cos + even * sin), axis=-1).reshape(t.shape)
+    def rotate(t): even, odd = t[..., ::2], t[..., 1::2]; return mx.stack((even * cos - odd * sin, odd * cos + even * sin), axis=-1).reshape(t.shape)
     return rotate(q), rotate(k)
 
 def _apply_rotary_metal(q, k, cos, sin, dtype):
@@ -152,10 +147,7 @@ def _mlx_attention_compiled(module, x, dtype, cache):
     dummy = mx.zeros((1,), dtype=_mlx_dtype(dtype))
     return fn(x, cache["norm_gamma"], cache["qkv_weight"], cache["qkv_bias"] if has_qkv_bias else dummy, cache["gate_weight"], cache["gate_bias"] if has_gate_bias else dummy, cache["out_weight"], cache["out_bias"] if has_out_bias else dummy)
 
-def mlx_bridge_attention(module, x):
-    x_mx = torch_mps_to_mlx(x).astype(_mlx_dtype(_COMPUTE_DTYPE))
-    out = _mlx_attention(module, x_mx, _COMPUTE_DTYPE)
-    return mlx_to_torch_mps(out, x)
+def mlx_bridge_attention(module, x): x_mx = torch_mps_to_mlx(x).astype(_mlx_dtype(_COMPUTE_DTYPE)); out = _mlx_attention(module, x_mx, _COMPUTE_DTYPE); return mlx_to_torch_mps(out, x)
 
 def _feed_forward_cache(module, dtype):
     norm, linear_in, activation, _, linear_out, _ = module.net
@@ -178,10 +170,7 @@ def _mlx_feed_forward(module, x, dtype):
             module._pymss_mlx_compiled_ffn_error = repr(exc)
     return _mlx_feed_forward_fallback(x, cache)
 
-def _mlx_feed_forward_fallback(x, cache):
-    x = _rms_norm(x, cache["norm_gamma"])
-    x = _gelu(_linear(x, cache["linear_in_weight"], cache["linear_in_bias"]))
-    return _linear(x, cache["linear_out_weight"], cache["linear_out_bias"])
+def _mlx_feed_forward_fallback(x, cache): x = _rms_norm(x, cache["norm_gamma"]); x = _gelu(_linear(x, cache["linear_in_weight"], cache["linear_in_bias"])); return _linear(x, cache["linear_out_weight"], cache["linear_out_bias"])
 
 def _mlx_feed_forward_compiled(module, x, dtype, cache):
     import mlx.core as mx
@@ -192,9 +181,7 @@ def _mlx_feed_forward_compiled(module, x, dtype, cache):
     key = (tuple(x.shape), dtype, has_in_bias, has_out_bias, cache["key"])
     fn = compiled_cache.get(key)
     if fn is None:
-        def ffn_core(x_arg, norm_gamma, linear_in_weight, linear_in_bias, linear_out_weight, linear_out_bias):
-            x_arg = _gelu(_linear(_rms_norm(x_arg, norm_gamma), linear_in_weight, linear_in_bias if has_in_bias else None))
-            return _linear(x_arg, linear_out_weight, linear_out_bias if has_out_bias else None)
+        def ffn_core(x_arg, norm_gamma, linear_in_weight, linear_in_bias, linear_out_weight, linear_out_bias): x_arg = _gelu(_linear(_rms_norm(x_arg, norm_gamma), linear_in_weight, linear_in_bias if has_in_bias else None)); return _linear(x_arg, linear_out_weight, linear_out_bias if has_out_bias else None)
         fn = compiled_cache.setdefault(key, mx.compile(ffn_core))
     dummy = mx.zeros((1,), dtype=_mlx_dtype(dtype))
     return fn(x, cache["norm_gamma"], cache["linear_in_weight"], cache["linear_in_bias"] if has_in_bias else dummy, cache["linear_out_weight"], cache["linear_out_bias"] if has_out_bias else dummy)
@@ -209,14 +196,10 @@ def _norm_gamma_cache(module, dtype):
     module._pymss_mlx_norm_cache = cache
     return cache["gamma"]
 
-def _mlx_output_norm(module, x, dtype):
-    gamma = _norm_gamma_cache(module, dtype)
-    return x if gamma is None else _rms_norm(x, gamma)
+def _mlx_output_norm(module, x, dtype): gamma = _norm_gamma_cache(module, dtype); return x if gamma is None else _rms_norm(x, gamma)
 
 def mlx_bridge_transformer(module, x):
     x_mx = torch_mps_to_mlx(x).astype(_mlx_dtype(_COMPUTE_DTYPE))
-    for attn, ff in module.layers:
-        x_mx = _mlx_attention(attn, x_mx, _COMPUTE_DTYPE) + x_mx
-        x_mx = _mlx_feed_forward(ff, x_mx, _COMPUTE_DTYPE) + x_mx
+    for attn, ff in module.layers: x_mx = _mlx_attention(attn, x_mx, _COMPUTE_DTYPE) + x_mx; x_mx = _mlx_feed_forward(ff, x_mx, _COMPUTE_DTYPE) + x_mx
     x_mx = _mlx_output_norm(module.norm, x_mx, _COMPUTE_DTYPE)
     return mlx_to_torch_mps(x_mx, x)

@@ -42,17 +42,10 @@ def rescale_module(module, reference):
             if sub.bias is not None:
                 sub.bias.data /= scale
 
-def _freq_dconv(dconv, y):
-    b, c, fr, t = y.shape
-    return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
+def _freq_dconv(dconv, y): b, c, fr, t = y.shape; return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
 
 class BLSTM(nn.Module):
-    def __init__(self, dim, layers=1, max_steps=None, skip=False):
-        super().__init__()
-        self.max_steps = max_steps
-        self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim)
-        self.linear = nn.Linear(2 * dim, dim)
-        self.skip = skip
+    def __init__(self, dim, layers=1, max_steps=None, skip=False): super().__init__(); self.max_steps = max_steps; self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim); self.linear = nn.Linear(2 * dim, dim); self.skip = skip
     def forward(self, x):
         y, framed = x, False
         if self.max_steps is not None and x.shape[-1] > self.max_steps:
@@ -70,17 +63,11 @@ class BLSTM(nn.Module):
         return x + y if self.skip else x
 
 class LegacyLayerScale(nn.Module):
-    def __init__(self, channels, init=0):
-        super().__init__()
-        self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True))
-        self.scale.data[:] = init
+    def __init__(self, channels, init=0): super().__init__(); self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True)); self.scale.data[:] = init
     def forward(self, x): return self.scale[:, None] * x
 
 class LayerScale(nn.Module):
-    def __init__(self, channels, init=0, channel_last=False):
-        super().__init__()
-        self.channel_last = channel_last
-        self.scale = nn.Parameter(torch.full((channels,), init))
+    def __init__(self, channels, init=0, channel_last=False): super().__init__(); self.channel_last = channel_last; self.scale = nn.Parameter(torch.full((channels,), init))
     def forward(self, x): return self.scale * x if self.channel_last else self.scale[:, None] * x
 
 class DConv(nn.Module):
@@ -100,8 +87,7 @@ class DConv(nn.Module):
                 mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
             self.layers.append(nn.Sequential(*mods))
     def forward(self, x):
-        for layer in self.layers:
-            x = x + layer(x)
+        for layer in self.layers: x = x + layer(x)
         return x
 
 class ScaledEmbedding(nn.Module):
@@ -230,11 +216,7 @@ class MultiWrap(nn.Module):
         out = torch.cat(outs, dim=2)
         return out if self.conv else (out if last else F.gelu(out), None)
 
-def create_sin_embedding(length, dim, shift=0, device="cpu", max_period=10000):
-    pos = shift + torch.arange(length, device=device).view(-1, 1, 1)
-    half = dim // 2
-    phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1)))
-    return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
+def create_sin_embedding(length, dim, shift=0, device="cpu", max_period=10000): pos = shift + torch.arange(length, device=device).view(-1, 1, 1); half = dim // 2; phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1))); return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 
 def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=10000):
     pe = torch.zeros(d_model, height, width)
@@ -305,11 +287,7 @@ class CrossTransformerEncoderLayer(nn.Module):
         return self.norm2(x + self.gamma_2(self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(x)))))))
 
 class PositionEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, scale=1.0, boost=3.0):
-        super().__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.embedding.weight.data *= scale / boost
-        self.boost = boost
+    def __init__(self, num_embeddings, embedding_dim, scale=1.0, boost=3.0): super().__init__(); self.embedding = nn.Embedding(num_embeddings, embedding_dim); self.embedding.weight.data *= scale / boost; self.boost = boost
     def forward(self, x): return self.embedding(x) * self.boost
 
 class CrossTransformerEncoder(nn.Module):
@@ -336,11 +314,7 @@ class CrossTransformerEncoder(nn.Module):
         self.norm_in, self.norm_in_t = norm_fn(), norm_fn()
         common = {"d_model": dim, "nhead": num_heads, "dim_feedforward": int(dim * hidden_scale), "dropout": dropout, "activation": F.gelu if gelu else F.relu, "group_norm": group_norm, "norm_first": norm_first, "norm_out": norm_out, "layer_scale": layer_scale, "mask_type": mask_type, "mask_random_seed": mask_random_seed, "sparse_attn_window": sparse_attn_window, "global_window": global_window, "sparsity": sparsity, "auto_sparsity": auto_sparsity, "batch_first": True}
         self.layers, self.layers_t = nn.ModuleList(), nn.ModuleList()
-        for idx in range(num_layers):
-            klass = MyTransformerEncoderLayer if idx % 2 == self.classic_parity else CrossTransformerEncoderLayer
-            sparse = sparse_self_attn if klass is MyTransformerEncoderLayer else sparse_cross_attn
-            self.layers.append(klass(**common, sparse=sparse))
-            self.layers_t.append(klass(**common, sparse=sparse))
+        for idx in range(num_layers): klass = MyTransformerEncoderLayer if idx % 2 == self.classic_parity else CrossTransformerEncoderLayer; sparse = sparse_self_attn if klass is MyTransformerEncoderLayer else sparse_cross_attn; self.layers.append(klass(**common, sparse=sparse)); self.layers_t.append(klass(**common, sparse=sparse))
     def _get_pos_embedding(self, t, b, c, device):
         if self.emb == "sin": return create_sin_embedding(t, c, random.randrange(self.sin_random_shift + 1), device, self.max_period)
         if self.emb == "cape":

@@ -9,31 +9,19 @@ def crop_center(h1, h2):
     return h1[:, :, :, s:s + h2.size(3)]
 
 class Conv2DBNActiv(nn.Module):
-    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
-        super().__init__()
-        self.conv = nn.Sequential(nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False), nn.BatchNorm2d(nout), activ())
+    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU): super().__init__(); self.conv = nn.Sequential(nn.Conv2d(nin, nout, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, bias=False), nn.BatchNorm2d(nout), activ())
     def forward(self, input_tensor): return self.conv(input_tensor)
 
 class SeperableConv2DBNActiv(nn.Module):
-    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU):
-        super().__init__()
-        self.conv = nn.Sequential(nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False), nn.Conv2d(nin, nout, kernel_size=1, bias=False), nn.BatchNorm2d(nout), activ())
+    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, dilation=1, activ=nn.ReLU): super().__init__(); self.conv = nn.Sequential(nn.Conv2d(nin, nin, kernel_size=ksize, stride=stride, padding=pad, dilation=dilation, groups=nin, bias=False), nn.Conv2d(nin, nout, kernel_size=1, bias=False), nn.BatchNorm2d(nout), activ())
     def forward(self, input_tensor): return self.conv(input_tensor)
 
 class Encoder(nn.Module):
-    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.LeakyReLU):
-        super().__init__()
-        self.conv1 = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ)
-        self.conv2 = Conv2DBNActiv(nout, nout, ksize, stride, pad, activ=activ)
-    def forward(self, input_tensor):
-        skip = self.conv1(input_tensor)
-        return self.conv2(skip), skip
+    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.LeakyReLU): super().__init__(); self.conv1 = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ); self.conv2 = Conv2DBNActiv(nout, nout, ksize, stride, pad, activ=activ)
+    def forward(self, input_tensor): skip = self.conv1(input_tensor); return self.conv2(skip), skip
 
 class Decoder(nn.Module):
-    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.ReLU, dropout=False):
-        super().__init__()
-        self.conv = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ)
-        self.dropout = nn.Dropout2d(0.1) if dropout else None
+    def __init__(self, nin, nout, ksize=3, stride=1, pad=1, activ=nn.ReLU, dropout=False): super().__init__(); self.conv = Conv2DBNActiv(nin, nout, ksize, 1, pad, activ=activ); self.dropout = nn.Dropout2d(0.1) if dropout else None
     def forward(self, input_tensor, skip=None):
         x = F.interpolate(input_tensor, scale_factor=2, mode="bilinear", align_corners=True)
         if skip is not None: x = torch.cat([x, crop_center(skip, x)], dim=1)

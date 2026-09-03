@@ -42,12 +42,8 @@ class NormMLP(BaseNormMLP):
         return self.reshape_output(mb)
 
 class MultAddNormMLP(NormMLP):
-    def __init__(self, emb_dim, mlp_dim, bandwidth, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True):
-        super().__init__(emb_dim, mlp_dim, bandwidth, in_channels, in_channel, hidden_activation, hidden_activation_kwargs, complex_mask)
-        self.output2 = nn.Sequential(nn.Linear(mlp_dim, self.bandwidth * self.in_channels * self.reim * 2), nn.GLU(dim=-1))
-    def forward(self, qb):
-        qb = self.hidden(self.norm(qb))
-        return self.reshape_output(self.output(qb)), self.reshape_output(self.output2(qb))
+    def __init__(self, emb_dim, mlp_dim, bandwidth, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True): super().__init__(emb_dim, mlp_dim, bandwidth, in_channels, in_channel, hidden_activation, hidden_activation_kwargs, complex_mask); self.output2 = nn.Sequential(nn.Linear(mlp_dim, self.bandwidth * self.in_channels * self.reim * 2), nn.GLU(dim=-1))
+    def forward(self, qb): qb = self.hidden(self.norm(qb)); return self.reshape_output(self.output(qb)), self.reshape_output(self.output2(qb))
 
 class MaskEstimationModuleSuperBase(nn.Module):
     pass
@@ -71,8 +67,7 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
         self.output_dtype, self.compute_all_masks = output_dtype, compute_all_masks
         self.use_freq_weights = bool(freq_weights is not None and use_freq_weights)
         if freq_weights is not None and (register_all_freq_weights or use_freq_weights):
-            for i, fw in enumerate(freq_weights):
-                self.register_buffer(f"freq_weights/{i}", fw)
+            for i, fw in enumerate(freq_weights): self.register_buffer(f"freq_weights/{i}", fw)
     def _append_cond(self, q, cond):
         if cond is None:
             if self.cond_dim <= 0: return q

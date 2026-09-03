@@ -97,9 +97,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 auto_sparsity=t_auto_sparsity)
         else:
             self.crosstransformer = None
-    def mlx_forward_mx(self, raw_audio):
-        from .demucs_mlx import mlx_forward_demucs_mx
-        return mlx_forward_demucs_mx(self, raw_audio, self.mps_model_compute_dtype)
+    def mlx_forward_mx(self, raw_audio): from .demucs_mlx import mlx_forward_demucs_mx; return mlx_forward_demucs_mx(self, raw_audio, self.mps_model_compute_dtype)
     def _spec(self, x):
         hl, nfft = self.hop_length, self.nfft
         assert hl == nfft // 4
@@ -109,12 +107,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         z = spectro(x, nfft, hl)[..., :-1, :]
         assert z.shape[-1] == le + 4, (z.shape, x.shape, le)
         return z[..., 2 : 2 + le]
-    def _ispec(self, z, length=None, scale=0):
-        hl = self.hop_length // (4**scale)
-        z = F.pad(F.pad(z, (0, 0, 0, 1)), (2, 2))
-        pad = hl // 2 * 3
-        le = hl * math.ceil(length / hl) + 2 * pad
-        return ispectro(z, hl, length=le)[..., pad : pad + length]
+    def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = F.pad(F.pad(z, (0, 0, 0, 1)), (2, 2)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
     def _magnitude(self, z):
         if self.cac:
             B, C, Fr, T = z.shape
@@ -135,12 +128,8 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         training_length = int(self.segment * self.samplerate)
         if training_length < length: raise ValueError(f"Given length {length} is longer than training length {training_length}")
         return training_length
-    def cac2cws(self, x):
-        b, c, f, t = x.shape
-        return x.reshape(b, c * self.num_subbands, f // self.num_subbands, t)
-    def cws2cac(self, x):
-        b, c, f, t = x.shape
-        return x.reshape(b, c // self.num_subbands, f * self.num_subbands, t)
+    def cac2cws(self, x): b, c, f, t = x.shape; return x.reshape(b, c * self.num_subbands, f // self.num_subbands, t)
+    def cws2cac(self, x): b, c, f, t = x.shape; return x.reshape(b, c // self.num_subbands, f * self.num_subbands, t)
     def forward(self, mix):
         if self._use_mlx_full_forward(mix):
             try:

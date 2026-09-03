@@ -2,13 +2,9 @@
 
 import numpy as np
 
-def hz_to_midi(hz):
-    """Convert frequencies in Hz to MIDI note numbers."""
-    return 69.0 + 12.0 * np.log2(np.asarray(hz) / 440.0)
+def hz_to_midi(hz): """Convert frequencies in Hz to MIDI note numbers."""; return 69.0 + 12.0 * np.log2(np.asarray(hz) / 440.0)
 
-def midi_to_hz(midi):
-    """Convert MIDI note numbers to frequencies in Hz."""
-    return 440.0 * np.power(2.0, (np.asarray(midi) - 69.0) / 12.0)
+def midi_to_hz(midi): """Convert MIDI note numbers to frequencies in Hz."""; return 440.0 * np.power(2.0, (np.asarray(midi) - 69.0) / 12.0)
 
 def _hz_to_mel(frequencies, *, htk=False):
     frequencies = np.asarray(frequencies, dtype=np.float64)
@@ -30,13 +26,9 @@ def _mel_to_hz(mels, *, htk=False):
     freqs[log_t] = min_log_hz * np.exp(logstep * (mels[log_t] - min_log_hz / f_sp))
     return freqs
 
-def mel_frequencies(n_mels, *, fmin=0.0, fmax=11025.0, htk=False):
-    """Return center frequencies on the mel scale, including endpoints."""
-    return _mel_to_hz(np.linspace(_hz_to_mel(fmin, htk=htk), _hz_to_mel(fmax, htk=htk), int(n_mels)), htk=htk)
+def mel_frequencies(n_mels, *, fmin=0.0, fmax=11025.0, htk=False): """Return center frequencies on the mel scale, including endpoints."""; return _mel_to_hz(np.linspace(_hz_to_mel(fmin, htk=htk), _hz_to_mel(fmax, htk=htk), int(n_mels)), htk=htk)
 
-def fft_frequencies(*, sr, n_fft):
-    """Return FFT bin center frequencies."""
-    return np.linspace(0.0, float(sr) / 2.0, int(1 + n_fft // 2), endpoint=True)
+def fft_frequencies(*, sr, n_fft): """Return FFT bin center frequencies."""; return np.linspace(0.0, float(sr) / 2.0, int(1 + n_fft // 2), endpoint=True)
 
 def mel_filterbank(sr, n_fft, n_mels=128, fmin=0.0, fmax=None, htk=False, norm="slaney", dtype=np.float32):
     """Create a triangular mel filterbank for model initialization."""

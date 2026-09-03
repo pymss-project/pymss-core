@@ -5,25 +5,14 @@ from .mlx_backend import check_dtype, conv1d, istft, mx_dtype, param, reflect_pa
 
 torch_to_mlx_input = to_mx
 
-def _stft(module, raw_audio, dtype):
-    window = to_mx(module.window, torch.float32).astype(dtype)
-    context = {"length": raw_audio.shape[-1], "n_fft": module.win, "hop": module.stride, "window": window, "dtype": dtype}
-    return stft(raw_audio, module.win, module.stride, window, dtype, pad_fn=reflect_pad_last), context
+def _stft(module, raw_audio, dtype): window = to_mx(module.window, torch.float32).astype(dtype); context = {"length": raw_audio.shape[-1], "n_fft": module.win, "hop": module.stride, "window": window, "dtype": dtype}; return stft(raw_audio, module.win, module.stride, window, dtype, pad_fn=reflect_pad_last), context
 
-def _rms_norm(module, x, dtype):
-    import mlx.core as mx
-    batch, channels, frames = x.shape
-    groups = int(module.groups)
-    y = x.astype(mx.float32).reshape(batch, groups, channels // groups, frames)
-    y = y * mx.rsqrt(mx.mean(mx.square(y), axis=2, keepdims=True) + module.eps)
-    y = y.reshape(batch, channels, frames).astype(x.dtype)
-    return y * param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
+def _rms_norm(module, x, dtype): import mlx.core as mx; batch, channels, frames = x.shape; groups = int(module.groups); y = x.astype(mx.float32).reshape(batch, groups, channels // groups, frames); y = y * mx.rsqrt(mx.mean(mx.square(y), axis=2, keepdims=True) + module.eps); y = y.reshape(batch, channels, frames).astype(x.dtype); return y * param(module, "weight", module.weight, dtype).reshape(1, -1, 1)
 
 def _module_forward(module, x, dtype):
     import mlx.core as mx
     if isinstance(module, torch.nn.Sequential):
-        for child in module:
-            x = _module_forward(child, x, dtype)
+        for child in module: x = _module_forward(child, x, dtype)
         return x
     if isinstance(module, torch.nn.Conv1d): return conv1d(module, x, dtype)
     if isinstance(module, RMSNorm): return _rms_norm(module, x, dtype)
@@ -45,15 +34,7 @@ def _conv_act_norm(module, x, dtype):
         y = y[..., : -module.kernel + 1]
     return x + y
 
-def _apply_rope(module, x, dtype):
-    import mlx.core as mx
-    seq_len = x.shape[-2]
-    cos = to_mx(module.cos_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1)
-    sin = to_mx(module.sin_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1)
-    even, odd = x[..., 0::2], x[..., 1::2]
-    out = mx.zeros_like(x)
-    out = out.at[..., 0::2].add(even * cos[..., 0::2] - odd * sin[..., 0::2])
-    return out.at[..., 1::2].add(odd * cos[..., 0::2] + even * sin[..., 0::2])
+def _apply_rope(module, x, dtype): import mlx.core as mx; seq_len = x.shape[-2]; cos = to_mx(module.cos_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); sin = to_mx(module.sin_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); even, odd = x[..., 0::2], x[..., 1::2]; out = mx.zeros_like(x); out = out.at[..., 0::2].add(even * cos[..., 0::2] - odd * sin[..., 0::2]); return out.at[..., 1::2].add(odd * cos[..., 0::2] + even * sin[..., 0::2])
 
 def _roformer(module, x, dtype):
     import mlx.core as mx
@@ -67,31 +48,20 @@ def _roformer(module, x, dtype):
     gate, z = mx.split(hidden, 2, axis=1)
     return out + conv1d(module.MLP_output, silu(gate) * z, dtype)
 
-def _bsnet(module, x, dtype):
-    batch, bands, channels, frames = x.shape
-    band = _roformer(module.band_net, x.transpose(0, 3, 2, 1).reshape(batch * frames, channels, bands), dtype)
-    seq = _module_forward(module.seq_net, band.reshape(batch, frames, channels, bands).transpose(0, 3, 2, 1) .reshape(batch * bands, channels, frames), dtype)
-    return seq.reshape(batch, bands, channels, frames)
+def _bsnet(module, x, dtype): batch, bands, channels, frames = x.shape; band = _roformer(module.band_net, x.transpose(0, 3, 2, 1).reshape(batch * frames, channels, bands), dtype); seq = _module_forward(module.seq_net, band.reshape(batch, frames, channels, bands).transpose(0, 3, 2, 1) .reshape(batch * bands, channels, frames), dtype); return seq.reshape(batch, bands, channels, frames)
 
 def _feature_extractor(module, raw_audio, dtype):
     import mlx.core as mx
     batch, channels, samples = raw_audio.shape
     spec, _ = _stft(module, raw_audio.reshape(batch * channels, samples), dtype)
     features, band_index = [], 0
-    for width, bn in zip(module.band_width, module.BN):
-        sub = spec[:, band_index : band_index + width]
-        power = mx.sqrt(mx.sum(mx.square(sub.real) + mx.square(sub.imag), axis=1, keepdims=True) + module.eps)
-        inp = mx.concatenate(((sub / power).real, (sub / power).imag, mx.log(power)), axis=1)
-        features.append(_module_forward(bn, inp.astype(dtype), dtype))
-        band_index += width
+    for width, bn in zip(module.band_width, module.BN): sub = spec[:, band_index : band_index + width]; power = mx.sqrt(mx.sum(mx.square(sub.real) + mx.square(sub.imag), axis=1, keepdims=True) + module.eps); inp = mx.concatenate(((sub / power).real, (sub / power).imag, mx.log(power)), axis=1); features.append(_module_forward(bn, inp.astype(dtype), dtype)); band_index += width
     return mx.stack(features, axis=1), spec
 
 def _estimate_spec(module, feature, batch_channels, dtype):
     import mlx.core as mx
     specs = []
-    for band_feature, output, width in zip(mx.split(feature, feature.shape[1], axis=1), module.output, module.band_width):
-        ri = _module_forward(output, band_feature[:, 0], dtype).reshape(batch_channels, 2, width, -1)
-        specs.append(ri[:, 0] + (1j * ri[:, 1]))
+    for band_feature, output, width in zip(mx.split(feature, feature.shape[1], axis=1), module.output, module.band_width): ri = _module_forward(output, band_feature[:, 0], dtype).reshape(batch_channels, 2, width, -1); specs.append(ri[:, 0] + (1j * ri[:, 1]))
     return mx.concatenate(specs, axis=1)
 
 def mlx_forward_apollo_mx(module, raw_audio, dtype=torch.float16):
@@ -99,8 +69,7 @@ def mlx_forward_apollo_mx(module, raw_audio, dtype=torch.float16):
     dtype = mx_dtype(dtype)
     batch, channels, samples = raw_audio.shape
     feature, _ = _feature_extractor(module, raw_audio, dtype)
-    for block in module.net:
-        feature = _bsnet(block, feature, dtype)
+    for block in module.net: feature = _bsnet(block, feature, dtype)
     est_spec = _estimate_spec(module, feature, batch * channels, dtype)
     return istft(est_spec, to_mx(module.window, torch.float32).astype(raw_audio.dtype), module.stride, samples, raw_audio.dtype, n_fft=module.win).reshape(batch, channels, -1)
 

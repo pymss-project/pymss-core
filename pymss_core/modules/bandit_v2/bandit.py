@@ -20,9 +20,7 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
         self.band_split = BandSplitModule(in_channels=in_channels, band_specs=self.band_specs.get_band_specs(), require_no_overlap=require_no_overlap, require_no_gap=require_no_gap, normalize_channel_independently=normalize_channel_independently, treat_channel_as_feature=treat_channel_as_feature, emb_dim=emb_dim)
         self.tf_model = SeqBandModellingModule(n_modules=n_sqm_modules, emb_dim=emb_dim, rnn_dim=rnn_dim, bidirectional=bidirectional, rnn_type=rnn_type)
         self.mask_estim = nn.ModuleDict({ stem: OverlappingMaskEstimationModule(band_specs=self.band_specs.get_band_specs(), freq_weights=self.band_specs.get_freq_weights(), n_freq=n_fft // 2 + 1, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=in_channels, hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs or {}, complex_mask=complex_mask, use_freq_weights=use_freq_weights) for stem in stems})
-    def mlx_forward_mx(self, raw_audio):
-        from ..bandit_mlx import mlx_forward_bandit_mx
-        return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
+    def mlx_forward_mx(self, raw_audio): from ..bandit_mlx import mlx_forward_bandit_mx; return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
     def _use_mlx_full_forward(self, batch): return (not self.training and self.mps_model_backend == "mlx_full" and not isinstance(batch, dict) and batch.device.type == "mps")
     @staticmethod
     def mask(x, m): return x * m
@@ -40,17 +38,12 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
         with torch.no_grad():
             mixture = batch["mixture"]["audio"]
             batch["mixture"]["spectrogram"] = self.stft(mixture)
-            for stem in batch.get("sources", {}):
-                batch["sources"][stem]["spectrogram"] = self.stft(batch["sources"][stem]["audio"])
+            for stem in batch.get("sources", {}): batch["sources"][stem]["spectrogram"] = self.stft(batch["sources"][stem]["audio"])
         batch = self.separate(batch)
         return torch.stack([batch["estimates"][s]["audio"].view(-1, init_shape[1], init_shape[2]) for s in self.stems], dim=1)
-    def encode(self, batch):
-        x = batch["mixture"]["spectrogram"]
-        return x, self.tf_model(self.band_split(x)), batch["mixture"]["audio"].shape[-1]
+    def encode(self, batch): x = batch["mixture"]["spectrogram"]; return x, self.tf_model(self.band_split(x)), batch["mixture"]["audio"].shape[-1]
     def separate(self, batch):
         batch["estimates"] = {}
         x, q, length = self.encode(batch)
-        for stem, mem in self.mask_estim.items():
-            s = self.mask(x, mem(q).to(x.dtype)).reshape(x.shape)
-            batch["estimates"][stem] = {"audio": self.istft(s, length), "spectrogram": s}
+        for stem, mem in self.mask_estim.items(): s = self.mask(x, mem(q).to(x.dtype)).reshape(x.shape); batch["estimates"][stem] = {"audio": self.istft(s, length), "spectrogram": s}
         return batch

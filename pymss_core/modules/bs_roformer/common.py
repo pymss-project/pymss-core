@@ -27,11 +27,7 @@ class SpectralContext(tuple):
     def x_is_mps(self): return self[5]
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim, theta=10000):
-        super().__init__()
-        freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim))
-        self.freqs = nn.Parameter(freqs, requires_grad=False)
-        self.cache = {}
+    def __init__(self, dim, theta=10000): super().__init__(); freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim)); self.freqs = nn.Parameter(freqs, requires_grad=False); self.cache = {}
     def get_seq_pos(self, seq_len, device, dtype, offset=0): return torch.arange(seq_len, device=device, dtype=dtype) + offset
     def forward(self, t, cache_key=None):
         if cache_key in self.cache: return self.cache[cache_key]
@@ -43,9 +39,7 @@ class RotaryEmbedding(nn.Module):
 
 def default(v, d): return v if v is not None else d
 
-def mask_to_complex_shape(mask, complex_dim=2):
-    b, n, t, fc = mask.shape
-    return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
+def mask_to_complex_shape(mask, complex_dim=2): b, n, t, fc = mask.shape; return mask.reshape(b, n, t, fc // complex_dim, complex_dim).permute(0, 1, 3, 2, 4)
 
 TRAINING_LOSS_KWARGS = frozenset({"multi_stft_resolution_loss_weight", "multi_stft_resolutions_window_sizes", "multi_stft_hop_size", "multi_stft_normalized", "multi_stft_window_fn"})
 REMOVED_ROFORMER_KWARGS = frozenset({"linear_transformer_depth", "linear_conformer_depth", "use_torch_checkpoint", "attention_layout", "dim_freqs_in", "sage_attention", "conv_dropout"})
@@ -54,9 +48,7 @@ def ignore_roformer_training_kwargs(kwargs):
     unexpected = set(kwargs) - TRAINING_LOSS_KWARGS - REMOVED_ROFORMER_KWARGS
     if unexpected: raise TypeError(f"unexpected RoFormer config keys: {sorted(unexpected)}")
 
-def init_roformer_runtime(module, stereo, num_stems, skip_connection=False):
-    module.stereo = stereo
-    module.audio_channels,module.num_stems,module.skip_connection = 2 if stereo else 1, num_stems, bool(skip_connection)
+def init_roformer_runtime(module, stereo, num_stems, skip_connection=False): module.stereo = stereo; module.audio_channels,module.num_stems,module.skip_connection = 2 if stereo else 1, num_stems, bool(skip_connection)
 
 def init_roformer_shared_bias(module, dim, heads, dim_head, use_shared_bias):
     if not use_shared_bias: return None, None
@@ -77,10 +69,7 @@ def init_conformer_layers(module, *, depth, time_conformer_depth, freq_conformer
     ck = dict(ff_mult=ff_mult, conv_expansion_factor=conv_expansion_factor, conv_kernel_size=conv_kernel_size, **transformer_kwargs)
     module.layers = nn.ModuleList([nn.ModuleList([ Conformer(depth=time_conformer_depth, rotary_embed=time_rotary, **ck), Conformer(depth=freq_conformer_depth, rotary_embed=freq_rotary, **ck)]) for _ in range(depth)])
 
-def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn):
-    module.stft_kwargs = {"n_fft": stft_n_fft, "hop_length": stft_hop_length, "win_length": stft_win_length, "normalized": stft_normalized}
-    module.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length)
-    module._stft_window_cache = {}
+def init_roformer_stft(module, stft_n_fft, stft_hop_length, stft_win_length, stft_normalized, stft_window_fn): module.stft_kwargs = {"n_fft": stft_n_fft, "hop_length": stft_hop_length, "win_length": stft_win_length, "normalized": stft_normalized}; module.stft_window_fn = partial(default(stft_window_fn, torch.hann_window), stft_win_length); module._stft_window_cache = {}
 
 def roformer_stft_freq_bins(module, window_length):
     # The original training code computed this shape through torch.stft on a random probe tensor during model
@@ -97,9 +86,7 @@ def init_roformer_band_modules(module, *, dim, freqs_per_bands_with_complex, num
     module.mask_estimators = nn.ModuleList([ mask_estimator_cls(dim=dim, dim_inputs=freqs_per_bands_with_complex, depth=mask_estimator_depth, mlp_expansion_factor=mlp_expansion_factor, **(mask_estimator_kwargs or {})) for _ in range(num_stems)])
 
 class RoformerRuntimeMixin(MpsBackendMixin):
-    def mlx_forward_mx(self, raw_audio):
-        from .mlx_roformer import mlx_forward_roformer_mx
-        return mlx_forward_roformer_mx(self, raw_audio, self.mps_model_compute_dtype)
+    def mlx_forward_mx(self, raw_audio): from .mlx_roformer import mlx_forward_roformer_mx; return mlx_forward_roformer_mx(self, raw_audio, self.mps_model_compute_dtype)
     def stft_window(self, device):
         key = (device.type, device.index, torch.float32)
         window = self._stft_window_cache.get(key)
@@ -107,15 +94,9 @@ class RoformerRuntimeMixin(MpsBackendMixin):
             window = self.stft_window_fn(device=device)
             self._stft_window_cache[key] = window
         return window
-    def _active_source_indices(self):
-        indices = getattr(self, "_pymss_source_indices", None)
-        return None if indices is None else tuple(int(index) for index in indices)
-    def _active_mask_estimators(self):
-        indices = self._active_source_indices()
-        return tuple(self.mask_estimators) if indices is None else tuple(self.mask_estimators[i] for i in indices)
-    def _active_source_count(self):
-        indices = self._active_source_indices()
-        return len(self.mask_estimators) if indices is None else len(indices)
+    def _active_source_indices(self): indices = getattr(self, "_pymss_source_indices", None); return None if indices is None else tuple(int(index) for index in indices)
+    def _active_mask_estimators(self): indices = self._active_source_indices(); return tuple(self.mask_estimators) if indices is None else tuple(self.mask_estimators[i] for i in indices)
+    def _active_source_count(self): indices = self._active_source_indices(); return len(self.mask_estimators) if indices is None else len(indices)
     def _warm_group_cache(self, tensor):
         key = (tensor.device.type, tensor.device.index, tensor.dtype)
         if getattr(self, "_pymss_group_cache_warm_key", None) == key: return
@@ -135,11 +116,7 @@ class RoformerRuntimeMixin(MpsBackendMixin):
                 return packed
             self._packed_mask_estimators_available = False
         return torch.stack([fn(x) for fn in estimators], dim=1)
-    def _mask_stft_repr(self, stft_repr, context):
-        self._warm_group_cache(stft_repr)
-        mask = self._forward_mask_core(stft_repr)
-        stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
-        return stft_repr * torch.view_as_complex(mask).type(stft_repr.dtype)
+    def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1)); return stft_repr * torch.view_as_complex(mask).type(stft_repr.dtype)
 
 def forward_roformer_mask_core(module, stft_repr):
     b, fs, model_t, complex_dim = stft_repr.shape
@@ -147,8 +124,7 @@ def forward_roformer_mask_core(module, stft_repr):
     residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
         if residual_store is not None:
-            for residual in residual_store:
-                x = x + residual
+            for residual in residual_store: x = x + residual
         b, t, f, d = x.shape
         x = time_transformer(x.permute(0, 2, 1, 3).reshape(b * f, t, d)).reshape(b, f, t, d).permute(0, 2, 1, 3)
         x = freq_transformer(x.reshape(b * t, f, d)).reshape(b, t, f, d)
@@ -184,8 +160,6 @@ def istft_roformer(module, stft_repr, context, length):
     recon_audio = recon_audio.reshape(context.batch, n, context.channels, recon_audio.shape[-1])
     return recon_audio[:, 0] if n == 1 else recon_audio
 
-def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True):
-    stft_repr, context = stft_roformer(module, raw_audio)
-    return istft_roformer(module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None)
+def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True): stft_repr, context = stft_roformer(module, raw_audio); return istft_roformer(module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None)
 
 def forward_bandsplit_roformer(module, raw_audio): return forward_spectral_roformer(module, raw_audio, match_input_audio_length=True)

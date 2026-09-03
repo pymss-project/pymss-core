@@ -60,9 +60,7 @@ def load_checkpoint(path, *, model_type=None, map_location="cpu", weights_only=N
         weights_only = False if weights_only is None else weights_only
     return _torch_load(path, map_location=map_location, weights_only=weights_only, mmap=mmap)
 
-def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True):
-    """Load and unwrap the model state dict from a checkpoint file."""
-    return unwrap_state_dict(load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))
+def load_state_dict(path, *, model_type=None, map_location="cpu", weights_only=None, mmap=True): """Load and unwrap the model state dict from a checkpoint file."""; return unwrap_state_dict(load_checkpoint(path, model_type=model_type, map_location=map_location, weights_only=weights_only, mmap=mmap))
 
 def load_model_weights(model, checkpoint_or_path, *, model_type=None, strict=True, map_location="cpu"):
     """Load weights from a checkpoint package or file into a model."""

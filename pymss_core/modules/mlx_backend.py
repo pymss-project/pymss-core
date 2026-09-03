@@ -39,10 +39,7 @@ def param(module, name, tensor, dtype):  # memoize converted weights on the torc
     cache[name] = (key, value)
     return value
 
-def linear(x, weight, bias=None):
-    import mlx.core as mx
-    y = mx.matmul(x, mx.swapaxes(weight, -1, -2))
-    return y if bias is None else y + bias
+def linear(x, weight, bias=None): import mlx.core as mx; y = mx.matmul(x, mx.swapaxes(weight, -1, -2)); return y if bias is None else y + bias
 
 def linear_layer(module, x, dtype): return linear(x, param(module, "weight", module.weight, dtype), None if module.bias is None else param(module, "bias", module.bias, dtype))
 
@@ -66,8 +63,7 @@ def generic_module_forward(module, x, dtype, norm_fn, swish_cls=None, extra=()):
     for klass, fn in extra:
         if isinstance(module, klass): return fn(module, x, dtype)
     if isinstance(module, torch.nn.Sequential):
-        for child in module:
-            x = generic_module_forward(child, x, dtype, norm_fn, swish_cls, extra)
+        for child in module: x = generic_module_forward(child, x, dtype, norm_fn, swish_cls, extra)
         return x
     if isinstance(module, torch.nn.Conv1d): return conv1d(module, x, dtype)
     if isinstance(module, torch.nn.Conv2d): return conv2d(module, x, dtype)
@@ -80,36 +76,21 @@ def generic_module_forward(module, x, dtype, norm_fn, swish_cls=None, extra=()):
     if swish_cls is not None and isinstance(module, swish_cls): return swish(x)
     return generic_activation(module, x)
 
-def rms_norm(x, gamma):
-    import mlx.core as mx
-    return x * mx.rsqrt(mx.mean(mx.square(x), axis=-1, keepdims=True) + 1e-12) * gamma
+def rms_norm(x, gamma): import mlx.core as mx; return x * mx.rsqrt(mx.mean(mx.square(x), axis=-1, keepdims=True) + 1e-12) * gamma
 
-def sigmoid(x):
-    import mlx.core as mx
-    return 1 / (1 + mx.exp(-x))
+def sigmoid(x): import mlx.core as mx; return 1 / (1 + mx.exp(-x))
 
-def gelu(x):
-    import mlx.core as mx
-    return 0.5 * x * (1 + mx.erf(x * (2**-0.5)))
+def gelu(x): import mlx.core as mx; return 0.5 * x * (1 + mx.erf(x * (2**-0.5)))
 
-def relu(x):
-    import mlx.core as mx
-    return mx.maximum(x, 0)
+def relu(x): import mlx.core as mx; return mx.maximum(x, 0)
 
-def glu(x, axis=-1):
-    import mlx.core as mx
-    a, b = mx.split(x, 2, axis=axis)
-    return a * mx.sigmoid(b)
+def glu(x, axis=-1): import mlx.core as mx; a, b = mx.split(x, 2, axis=axis); return a * mx.sigmoid(b)
 
-def swish(x):
-    import mlx.core as mx
-    return x * mx.sigmoid(x)
+def swish(x): import mlx.core as mx; return x * mx.sigmoid(x)
 
 def silu(x): return swish(x)
 
-def elu(module, x):
-    import mlx.core as mx
-    return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
+def elu(module, x): import mlx.core as mx; return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
 
 def periodic_hann_window(length, dtype):
     import mlx.core as mx
@@ -251,13 +232,7 @@ def lstm(rnn, x, dtype):
     import mlx.core as mx
     def run(p, reverse=False):
         h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype); c, outs = mx.zeros_like(h), []
-        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]):
-            gates = linear(x[:, t], p["weight_ih"], p.get("bias_ih")) + linear(h, p["weight_hh"], p.get("bias_hh"))
-            i, f, g, o = mx.split(gates, 4, axis=-1)
-            i, f, o = sigmoid(i), sigmoid(f), sigmoid(o)
-            c = f * c + i * mx.tanh(g)
-            h = o * mx.tanh(c)
-            outs.append(h)
+        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]): gates = linear(x[:, t], p["weight_ih"], p.get("bias_ih")) + linear(h, p["weight_hh"], p.get("bias_hh")); i, f, g, o = mx.split(gates, 4, axis=-1); i, f, o = sigmoid(i), sigmoid(f), sigmoid(o); c = f * c + i * mx.tanh(g); h = o * mx.tanh(c); outs.append(h)
         if reverse:
             outs.reverse()
         return mx.stack(outs, axis=1)
@@ -271,14 +246,7 @@ def gru(rnn, x, dtype):
     def run(p, reverse=False):
         h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype)
         outs = []
-        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]):
-            gi = linear(x[:, t], p["weight_ih"], p.get("bias_ih"))
-            gh = linear(h, p["weight_hh"], p.get("bias_hh"))
-            i_r, i_z, i_n = mx.split(gi, 3, axis=-1)
-            h_r, h_z, h_n = mx.split(gh, 3, axis=-1)
-            reset, update = sigmoid(i_r + h_r), sigmoid(i_z + h_z)
-            h = (1 - update) * mx.tanh(i_n + reset * h_n) + update * h
-            outs.append(h)
+        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]): gi = linear(x[:, t], p["weight_ih"], p.get("bias_ih")); gh = linear(h, p["weight_hh"], p.get("bias_hh")); i_r, i_z, i_n = mx.split(gi, 3, axis=-1); h_r, h_z, h_n = mx.split(gh, 3, axis=-1); reset, update = sigmoid(i_r + h_r), sigmoid(i_z + h_z); h = (1 - update) * mx.tanh(i_n + reset * h_n) + update * h; outs.append(h)
         if reverse:
             outs.reverse()
         return mx.stack(outs, axis=1)

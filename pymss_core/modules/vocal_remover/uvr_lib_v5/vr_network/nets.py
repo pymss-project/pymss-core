@@ -35,10 +35,7 @@ class BaseASPPNet(nn.Module):
         hidden_state = self.dec2(hidden_state, e2)
         return self.dec1(hidden_state, e1)
 
-def determine_model_capacity(n_fft_bins, nn_architecture):
-    ch = {31191: 16, 33966: 16, 123821: 32, 123812: 32, 537238: 64, 537227: 64}[nn_architecture]
-    caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch), (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]
-    return CascadedASPPNet(n_fft_bins, caps, nn_architecture)
+def determine_model_capacity(n_fft_bins, nn_architecture): ch = {31191: 16, 33966: 16, 123821: 32, 123812: 32, 537238: 64, 537227: 64}[nn_architecture]; caps = [(2, ch), (2, ch), (ch + 2, ch // 2, 1, 1, 0), (ch // 2, ch), (2 * ch + 2, ch, 1, 1, 0), (ch, 2 * ch), (2 * ch, 2, 1), (ch, 2, 1), (ch, 2, 1)]; return CascadedASPPNet(n_fft_bins, caps, nn_architecture)
 
 class CascadedASPPNet(nn.Module):
     def __init__(self, n_fft, model_capacity_data, nn_architecture):
@@ -65,6 +62,4 @@ class CascadedASPPNet(nn.Module):
             pad = lambda t: F.pad(t, (0, 0, 0, self.output_bin - t.size()[2]), mode="replicate")
             return mask * mix, pad(torch.sigmoid(self.aux1_out(aux1))) * mix, pad(torch.sigmoid(self.aux2_out(aux2))) * mix
         return mask
-    def predict_mask(self, input_tensor):
-        mask = self.forward(input_tensor)
-        return mask[:, :, :, self.offset:-self.offset] if self.offset > 0 else mask
+    def predict_mask(self, input_tensor): mask = self.forward(input_tensor); return mask[:, :, :, self.offset:-self.offset] if self.offset > 0 else mask

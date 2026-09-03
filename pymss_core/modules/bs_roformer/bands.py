@@ -23,9 +23,7 @@ def default(v, d): return v if v is not None else d
 
 def dim_input_offsets(dim_inputs): return (0, *accumulate(dim_inputs))
 
-def contiguous_dim_groups(dim_inputs):
-    breaks = [0] + [i for i in range(1, len(dim_inputs)) if dim_inputs[i] != dim_inputs[i - 1]] + [len(dim_inputs)]
-    return tuple((s, e, dim_inputs[s]) for s, e in pairwise(breaks))
+def contiguous_dim_groups(dim_inputs): breaks = [0] + [i for i in range(1, len(dim_inputs)) if dim_inputs[i] != dim_inputs[i - 1]] + [len(dim_inputs)]; return tuple((s, e, dim_inputs[s]) for s, e in pairwise(breaks))
 
 def grouped_linear(x, weight, bias):
     group_count, out_features, in_features = weight.shape
@@ -42,18 +40,10 @@ def grouped_linear(x, weight, bias):
 
 def inference_tanh(x): return torch.tanh(x) if torch.is_grad_enabled() else x.tanh_()
 
-def stack_linears(linears, device, dtype):
-    weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0)
-    bias = None if linears[0].bias is None else torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears])
-    return weight, bias
+def stack_linears(linears, device, dtype): weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0); bias = None if linears[0].bias is None else torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears]); return weight, bias
 
 class BandSplit(Module):
-    def __init__(self, dim, dim_inputs: tuple[int, ...]):
-        super().__init__()
-        self.dim_inputs, self._dim_offsets = dim_inputs, dim_input_offsets(dim_inputs)
-        self._dim_groups, self._group_cache = contiguous_dim_groups(dim_inputs), {}
-        self.use_grouped_forward = True
-        self.to_features = ModuleList([nn.Sequential(RMSNorm(dim_in), nn.Linear(dim_in, dim)) for dim_in in dim_inputs])
+    def __init__(self, dim, dim_inputs: tuple[int, ...]): super().__init__(); self.dim_inputs, self._dim_offsets = dim_inputs, dim_input_offsets(dim_inputs); self._dim_groups, self._group_cache = contiguous_dim_groups(dim_inputs), {}; self.use_grouped_forward = True; self.to_features = ModuleList([nn.Sequential(RMSNorm(dim_in), nn.Linear(dim_in, dim)) for dim_in in dim_inputs])
     def _get_group_params(self, start, end, device, dtype):
         key = (start, end, device.type, device.index, dtype)
         use_cache = not self.training
@@ -69,26 +59,14 @@ class BandSplit(Module):
             self._group_cache[key] = cached
         return cached
     def _forward_grouped(self, x):
-        def forward_group(start, end, dim_in):
-            offset_start = self._dim_offsets[start]
-            offset_end = self._dim_offsets[end]
-            group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in)
-            gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype)
-            group_x = F.normalize(group_x, dim=-1) * (dim_in**0.5) * gamma
-            return grouped_linear(group_x, weight, bias)
+        def forward_group(start, end, dim_in): offset_start = self._dim_offsets[start]; offset_end = self._dim_offsets[end]; group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in); gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype); group_x = F.normalize(group_x, dim=-1) * (dim_in**0.5) * gamma; return grouped_linear(group_x, weight, bias)
         return torch.cat([forward_group(start, end, dim_in) for start, end, dim_in in self._dim_groups], dim=-2)
     def warm_group_cache(self, device, dtype):
         if self.training: return
-        for start, end, _ in self._dim_groups:
-            self._get_group_params(start, end, device, dtype)
-    def forward(self, x):
-        if should_use_grouped_forward(self): return self._forward_grouped(x)
-        return torch.stack([to_feature(split_input) for split_input, to_feature in zip(x.split(self.dim_inputs, dim=-1), self.to_features)], dim=-2)
+        for start, end, _ in self._dim_groups: self._get_group_params(start, end, device, dtype)
+    def forward(self, x): return self._forward_grouped(x) if (should_use_grouped_forward(self)) else torch.stack([to_feature(split_input) for split_input, to_feature in zip(x.split(self.dim_inputs, dim=-1), self.to_features)], dim=-2)
 
-def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_layers=None):
-    dim_hidden, hidden_layers = default(dim_hidden, dim_in), default(hidden_layers, max(depth - 1, 0))
-    dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out)
-    return nn.Sequential(*[layer for ind, (i, o) in enumerate(pairwise(dims)) for layer in ((nn.Linear(i, o),) if ind == len(dims) - 2 else (nn.Linear(i, o), activation()))])
+def MLP(dim_in, dim_out, dim_hidden=None, depth=1, activation=nn.Tanh, hidden_layers=None): dim_hidden, hidden_layers = default(dim_hidden, dim_in), default(hidden_layers, max(depth - 1, 0)); dims = (dim_in, *((dim_hidden,) * hidden_layers), dim_out); return nn.Sequential(*[layer for ind, (i, o) in enumerate(pairwise(dims)) for layer in ((nn.Linear(i, o),) if ind == len(dims) - 2 else (nn.Linear(i, o), activation()))])
 
 class MaskEstimator(Module):
     def __init__(self, dim, dim_inputs: tuple[int, ...], depth, mlp_expansion_factor=4, mlp_hidden_layers=None):
@@ -128,8 +106,7 @@ class MaskEstimator(Module):
             layers = self._band_groupable_layers()
             self._band_signatures_cache = (None if any(layer_group is None for layer_group in layers) else tuple(self._layers_signature(layer_group) for layer_group in layers))
         return self._band_signatures_cache
-    def _plan_bail(self, allow_deep_grouping):
-        self._layer_group_plan_ready,self._layer_group_plan_allow_deep,self._layer_group_plan = True, allow_deep_grouping, None
+    def _plan_bail(self, allow_deep_grouping): self._layer_group_plan_ready,self._layer_group_plan_allow_deep,self._layer_group_plan = True, allow_deep_grouping, None
     def _layer_grouping_plan(self):
         allow_deep_grouping = self.training and experimental_deep_mask_grouping()
         if self._layer_group_plan_ready and getattr(self, "_layer_group_plan_allow_deep", False) == allow_deep_grouping: return self._layer_group_plan
@@ -146,9 +123,7 @@ class MaskEstimator(Module):
                 continue
             if kinds[0] != "linear" or any(kind != "linear" for kind in kinds): return self._plan_bail(allow_deep_grouping)
             groups = defaultdict(list)
-            for band_index, layers in enumerate(band_layers):
-                _kind, layer = layers[layer_index]
-                groups[(layer.in_features, layer.out_features, layer.bias is not None)].append(band_index)
+            for band_index, layers in enumerate(band_layers): _kind, layer = layers[layer_index]; groups[(layer.in_features, layer.out_features, layer.bias is not None)].append(band_index)
             plan.append(("linear", tuple((signature, tuple(indices)) for signature, indices in groups.items())))
         # Extra hidden layers in MBR produce large per-band hidden->hidden
         # batched GEMMs. On CUDA those are slower than the existing addmm
@@ -228,8 +203,7 @@ class MaskEstimator(Module):
     def _forward_grouped_mlp(self, x):
         def forward_group(start, end):
             group_x = x[:, :, start:end, :]
-            for kind, weight, bias in self._get_group_params(start, end, x.device, x.dtype):
-                group_x = grouped_linear(group_x, weight, bias) if kind == "linear" else inference_tanh(group_x)
+            for kind, weight, bias in self._get_group_params(start, end, x.device, x.dtype): group_x = grouped_linear(group_x, weight, bias) if kind == "linear" else inference_tanh(group_x)
             return F.glu(group_x, dim=-1).flatten(start_dim=-2)
         return torch.cat([forward_group(start, end) for start, end, _ in self._dim_groups], dim=-1)
     def _forward_layer_grouped_mlp(self, x):
@@ -249,8 +223,7 @@ class MaskEstimator(Module):
                     band_index = self._indices_tensor(indices, x.device)
                     selected = group_x.index_select(-2, band_index)
                     out = F.glu(grouped_linear(selected, weight, bias), dim=-1)
-                    for band_position, band_out in zip(indices, out.unbind(dim=-2)):
-                        outs[band_position] = band_out
+                    for band_position, band_out in zip(indices, out.unbind(dim=-2)): outs[band_position] = band_out
                 return torch.cat(outs, dim=-1)
             next_x = None
             for signature, indices in groups:
@@ -269,8 +242,7 @@ class MaskEstimator(Module):
             group_x = band_features
             layers = band_layers[band_index]
             if layers is None: return None
-            for kind, layer in layers:
-                group_x = inference_tanh(group_x) if kind == "tanh" else layer(group_x)
+            for kind, layer in layers: group_x = inference_tanh(group_x) if kind == "tanh" else layer(group_x)
             return F.glu(group_x, dim=-1)
         outs = [forward_band(band_index, band_features) for band_index, band_features in enumerate(x.unbind(dim=-2))]
         return None if any(out is None for out in outs) else torch.cat(outs, dim=-1)
@@ -309,10 +281,7 @@ class MaskEstimator(Module):
                 offset_end = first._dim_offsets[indices[-1] + 1]
                 result[:, :, :, offset_start:offset_end] = group_x.flatten(start_dim=-2).transpose(1, 2)
             else:
-                for group_position, band_position in enumerate(indices):
-                    offset_start = first._dim_offsets[band_position]
-                    offset_end = first._dim_offsets[band_position + 1]
-                    result[:, :, :, offset_start:offset_end] = group_x[:, :, :, group_position, :].transpose(1, 2)
+                for group_position, band_position in enumerate(indices): offset_start = first._dim_offsets[band_position]; offset_end = first._dim_offsets[band_position + 1]; result[:, :, :, offset_start:offset_end] = group_x[:, :, :, group_position, :].transpose(1, 2)
         return result
     @staticmethod
     def forward_packed_estimators(estimators, x):
@@ -343,10 +312,7 @@ class MaskEstimator(Module):
                         offset_end = first._dim_offsets[indices[-1] + 1]
                         result[:, :, :, offset_start:offset_end] = out.flatten(start_dim=-2)
                     else:
-                        for group_position, band_position in enumerate(indices):
-                            offset_start = first._dim_offsets[band_position]
-                            offset_end = first._dim_offsets[band_position + 1]
-                            result[:, :, :, offset_start:offset_end] = out[:, :, :, group_position, :]
+                        for group_position, band_position in enumerate(indices): offset_start = first._dim_offsets[band_position]; offset_end = first._dim_offsets[band_position + 1]; result[:, :, :, offset_start:offset_end] = out[:, :, :, group_position, :]
                 return result.permute(0, 2, 1, 3)
             out_dim = next(iter(out_dims))
             next_x = None
@@ -395,15 +361,13 @@ class MaskEstimator(Module):
     def warm_group_cache(self, device, dtype):
         if self.training: return
         if self._can_group_mlp():
-            for start, end, _ in self._dim_groups:
-                self._get_group_params(start, end, device, dtype)
+            for start, end, _ in self._dim_groups: self._get_group_params(start, end, device, dtype)
             return
         plan = self._layer_grouping_plan()
         if plan is None: return
         for layer_index, (kind, groups) in enumerate(plan):
             if kind == "tanh": continue
-            for signature, indices in groups:
-                self._get_layer_group_params(layer_index, signature, indices, device, dtype)
+            for signature, indices in groups: self._get_layer_group_params(layer_index, signature, indices, device, dtype)
     @staticmethod
     def warm_packed_estimators(estimators, device, dtype):
         estimators = tuple(estimators)
@@ -416,14 +380,11 @@ class MaskEstimator(Module):
         plan = first._layer_grouping_plan()
         if (len(plan) == 3 and plan[0][0] == "linear" and plan[1][0] == "tanh" and plan[2][0] == "linear" and len(plan[0][1]) == 1):
             first_signature, _ = plan[0][1][0]
-            for final_signature, indices in plan[2][1]:
-                first._get_packed_layer_group_params(estimators, 0, first_signature, indices, device, dtype)
-                first._get_packed_layer_group_params(estimators, 2, final_signature, indices, device, dtype)
+            for final_signature, indices in plan[2][1]: first._get_packed_layer_group_params(estimators, 0, first_signature, indices, device, dtype); first._get_packed_layer_group_params(estimators, 2, final_signature, indices, device, dtype)
             return
         for layer_index, (kind, groups) in enumerate(plan):
             if kind == "tanh": continue
-            for signature, indices in groups:
-                first._get_packed_layer_group_params(estimators, layer_index, signature, indices, device, dtype)
+            for signature, indices in groups: first._get_packed_layer_group_params(estimators, layer_index, signature, indices, device, dtype)
     @staticmethod
     def _warm_packed_estimators_by_band(estimators, device, dtype):
         if not MaskEstimator._packable_estimators_by_band(estimators): return

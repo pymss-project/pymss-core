@@ -2,9 +2,7 @@ import torch.nn.functional as F
 from torch import einsum, nn
 
 class Attend(nn.Module):
-    def __init__(self, dropout=0.0, flash=False, scale=None):
-        super().__init__()
-        self.scale,self.dropout,self.attn_dropout,self.flash = scale, dropout, nn.Dropout(dropout), flash
+    def __init__(self, dropout=0.0, flash=False, scale=None): super().__init__(); self.scale,self.dropout,self.attn_dropout,self.flash = scale, dropout, nn.Dropout(dropout), flash
     def flash_attn(self, q, k, v):
         if self.scale is not None:
             q = q * (self.scale / (q.shape[-1] ** -0.5))
