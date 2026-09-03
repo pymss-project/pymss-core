@@ -12,6 +12,9 @@ import yaml
 from torch import nn
 from torch.nn import functional as F
 
+from .demucs_local import (BLSTM, DConv, HDecLayer, HEncLayer, LayerScale, LegacyLayerScale, MultiWrap,
+                            ScaledEmbedding as LegacyScaledEmbedding, _freq_dconv as _dconv_freq, rescale_module as _rescale_module)
+
 LEGACY_STEMS_4 = ["drums", "bass", "other", "vocals"]
 LEGACY_STEMS_2 = ["vocals", "non_vocals"]
 EPS = 1e-8
@@ -24,43 +27,6 @@ def center_trim(tensor, reference):
     if delta < 0:
         raise ValueError(f"tensor must be larger than reference. Delta is {delta}.")
     return tensor[..., delta // 2 : -(delta - delta // 2)] if delta else tensor
-
-
-class BLSTM(nn.Module):
-    def __init__(self, dim, layers=1, max_steps=None, skip=False):
-        super().__init__()
-        self.max_steps = max_steps
-        self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim)
-        self.linear = nn.Linear(2 * dim, dim)
-        self.skip = skip
-
-    def forward(self, x):
-        y, framed = x, False
-        if self.max_steps is not None and x.shape[-1] > self.max_steps:
-            batch, channels, length = x.shape
-            width, stride = self.max_steps, self.max_steps // 2
-            frames = x.unfold(-1, width, stride)
-            nframes, framed = frames.shape[2], True
-            x = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
-        x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
-        if framed:
-            # frame reassembly: index 0 keeps only the right overlap trim, even when nframes == 1
-            frames = x.reshape(batch, -1, channels, width)
-            limit = stride // 2
-            x = torch.cat(
-                [frames[:, i, :, (limit if i else 0) : (-limit if (i < nframes - 1 or not i) else None)] for i in range(nframes)],
-                -1,
-            )[..., :length]
-        return x + y if self.skip else x
-
-
-def _rescale_module(module, reference):
-    for sub in module.modules():
-        if isinstance(sub, (nn.Conv1d, nn.ConvTranspose1d, nn.Conv2d, nn.ConvTranspose2d)):
-            scale = (sub.weight.std().detach() / reference) ** 0.5
-            sub.weight.data /= scale
-            if sub.bias is not None:
-                sub.bias.data /= scale
 
 
 def _resample_x2(x):
@@ -205,14 +171,8 @@ class LegacyV3Demucs(nn.Module):
         return x.view(x.size(0), len(self.sources), self.audio_channels, x.size(-1))
 
 
-class LegacyLayerScale(nn.Module):
-    def __init__(self, channels, init=0):
-        super().__init__()
-        self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True))
-        self.scale.data[:] = init
-
-    def forward(self, x):
-        return self.scale[:, None] * x
+def LegacyDConv(channels, **kw):
+    return DConv(channels, legacy=True, **kw)
 
 
 class LegacyLocalState(nn.Module):
@@ -254,94 +214,19 @@ class LegacyLocalState(nn.Module):
         return x + self.proj(result.reshape(batch, -1, time))
 
 
-class LegacyDConv(nn.Module):
-    def __init__(self, channels, compress=4, depth=2, init=1e-4, norm=True, attn=False, heads=4, ndecay=4, lstm=False,
-                 gelu=True, kernel=3, **_):
-        super().__init__()
-        norm_fn = (lambda d: nn.GroupNorm(1, d)) if norm else (lambda d: nn.Identity())
-        hidden = int(channels / compress)
-        self.layers = nn.ModuleList()
-        for index in range(abs(depth)):
-            dilation = 2**index if depth > 0 else 1
-            mods = [nn.Conv1d(channels, hidden, kernel, dilation=dilation, padding=dilation * (kernel // 2)),
-                    norm_fn(hidden), (nn.GELU if gelu else nn.ReLU)(), nn.Conv1d(hidden, 2 * channels, 1),
-                    norm_fn(2 * channels), nn.GLU(1), LegacyLayerScale(channels, init)]
-            if attn:
-                mods.insert(3, LegacyLocalState(hidden, heads=heads, ndecay=ndecay))
-            if lstm:
-                mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
-            self.layers.append(nn.Sequential(*mods))
-
-    def forward(self, x):
-        for layer in self.layers:
-            x = x + layer(x)
-        return x
-
-
-def _dconv_freq(dconv, y):
-    batch, channels, freqs, time = y.shape  # B,C,F,T -> B*F,C,T and back
-    return dconv(y.permute(0, 2, 1, 3).reshape(-1, channels, time)).view(batch, freqs, channels, time).transpose(1, 2)
-
-
-class LegacyHEncLayer(nn.Module):
+class LegacyHEncLayer(HEncLayer):
     def __init__(self, chin, chout, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True,
                  norm=True, context=0, dconv_kw=None, pad=True, rewrite=True):
-        super().__init__()
-        dconv_kw = dconv_kw or {}
-        norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
-        pad = kernel_size // 4 if pad else 0
-        klass = nn.Conv2d if freq else nn.Conv1d
-        self.freq, self.kernel_size, self.stride, self.empty, self.norm, self.pad = freq, kernel_size, stride, empty, norm, pad
-        if freq:
-            kernel_size, stride, pad = [kernel_size, 1], [stride, 1], [pad, 0]
-        self.conv = klass(chin, chout, kernel_size, stride, pad)
-        if empty:
-            return
-        self.norm1 = norm_fn(chout)
-        self.rewrite = klass(chout, 2 * chout, 1 + 2 * context, 1, context) if rewrite else None
-        if rewrite:
-            self.norm2 = norm_fn(2 * chout)
-        self.dconv = LegacyDConv(chout, **dconv_kw) if dconv else None
-
-    def forward(self, x, inject=None):
-        if not self.freq and x.dim() == 4:
-            x = x.view(x.shape[0], -1, x.shape[-1])
-        if not self.freq and x.shape[-1] % self.stride:
-            x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
-        y = self.conv(x)
-        if self.empty:
-            return y
-        if inject is not None:
-            if inject.dim() == 3 and y.dim() == 4:
-                inject = inject[:, :, None]
-            y = y + inject
-        y = F.gelu(self.norm1(y))
-        if self.dconv:
-            y = _dconv_freq(self.dconv, y) if self.freq else self.dconv(y)
-        return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
+        dconv_kw = dict(dconv_kw or {}, legacy=True)
+        super().__init__(chin, chout, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context, dconv_kw, pad, rewrite)
 
 
-class LegacyHDecLayer(nn.Module):
+class LegacyHDecLayer(HDecLayer):
     def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True,
                  dconv=True, norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True):
-        super().__init__()
-        dconv_kw = dconv_kw or {}
-        norm_fn = (lambda d: nn.GroupNorm(norm_groups, d)) if norm else (lambda d: nn.Identity())
-        self.pad = kernel_size // 4 if pad else 0
-        self.last, self.freq, self.chin, self.empty, self.stride = last, freq, chin, empty, stride
-        self.kernel_size, self.norm, self.context_freq = kernel_size, norm, context_freq
-        klass, klass_tr = (nn.Conv2d, nn.ConvTranspose2d) if freq else (nn.Conv1d, nn.ConvTranspose1d)
-        k, s = ([kernel_size, 1], [stride, 1]) if freq else (kernel_size, stride)
-        self.conv_tr = klass_tr(chin, chout, k, s)
-        self.norm2 = norm_fn(chout)
-        if empty:
-            return
-        self.rewrite = None
-        if rewrite:
-            self.rewrite = (klass(chin, 2 * chin, 1 + 2 * context, 1, context) if context_freq
-                            else klass(chin, 2 * chin, [1, 1 + 2 * context], 1, [0, context]))
-            self.norm1 = norm_fn(2 * chin)
-        self.dconv = LegacyDConv(chin, **dconv_kw) if dconv else None
+        dconv_kw = dict(dconv_kw or {}, legacy=True)
+        super().__init__(chin, chout, last, kernel_size, stride, norm_groups, empty, freq, dconv, norm, context,
+                         dconv_kw, pad, context_freq, rewrite)
 
     def forward(self, x, skip, length):
         if self.freq and x.dim() == 3:
@@ -349,7 +234,7 @@ class LegacyHDecLayer(nn.Module):
         if self.empty:
             y = x
         else:
-            x = x + skip
+            x = x + skip  # legacy: dconv/rewrite run on the summed tensor (not GLU-of-rewrite of sum)
             y = F.glu(self.norm1(self.rewrite(x)), dim=1) if self.rewrite else x
             if self.dconv:
                 y = _dconv_freq(self.dconv, y) if self.freq else self.dconv(y)
@@ -362,51 +247,18 @@ class LegacyHDecLayer(nn.Module):
         return (z if self.last else F.gelu(z)), y
 
 
-class LegacyMultiWrap(nn.Module):
-    def __init__(self, layer, split_ratios):
-        super().__init__()
-        self.split_ratios = split_ratios
-        self.conv = isinstance(layer, LegacyHEncLayer)
-
-        def clone():
-            copied = deepcopy(layer)
-            if self.conv:
-                copied.conv.padding = (0, 0)
-            else:
-                copied.pad = False
-            for module in copied.modules():
-                if hasattr(module, "reset_parameters"):
-                    module.reset_parameters()
-            return copied
-
-        self.layers = nn.ModuleList([clone() for _ in range(len(split_ratios) + 1)])
-
+class LegacyMultiWrap(MultiWrap):
     def forward(self, x, skip=None, length=None):
-        freqs = x.shape[2]
-        start, outs = 0, []
-        for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
-            if self.conv:
-                pad = layer.kernel_size // 4
-                limit = int(round(freqs * ratio))
-                if ratio != 1:
-                    segment_length = limit - start + (pad if start == 0 else 0)
-                    frames = round((segment_length - layer.kernel_size) / layer.stride + 1)
-                    limit = start + (frames - 1) * layer.stride + layer.kernel_size - (pad if start == 0 else 0)
-                y = x[:, :, start:limit, :]
-                if start == 0:
-                    y = F.pad(y, (0, 0, pad, 0))
-                if ratio == 1:
-                    y = F.pad(y, (0, 0, 0, pad))
-                outs.append(layer(y))
-                start = limit - layer.kernel_size + layer.stride
-            else:
+        if not self.conv:  # legacy dec path passes length through to the wrapped dec layer
+            freqs = x.shape[2]
+            start, outs = 0, []
+            for ratio, layer in zip(list(self.split_ratios) + [1], self.layers):
                 limit = freqs if ratio == 1 else int(round(freqs * ratio))
                 last, layer.last = layer.last, True
                 out, _ = layer(x[:, :, start:limit], skip[:, :, start:limit], length)
                 if outs:
-                    bias = layer.conv_tr.bias.view(1, -1, 1, 1)
-                    outs[-1][:, :, -layer.stride :] += out[:, :, : layer.stride] - bias
-                    out = out[:, :, layer.stride :]
+                    outs[-1][:, :, -layer.stride:] += out[:, :, : layer.stride] - layer.conv_tr.bias.view(1, -1, 1, 1)
+                    out = out[:, :, layer.stride:]
                 if ratio == 1:
                     out = out[:, :, : -layer.stride // 2, :]
                 if start == 0:
@@ -414,26 +266,9 @@ class LegacyMultiWrap(nn.Module):
                 outs.append(out)
                 layer.last = last
                 start = limit
-        out = torch.cat(outs, dim=2)
-        return out if self.conv else (out if last else F.gelu(out), None)
-
-
-class LegacyScaledEmbedding(nn.Module):
-    def __init__(self, num_embeddings, embedding_dim, scale=10.0, smooth=False):
-        super().__init__()
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        if smooth:
-            weight = torch.cumsum(self.embedding.weight.data, dim=0)
-            self.embedding.weight.data[:] = weight / torch.arange(1, num_embeddings + 1).to(weight).sqrt()[:, None]
-        self.embedding.weight.data /= scale
-        self.scale = scale
-
-    @property
-    def weight(self):
-        return self.embedding.weight * self.scale
-
-    def forward(self, x):
-        return self.embedding(x) * self.scale
+            out = torch.cat(outs, dim=2)
+            return out if last else F.gelu(out), None
+        return super().forward(x, skip, length)
 
 
 def _pad1d(x, paddings, mode="constant", value=0.0):

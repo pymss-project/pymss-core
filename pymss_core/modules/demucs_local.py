@@ -54,6 +54,42 @@ def _freq_dconv(dconv, y):
     return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
 
 
+class BLSTM(nn.Module):
+    def __init__(self, dim, layers=1, max_steps=None, skip=False):
+        super().__init__()
+        self.max_steps = max_steps
+        self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim)
+        self.linear = nn.Linear(2 * dim, dim)
+        self.skip = skip
+
+    def forward(self, x):
+        y, framed = x, False
+        if self.max_steps is not None and x.shape[-1] > self.max_steps:
+            batch, channels, length = x.shape
+            width, stride = self.max_steps, self.max_steps // 2
+            frames = x.unfold(-1, width, stride)
+            nframes, framed = frames.shape[2], True
+            x = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
+        x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
+        if framed:
+            # frame reassembly: index 0 keeps only the right overlap trim, even when nframes == 1
+            frames = x.reshape(batch, -1, channels, width)
+            limit = stride // 2
+            x = torch.cat([frames[:, i, :, (limit if i else 0) : (-limit if (i < nframes - 1 or not i) else None)]
+                           for i in range(nframes)], -1)[..., :length]
+        return x + y if self.skip else x
+
+
+class LegacyLayerScale(nn.Module):
+    def __init__(self, channels, init=0):
+        super().__init__()
+        self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True))
+        self.scale.data[:] = init
+
+    def forward(self, x):
+        return self.scale[:, None] * x
+
+
 class LayerScale(nn.Module):
     def __init__(self, channels, init=0, channel_last=False):
         super().__init__()
@@ -65,14 +101,24 @@ class LayerScale(nn.Module):
 
 
 class DConv(nn.Module):
-    def __init__(self, channels, compress=4, depth=2, init=1e-4, norm=True, gelu=True, kernel=3, **_):
+    def __init__(self, channels, compress=4, depth=2, init=1e-4, norm=True, gelu=True, kernel=3, legacy=False,
+                 attn=False, heads=4, ndecay=4, lstm=False, **_):
         super().__init__()
-        hidden = int(channels / compress)
+        hidden, self.legacy = int(channels / compress), legacy
         norm_fn = (lambda d: nn.GroupNorm(1, d)) if norm else (lambda d: nn.Identity())
-        self.layers = nn.ModuleList([
-            nn.Sequential(nn.Conv1d(channels, hidden, kernel, dilation=2**d, padding=(2**d) * (kernel // 2)), norm_fn(hidden),
-                          nn.GELU() if gelu else nn.ReLU(), nn.Conv1d(hidden, 2 * channels, 1), norm_fn(2 * channels),
-                          nn.GLU(1), LayerScale(channels, init)) for d in range(abs(depth))])
+        scale_cls = (lambda c: LegacyLayerScale(c, init)) if legacy else (lambda c: LayerScale(c, init))
+        self.layers = nn.ModuleList()
+        for d in range(abs(depth)):
+            dilation = 2**d if depth > 0 else 1
+            mods = [nn.Conv1d(channels, hidden, kernel, dilation=dilation, padding=dilation * (kernel // 2)),
+                    norm_fn(hidden), (nn.GELU if gelu else nn.ReLU)(), nn.Conv1d(hidden, 2 * channels, 1),
+                    norm_fn(2 * channels), nn.GLU(1), scale_cls(channels)]
+            if legacy and attn:
+                from .legacy_demucs import LegacyLocalState
+                mods.insert(3, LegacyLocalState(hidden, heads=heads, ndecay=ndecay))
+            if legacy and lstm:
+                mods.insert(3, BLSTM(hidden, layers=2, max_steps=200, skip=True))
+            self.layers.append(nn.Sequential(*mods))
 
     def forward(self, x):
         for layer in self.layers:
