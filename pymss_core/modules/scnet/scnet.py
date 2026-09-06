@@ -70,12 +70,13 @@ class SCNet(MpsBackendMixin, nn.Module):
             except Exception as exc:
                 self._pymss_mlx_full_backend_error = repr(exc)
                 self.mps_model_backend = "torch"
+        B = x.shape[0]
         padding = self.hop_length - x.shape[-1] % self.hop_length
         if (x.shape[-1] + padding) // self.hop_length % 2 == 0: padding += self.hop_length
         x = F.pad(x, (0, padding))
         x = torch.view_as_real(torch.stft(x.reshape(-1, x.shape[-1]), **self.stft_config, return_complex=True))
-        x = x.permute(0, 3, 1, 2).reshape(x.shape[0] // self.audio_channels, x.shape[3] * self.audio_channels, x.shape[1], x.shape[2])
-        B, _C, Fr, T = x.shape
+        x = x.permute(0, 3, 1, 2).reshape(B, self.audio_channels * 2, x.shape[1], x.shape[2])
+        _B, _C, Fr, T = x.shape
         saved = []
         for sd_layer in self.encoder: x, skip, lengths, original_lengths = sd_layer(x); saved.append((skip, lengths, original_lengths))
         x = self.separation_net(x)

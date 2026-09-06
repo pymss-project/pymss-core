@@ -45,10 +45,10 @@ def _dual_path_rnn(module, x, dtype):
     y = rnn_forward(module.lstm_layers[0], y, dtype)
     y = _linear_layer(module.linear_layers[0], y, dtype)
     x = y.reshape(b, t, f, c).transpose(0, 3, 2, 1) + x
-    y = group_norm(module.norm_layers[1], x, dtype).transpose(0, 2, 1, 3).reshape(b * f, c, t).transpose(0, 2, 1)
+    y = group_norm(module.norm_layers[1], x, dtype).transpose(0, 2, 3, 1).reshape(b * f, t, c)
     y = rnn_forward(module.lstm_layers[1], y, dtype)
     y = _linear_layer(module.linear_layers[1], y, dtype)
-    return y.transpose(0, 2, 1).reshape(b, f, c, t).transpose(0, 2, 1, 3) + x
+    return y.reshape(b, f, t, c).transpose(0, 3, 1, 2) + x
 def _feature_conversion(module, x):
     import mlx.core as mx
     x = x.astype(mx.float32)

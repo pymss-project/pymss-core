@@ -45,12 +45,12 @@ class CascadedASPPNet(nn.Module):
     def forward(self, input_tensor):
         mix = input_tensor.detach()
         input_tensor = input_tensor[:, :, : self.max_bin]
-        bandwidth = input_tensor.size()[2] // 2
+        bandwidth = input_tensor.shape[2] // 2
         aux1 = torch.cat([self.stg1_low_band_net(input_tensor[:, :, :bandwidth]), self.stg1_high_band_net(input_tensor[:, :, bandwidth:])], dim=2)
         aux2 = self.stg2_full_band_net(self.stg2_bridge(torch.cat([input_tensor, aux1], dim=1)))
         hidden_state = self.stg3_full_band_net(self.stg3_bridge(torch.cat([input_tensor, aux1, aux2], dim=1)))
         mask = torch.sigmoid(self.out(hidden_state))
-        mask = F.pad(mask, (0, 0, 0, self.output_bin - mask.size()[2]), mode="replicate")
-        if self.training: pad = lambda t: F.pad(t, (0, 0, 0, self.output_bin - t.size()[2]), mode='replicate'); return (mask * mix, pad(torch.sigmoid(self.aux1_out(aux1))) * mix, pad(torch.sigmoid(self.aux2_out(aux2))) * mix)
+        mask = F.pad(mask, (0, 0, 0, self.output_bin - mask.shape[2]), mode="replicate")
+        if self.training: pad = lambda t: F.pad(t, (0, 0, 0, self.output_bin - t.shape[2]), mode='replicate'); return (mask * mix, pad(torch.sigmoid(self.aux1_out(aux1))) * mix, pad(torch.sigmoid(self.aux2_out(aux2))) * mix)
         return mask
     def predict_mask(self, input_tensor): mask = self.forward(input_tensor); return mask[:, :, :, self.offset:-self.offset] if self.offset > 0 else mask

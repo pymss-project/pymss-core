@@ -122,7 +122,7 @@ class Attention(Module):
         if self.rotary_embed is not None: q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
         q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         out = self._attention(q, k, v)
-        return self.to_out((out.transpose(1, 2) * self.to_gates(x).unsqueeze(-1).sigmoid()).flatten(start_dim=-2))
+        return self.to_out((out.transpose(1, 2) * self.to_gates(x).sigmoid().unsqueeze(-1)).flatten(start_dim=-2))
 class Transformer(Module):
     def __init__(self, *, dim, depth, dim_head=64, heads=8, attn_dropout=0.0, ff_dropout=0.0, ff_mult=4, norm_output=True, rotary_embed=None, flash_attn=True, shared_qkv_bias=None, shared_out_bias=None):
         super().__init__()
