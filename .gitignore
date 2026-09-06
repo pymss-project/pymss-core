@@ -185,3 +185,10 @@ resources
 tmp
 all_models
 /mps/
+.tmp/
+.tmp*
+*.pt
+*.pth
+*.ckpt
+tests/anchors/
+.parity_out.txt
