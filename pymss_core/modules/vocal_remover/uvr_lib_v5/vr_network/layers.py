@@ -38,7 +38,7 @@ class ASPPModule(nn.Module):
         self.bottleneck = nn.Sequential(Conv2DBNActiv(nin * nin_x, nout, 1, 1, 0, activ=activ), nn.Dropout2d(0.1))
     def forward(self, input_tensor):
         _, _, h, w = input_tensor.size()
-        features = [F.interpolate(self.conv1(input_tensor), size=(h, w), mode="bilinear", align_corners=True), self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)]
+        features = [self.conv1(input_tensor).expand(-1, -1, h, -1), self.conv2(input_tensor), self.conv3(input_tensor), self.conv4(input_tensor), self.conv5(input_tensor)]
         if self.nn_architecture in self.six_layer: features.append(self.conv6(input_tensor))
         elif self.nn_architecture in self.seven_layer: features.extend([self.conv6(input_tensor), self.conv7(input_tensor)])
         return self.bottleneck(torch.cat(features, dim=1))

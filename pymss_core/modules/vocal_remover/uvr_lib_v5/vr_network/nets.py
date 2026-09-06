@@ -44,7 +44,7 @@ class CascadedASPPNet(nn.Module):
         self.max_bin, self.output_bin, self.offset = n_fft // 2, n_fft // 2 + 1, 128
     def forward(self, input_tensor):
         mix = input_tensor.detach()
-        input_tensor = input_tensor.clone()[:, :, : self.max_bin]
+        input_tensor = input_tensor[:, :, : self.max_bin]
         bandwidth = input_tensor.size()[2] // 2
         aux1 = torch.cat([self.stg1_low_band_net(input_tensor[:, :, :bandwidth]), self.stg1_high_band_net(input_tensor[:, :, bandwidth:])], dim=2)
         aux2 = self.stg2_full_band_net(self.stg2_bridge(torch.cat([input_tensor, aux1], dim=1)))

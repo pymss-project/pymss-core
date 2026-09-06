@@ -80,5 +80,5 @@ class SCNet(MpsBackendMixin, nn.Module):
         for sd_layer in self.encoder: x, skip, lengths, original_lengths = sd_layer(x); saved.append((skip, lengths, original_lengths))
         x = self.separation_net(x)
         for fusion_layer, su_layer in self.decoder: skip, lengths, original_lengths = saved.pop(); x = su_layer(fusion_layer(x, skip), lengths, original_lengths)
-        x = torch.istft(torch.view_as_complex(x.view(B, self.dims[0], -1, Fr, T).reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()), **self.stft_config)
+        x = torch.istft(torch.view_as_complex(x.reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()), **self.stft_config)
         return x.reshape(B, len(self.sources), self.audio_channels, -1)[:, :, :, :-padding]

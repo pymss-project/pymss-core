@@ -85,7 +85,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     for sd_layer in module.encoder: x, skip, lengths, original_lengths = _sdblock(sd_layer, x, dtype); saved.append((skip, lengths, original_lengths))
     x = _separation_net(module.separation_net, x, dtype)
     for fusion_layer, su_layer in module.decoder: skip, lengths, original_lengths = saved.pop(); x = _sulayer(su_layer, _fusion_layer(fusion_layer, x, skip, dtype), lengths, original_lengths, dtype)
-    x = x.reshape(batch, module.dims[0], -1, freq_bins, time_bins).reshape(-1, 2, freq_bins, time_bins)
+    x = x.reshape(-1, 2, freq_bins, time_bins)
     spec_out = x.transpose(0, 2, 3, 1)
     spec_out = spec_out[..., 0] + (1j * spec_out[..., 1])
     audio = _istft_scnet(module, spec_out, context, length)
