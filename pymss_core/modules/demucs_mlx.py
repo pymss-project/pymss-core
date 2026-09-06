@@ -7,7 +7,7 @@ def _pad1d(x, paddings, mode="constant", value=0.0): return pad_last(x, paddings
 def _spectro(x, n_fft, hop, dtype): return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
 def _ispectro(z, hop, length, dtype): n_fft = 2 * z.shape[-2] - 2; return istft(z, periodic_hann_window(n_fft, dtype), hop, length, dtype, normalized=True)
 def _demucs_spec(module, x, dtype): hop = module.hop_length; le = math.ceil(x.shape[-1] / hop); pad = hop // 2 * 3; x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect"); return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
-def _demucs_ispec(module, z, length, scale, dtype): import mlx.core as mx; hop = module.hop_length // (4**scale); z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (0, 0)]); z = mx.pad(z, [(0, 0)] * (z.ndim - 1) + [(2, 2)]); pad = hop // 2 * 3; le = hop * math.ceil(length / hop) + 2 * pad; return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
+def _demucs_ispec(module, z, length, scale, dtype): import mlx.core as mx; hop = module.hop_length // (4**scale); z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (2, 2)]); pad = hop // 2 * 3; le = hop * math.ceil(length / hop) + 2 * pad; return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 _linear_layer = linear_layer
 def _my_group_norm(module, x, dtype): return group_norm(module, x.transpose(0, 2, 1), dtype).transpose(0, 2, 1)
 def _norm(module, x, dtype):
@@ -67,7 +67,7 @@ def _create_2d_sin_embedding(d_model, height, width, dtype, max_period=10000):
     div = mx.exp(mx.arange(0.0, half, 2) * -(math.log(max_period) / half))
     pos_w, pos_h = mx.arange(0.0, width).reshape(-1, 1), mx.arange(0.0, height).reshape(-1, 1)
     pe = mx.zeros((d_model, height, width), dtype=mx.float32)
-    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]), (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]), (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]), (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])): pe = pe.at[sl].add(mx.broadcast_to(val, (val.shape[0], height, width)))
+    for sl, val in ((slice(0, half, 2), mx.sin(pos_w * div).transpose(1, 0)[:, None, :]), (slice(1, half, 2), mx.cos(pos_w * div).transpose(1, 0)[:, None, :]), (slice(half, None, 2), mx.sin(pos_h * div).transpose(1, 0)[:, :, None]), (slice(half + 1, None, 2), mx.cos(pos_h * div).transpose(1, 0)[:, :, None])): pe = pe.at[sl].add(val)
     return pe[None].astype(dtype)
 def _create_sin_embedding(length, dim, dtype, max_period=10000): import mlx.core as mx; half = dim // 2; phase = mx.arange(length, dtype=mx.float32).reshape(-1, 1, 1) / (max_period ** (mx.arange(half, dtype=mx.float32).reshape(1, 1, -1) / (half - 1))); return mx.concatenate((mx.cos(phase), mx.sin(phase)), axis=-1).astype(dtype)
 def _attention_out(mha, out, q_in, dtype): return _linear_layer(mha.out_proj, out.transpose(0, 2, 1, 3).reshape(q_in.shape), dtype)
@@ -114,12 +114,7 @@ def _cross_transformer(module, x, xt, dtype):
             x = _cross_transformer_layer(module.layers[idx], x, xt, dtype)
             xt = _cross_transformer_layer(module.layers_t[idx], xt, old_x, dtype)
     return x.reshape(b, t1, fr, c).transpose(0, 3, 2, 1), xt.transpose(0, 2, 1)
-def _std(x, axes, keepdims):
-    import mlx.core as mx
-    mean = mx.mean(x, axis=axes, keepdims=True)
-    n = 1
-    for axis in axes: n *= x.shape[axis]
-    return mx.sqrt(mx.sum(mx.square(x - mean), axis=axes, keepdims=keepdims) / max(1, n - 1))
+def _std(x, axes, keepdims): import mlx.core as mx; return mx.std(x, axis=axes, keepdims=keepdims, ddof=1)
 def _validate_supported(module):
     if module.num_subbands != 1 or not module.cac or module.wiener_iters != 0 or module.end_iters != 0: raise TypeError("MLX full HTDemucs supports num_subbands=1, cac=True, wiener_iters=end_iters=0")
     if any(layer.__class__.__name__ == "MultiWrap" for layer in list(module.encoder) + list(module.decoder)): raise TypeError("MLX full HTDemucs does not support MultiWrap/multi_freqs yet")

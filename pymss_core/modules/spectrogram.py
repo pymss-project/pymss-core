@@ -14,9 +14,8 @@ class SubbandSTFT:
     def inverse(self, x):
         b = x.shape[:-3]; c, f, t = x.shape[-3:]
         full = self.n_fft // 2 + 1
-        x = torch.cat([x, torch.zeros([*b, c, full - f, t]).to(x.device)], -2)
-        x = x.reshape(-1, 2, full, t).permute(0, 2, 3, 1)
-        x = x[..., 0] + x[..., 1] * 1.0j
+        if full > f: x = torch.nn.functional.pad(x, (0, 0, 0, full - f))
+        x = torch.view_as_complex(x.reshape(-1, 2, full, t).permute(0, 2, 3, 1).contiguous())
         return torch.istft(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True).reshape([*b, 2, -1])
 def get_activation(act_type):
     if act_type == "gelu": return nn.GELU()

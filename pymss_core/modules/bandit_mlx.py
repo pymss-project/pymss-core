@@ -81,16 +81,14 @@ def _mask_estimator(module, q, dtype, cond=None):
     q = _append_cond(module, q, cond)
     if getattr(module, "n_freq", 0) <= 0: return mx.concatenate([_norm_mlp(nmlp, q[:, b], dtype) for b, nmlp in enumerate(module.norm_mlp)], axis=2)
     batch, _, n_time, _ = q.shape
-    mask_real = mx.zeros((batch, module.in_channels, module.n_freq, n_time), dtype=mx.float32)
-    mask_imag = mx.zeros_like(mask_real)
+    masks = mx.zeros((batch, module.in_channels, module.n_freq, n_time), dtype=mx.complex64)
     for band_index, nmlp in enumerate(module.norm_mlp):
         fstart, fend = module.band_specs[band_index]
         mask = _norm_mlp(nmlp, q[:, band_index], dtype)
         if module.use_freq_weights: fw = to_mx(module.get_buffer(f'freq_weights/{band_index}'), dtype); mask = mask * fw.reshape(1, 1, -1, 1)
         padding = [(0, 0), (0, 0), (fstart, module.n_freq - fend), (0, 0)]
-        mask_real = mask_real + mx.pad(mask.real.astype(mask_real.dtype), padding)
-        mask_imag = mask_imag + mx.pad(mask.imag.astype(mask_imag.dtype), padding)
-    return mask_real + (1j * mask_imag)
+        masks = masks + mx.pad(mask.astype(mx.complex64), padding)
+    return masks
 def _bsrnn_core(module, x, dtype): _batch, _in_chan, n_freq, n_time = x.shape; x = x.reshape(-1, 1, n_freq, n_time); q = _tf_model(module.tf_model, _band_split(module.band_split, x, dtype), dtype); return [_mask_estimator(mask_estimator, q, dtype) * x for mask_estimator in module.mask_estim.values()]
 def mlx_forward_bandit_mx(module, raw_audio, dtype=torch.float16):
     check_dtype(dtype, "Bandit")

@@ -37,7 +37,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         self.zero_dc, self.match_input_audio_length = zero_dc, match_input_audio_length
     def _forward_mask_core(self, selected_stft_repr): return forward_roformer_mask_core(self, selected_stft_repr)
     def _mask_stft_repr(self, stft_repr, context):
-        x = stft_repr[torch.arange(context.batch, device=stft_repr.device)[..., None], self.freq_indices]
+        x = stft_repr[:, self.freq_indices]
         self._warm_group_cache(x)
         masks = self._forward_mask_core(x)
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))

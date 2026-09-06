@@ -174,15 +174,15 @@ class MultiWrap(nn.Module):
         return out if self.conv else (out if last else F.gelu(out), None)
 def create_sin_embedding(length, dim, shift=0, device="cpu", max_period=10000): pos = shift + torch.arange(length, device=device).view(-1, 1, 1); half = dim // 2; phase = pos / (max_period ** (torch.arange(half, device=device).view(1, 1, -1) / (half - 1))); return torch.cat([torch.cos(phase), torch.sin(phase)], dim=-1)
 def create_2d_sin_embedding(d_model, height, width, device="cpu", max_period=10000):
-    pe = torch.zeros(d_model, height, width)
+    pe = torch.zeros(1, d_model, height, width, device=device)
     half = d_model // 2
-    div = torch.exp(torch.arange(0.0, half, 2) * -(math.log(max_period) / half))
-    pos_w, pos_h = torch.arange(0.0, width).unsqueeze(1), torch.arange(0.0, height).unsqueeze(1)
-    pe[0:half:2] = torch.sin(pos_w * div).t().unsqueeze(1).repeat(1, height, 1)
-    pe[1:half:2] = torch.cos(pos_w * div).t().unsqueeze(1).repeat(1, height, 1)
-    pe[half::2] = torch.sin(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
-    pe[half + 1 :: 2] = torch.cos(pos_h * div).t().unsqueeze(2).repeat(1, 1, width)
-    return pe[None].to(device)
+    div = torch.exp(torch.arange(0.0, half, 2, device=device) * -(math.log(max_period) / half))
+    pos_w, pos_h = torch.arange(0.0, width, device=device).unsqueeze(1), torch.arange(0.0, height, device=device).unsqueeze(1)
+    pe[0, 0:half:2] = torch.sin(pos_w * div).t().unsqueeze(1)
+    pe[0, 1:half:2] = torch.cos(pos_w * div).t().unsqueeze(1)
+    pe[0, half::2] = torch.sin(pos_h * div).t().unsqueeze(2)
+    pe[0, half + 1 :: 2] = torch.cos(pos_h * div).t().unsqueeze(2)
+    return pe
 def create_sin_embedding_cape(length, dim, batch_size, mean_normalize, augment, max_global_shift=0.0, max_local_shift=0.0, max_scale=1.0, device="cpu", max_period=10000.0):
     pos = torch.arange(length).view(-1, 1, 1).float().repeat(1, batch_size, 1)
     if mean_normalize: pos -= torch.nanmean(pos, dim=0, keepdim=True)

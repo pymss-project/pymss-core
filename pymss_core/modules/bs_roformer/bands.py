@@ -24,7 +24,7 @@ def grouped_linear(x, weight, bias):
         out = torch.bmm(x, w)
     else:
         if bias.dtype != x.dtype or bias.device != x.device: bias = bias.to(device=x.device, dtype=x.dtype)
-        out = torch.baddbmm(bias.unsqueeze(1).expand(-1, x.shape[1], -1), x, w)
+        out = torch.baddbmm(bias.unsqueeze(1), x, w)
     return out.transpose(0, 1).reshape(*leading_shape, group_count, out_features)
 def inference_tanh(x): return torch.tanh(x) if torch.is_grad_enabled() else x.tanh_()
 def stack_linears(linears, device, dtype): weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0); bias = None if linears[0].bias is None else torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears]); return weight, bias

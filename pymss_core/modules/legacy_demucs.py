@@ -245,14 +245,13 @@ class LegacyHDemucs(nn.Module):
         return z[..., 2 : 2 + le] if self.hybrid else z
     def _ispec(self, z, length=None, scale=0):
         hl = self.hop_length // (4**scale)
-        z = F.pad(z, (0, 0, 0, 1))
         if self.hybrid:
-            z = F.pad(z, (2, 2))
+            z = F.pad(z, (2, 2, 0, 1))
             pad = hl // 2 * 3
             le = hl * math.ceil(length / hl) + (0 if self.hybrid_old else 2 * pad)
             x = _ispectro(z, hl, length=le)
             return x[..., :length] if self.hybrid_old else x[..., pad : pad + length]
-        return _ispectro(z, hl, length)
+        return _ispectro(F.pad(z, (0, 0, 0, 1)), hl, length)
     def _magnitude(self, z):
         if self.cac: batch, channels, freqs, time = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(batch, channels * 2, freqs, time)
         return z.abs()

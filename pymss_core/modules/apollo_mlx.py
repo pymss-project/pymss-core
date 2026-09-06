@@ -24,7 +24,7 @@ def _conv_act_norm(module, x, dtype):
     y = conv1d(module.conv[4], y, dtype)
     if module.causal: y = y[..., :-module.kernel + 1]
     return x + y
-def _apply_rope(module, x, dtype): import mlx.core as mx; seq_len = x.shape[-2]; cos = to_mx(module.cos_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); sin = to_mx(module.sin_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); even, odd = x[..., 0::2], x[..., 1::2]; out = mx.zeros_like(x); out = out.at[..., 0::2].add(even * cos[..., 0::2] - odd * sin[..., 0::2]); return out.at[..., 1::2].add(odd * cos[..., 0::2] + even * sin[..., 0::2])
+def _apply_rope(module, x, dtype): import mlx.core as mx; seq_len = x.shape[-2]; cos = to_mx(module.cos_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); sin = to_mx(module.sin_freq[:seq_len], dtype).reshape(1, 1, seq_len, -1); even, odd = x[..., 0::2], x[..., 1::2]; return mx.stack((even * cos[..., 0::2] - odd * sin[..., 0::2], odd * cos[..., 0::2] + even * sin[..., 0::2]), axis=-1).reshape(x.shape)
 def _roformer(module, x, dtype):
     import mlx.core as mx
     batch, _, frames = x.shape

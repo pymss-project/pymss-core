@@ -13,7 +13,7 @@ def _cached_inference_tensor(module, name, tensor, input, version):
     cache[name] = (key, casted)
     return casted
 def _complex_from_ri(ri, dim): return torch.complex(*ri.float().unbind(dim=dim))
-def _complex_div_by_real(spec, denom): return torch.complex(spec.real / denom, spec.imag / denom)
+def _complex_div_by_real(spec, denom): return spec / denom
 def pointwise_conv1d(input, conv):
     # 1x1 conv1d -> linear: faster on CUDA fp16/bf16 inference
     if (conv.kernel_size, conv.stride, conv.padding, conv.dilation, conv.groups) != ((1,), (1,), (0,), (1,), 1): return conv(input)
@@ -140,7 +140,7 @@ class Apollo(MpsBackendMixin, nn.Module):
         return torch.stft(input.view(B * nch, nsample), n_fft=self.win, hop_length=self.stride, window=self._window(input), return_complex=True)
     def _band_norm_power(self, spec, band_idx, width):
         this_spec = spec[:, band_idx : band_idx + width]
-        power = (this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1)  # B,1,T
+        power = ((this_spec.real.square() + this_spec.imag.square()).sum(1, keepdim=True) + self.eps).sqrt()  # B,1,T
         return _complex_div_by_real(this_spec, power), power
     def _cached_packed_modules(self, name, modules, count):
         conv = modules[0][1]
