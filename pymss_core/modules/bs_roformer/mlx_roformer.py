@@ -141,7 +141,9 @@ def _resize_bilinear_nchw(x, size):
     x0, x1, wx = _resize_positions(in_w, out_w)
     def corner(yy, xx): return mx.take(mx.take(x, yy, axis=2), xx, axis=3)
     wy, wx = wy.reshape(1, 1, out_h, 1), wx.reshape(1, 1, 1, out_w)
-    return (corner(y0, x0) * (1 - wy) * (1 - wx) + corner(y0, x1) * (1 - wy) * wx + corner(y1, x0) * wy * (1 - wx) + corner(y1, x1) * wy * wx)
+    r0 = corner(y0, x0) * (1 - wx) + corner(y0, x1) * wx
+    r1 = corner(y1, x0) * (1 - wx) + corner(y1, x1) * wx
+    return r0 * (1 - wy) + r1 * wy
 def _seq(module, x, dtype):
     for child in module: x = _segm_module(child, x, dtype)
     return x

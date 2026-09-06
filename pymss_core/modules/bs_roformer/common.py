@@ -92,7 +92,7 @@ class RoformerRuntimeMixin(MpsBackendMixin):
             if packed is not None: self._packed_mask_estimators_available = True; return packed
             self._packed_mask_estimators_available = False
         return torch.stack([fn(x) for fn in estimators], dim=1)
-    def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1)); return stft_repr * torch.view_as_complex(mask).type(stft_repr.dtype)
+    def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1)); return stft_repr * torch.view_as_complex(mask).to(dtype=stft_repr.dtype)
 def forward_roformer_mask_core(module, stft_repr):
     b, fs, model_t, complex_dim = stft_repr.shape
     x = module.band_split(stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim))
@@ -122,7 +122,7 @@ def stft_roformer(module, raw_audio):
 def istft_roformer(module, stft_repr, context, length):
     b, n, _, t = stft_repr.shape
     stft_repr = (stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(0, 1, 3, 2, 4) .reshape(b * n * context.channels, context.freq_bins, t))
-    if getattr(module, "zero_dc", False): stft_repr = stft_repr.index_fill(1, torch.tensor(0, device=stft_repr.device), 0.0)
+    if getattr(module, "zero_dc", False): stft_repr[:, 0] = 0.0
     try:
         recon_audio = torch.istft(stft_repr, **module.stft_kwargs, window=context.stft_window, return_complex=False, length=length)
     except RuntimeError:  # older MPS torch.istft: fall back to CPU

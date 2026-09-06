@@ -21,8 +21,7 @@ class AdaptiveHyperedgeGeneration(nn.Module):
     def __init__(self, in_channels, num_hyperedges, num_heads=8): super().__init__(); self.num_hyperedges, self.num_heads, self.head_dim = num_hyperedges, num_heads, in_channels // num_heads; self.global_proto = nn.Parameter(torch.randn(num_hyperedges, in_channels)); self.context_mapper, self.query_proj = (nn.Linear(2 * in_channels, num_hyperedges * in_channels, bias=False), nn.Linear(in_channels, in_channels, bias=False)); self.scale = self.head_dim**-0.5
     def forward(self, x):
         b, n, c = x.shape
-        pooled = x.transpose(1, 2)
-        proto = self.global_proto.unsqueeze(0) + self.context_mapper(torch.cat((F.adaptive_avg_pool1d(pooled, 1).squeeze(-1), F.adaptive_max_pool1d(pooled, 1).squeeze(-1)), dim=1)).view(b, self.num_hyperedges, c)
+        proto = self.global_proto.unsqueeze(0) + self.context_mapper(torch.cat((x.mean(dim=1), x.amax(dim=1)), dim=1)).view(b, self.num_hyperedges, c)
         z = self.query_proj(x).view(b, n, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         proto = proto.view(b, self.num_hyperedges, self.num_heads, self.head_dim).permute(0, 2, 3, 1)
         return F.softmax(((z @ proto) * self.scale).mean(dim=1).permute(0, 2, 1), dim=-1)

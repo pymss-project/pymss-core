@@ -31,8 +31,8 @@ def _sdpa_with_backend(q, k, v, dropout_p, backend):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p)
 def _xformers_attention(q, k, v, dropout_p): import xformers.ops as xops; return xops.memory_efficient_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), p=dropout_p).transpose(1, 2)
 def apply_rotary_emb_fast(cos, sin, t):
-    if t.is_cuda and t.dtype == torch.float16: rot = torch.complex(cos[..., ::2], sin[..., ::2]); rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot; return torch.view_as_real(rotated).reshape_as(t)
-    cos, sin, t_even, t_odd = cos[..., ::2], sin[..., ::2], t[..., ::2], t[..., 1::2]
+    if t.is_cuda and t.dtype == torch.float16: rot = torch.complex(cos, sin); rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot; return torch.view_as_real(rotated).reshape_as(t)
+    t_even, t_odd = t[..., ::2], t[..., 1::2]
     out = torch.empty_like(t)
     out[..., ::2] = t_even * cos - t_odd * sin
     out[..., 1::2] = t_odd * cos + t_even * sin
@@ -43,7 +43,7 @@ def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     key = (seq_len, device.type, device.index, dtype)
     if (cached := cache.get(key)) is not None: return cached
     freqs = rotary_embed.forward(lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=dtype, offset=0), cache_key=f"freqs:{seq_len}|offset:0")[None, :, None, :].to(device=device, dtype=dtype)
-    cache[key] = cached = (freqs.cos(), freqs.sin())
+    cache[key] = cached = (freqs[..., ::2].cos(), freqs[..., ::2].sin())
     return cached
 def rotate_qk_fast_bnhd(rotary_embed, q, k): cos, sin = cached_rotary_cos_sin(rotary_embed, q.shape[1], q.device, q.dtype); return apply_rotary_emb_fast(cos, sin, q), apply_rotary_emb_fast(cos, sin, k)
 def qkv_to_bnhd(qkv, heads): b, n, _ = qkv.shape; return qkv.view(b, n, 3, heads, -1).unbind(dim=2)
