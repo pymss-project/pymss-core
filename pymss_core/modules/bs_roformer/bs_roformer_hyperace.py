@@ -7,8 +7,7 @@ class MaskEstimator(RoformerMaskEstimator):
     def forward(self, x, mode="full"):
         if mode == "no_segm": return super().forward(x)
         if mode not in ("full", "segm_only"): raise ValueError("HyperACE mask_mode must be one of: full, no_segm, segm_only")
-        segm = self.segm(x.permute(0, 3, 1, 2))
-        segm = segm.permute(0, 2, 3, 1).reshape(segm.shape[0], segm.shape[2], -1)
+        segm = self.segm(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1).flatten(2)
         return segm if mode == "segm_only" else super().forward(x) + segm
 class BSRoformerHyperACE(BSRoformer):
     mask_estimator_cls, mask_mode = MaskEstimator, "no_segm"

@@ -86,8 +86,7 @@ def mlx_forward_scnet_mx(module, raw_audio, dtype=torch.float16):
     x = _separation_net(module.separation_net, x, dtype)
     for fusion_layer, su_layer in module.decoder: skip, lengths, original_lengths = saved.pop(); x = _sulayer(su_layer, _fusion_layer(fusion_layer, x, skip, dtype), lengths, original_lengths, dtype)
     x = x.reshape(-1, 2, freq_bins, time_bins)
-    spec_out = x.transpose(0, 2, 3, 1)
-    spec_out = spec_out[..., 0] + (1j * spec_out[..., 1])
+    spec_out = x[:, 0] + (1j * x[:, 1])
     audio = _istft_scnet(module, spec_out, context, length)
     audio = audio.reshape(batch, len(module.sources), module.audio_channels, -1)
     return audio[:, :, :, :-padding] if padding > 0 else audio

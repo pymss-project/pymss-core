@@ -12,7 +12,7 @@ def _cached_inference_tensor(module, name, tensor, input, version):
     casted = tensor.detach().to(device=input.device, dtype=input.dtype)
     cache[name] = (key, casted)
     return casted
-def _complex_from_ri(ri, dim): return torch.complex(*ri.float().unbind(dim=dim))
+def _complex_from_ri(ri, dim): return torch.complex(ri.select(dim, 0).float(), ri.select(dim, 1).float())
 def _complex_div_by_real(spec, denom): return spec / denom
 def pointwise_conv1d(input, conv):
     # 1x1 conv1d -> linear: faster on CUDA fp16/bf16 inference
@@ -43,8 +43,8 @@ class RMVN(nn.Module):
         B, N = input.shape[:2]
         assert N % self.groups == 0
         x = input.reshape(B, self.groups, N // self.groups, -1)
-        norm = (x - x.mean(2).unsqueeze(2)) / (x.var(2).unsqueeze(2) + self.eps).sqrt()
-        return (norm.reshape(B, N, x.shape[-1]) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)).reshape(input.shape)
+        norm = (x - x.mean(2, keepdim=True)) / (x.var(2, keepdim=True) + self.eps).sqrt()
+        return norm.reshape(B, N, -1) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)
 class Roformer(nn.Module):
     def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000, input_drop=0.0, attention_drop=0.0, causal=True):
         super().__init__()
@@ -66,19 +66,13 @@ class Roformer(nn.Module):
         pos = torch.arange(self.window).reshape(-1, 1)
         return torch.cos(pos * freq).repeat_interleave(2, dim=-1), torch.sin(pos * freq).repeat_interleave(2, dim=-1)
     def _add_rotary_sequence(self, feature):
-        T, N = feature.shape[-2:]
-        x = feature.reshape(-1, T, N)
-        if feature.is_cuda and feature.dtype in (torch.float16, torch.bfloat16) and not torch.is_grad_enabled():
-            # even/odd strided rope, cached per (T, device, dtype) to avoid per-step host->device copies
-            cos, sin = self._rotary_freq_cache.setdefault((T, feature.device, feature.dtype), (self.cos_freq[:T].to(device=feature.device, dtype=feature.dtype), self.sin_freq[:T].to(device=feature.device, dtype=feature.dtype)))
-            cos, sin = cos[..., 0::2].unsqueeze(0), sin[..., 0::2].unsqueeze(0)
-            output = torch.empty_like(x)
-            even, odd = x[..., 0::2], x[..., 1::2]
-            output[..., 0::2] = even * cos - odd * sin
-            output[..., 1::2] = odd * cos + even * sin
-            return output.reshape(feature.shape)
-        neg = (x.reshape(-1, N // 2, 2).flip(-1) * self.reverse_sign.to(device=feature.device, dtype=feature.dtype)).reshape(-1, T, N)
-        return (x * self.cos_freq[:T].unsqueeze(0) + neg * self.sin_freq[:T].unsqueeze(0)).reshape(feature.shape)
+        T = feature.shape[-2]
+        cos, sin = self._rotary_freq_cache.setdefault((T, feature.device, feature.dtype), (self.cos_freq[:T, 0::2].to(device=feature.device, dtype=feature.dtype).unsqueeze(0), self.sin_freq[:T, 0::2].to(device=feature.device, dtype=feature.dtype).unsqueeze(0)))
+        output = torch.empty_like(feature)
+        even, odd = feature[..., 0::2], feature[..., 1::2]
+        output[..., 0::2] = even * cos - odd * sin
+        output[..., 1::2] = odd * cos + even * sin
+        return output
     def forward(self, input):
         B, _, T = input.shape
         qkv = pointwise_conv1d(self.input_drop(self.input_norm(input)), self.weight)

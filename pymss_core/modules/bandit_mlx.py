@@ -1,6 +1,6 @@
 import torch
 from .bandit.tfmodel import ResidualRNN, Transpose
-from .mlx_backend import (check_dtype, generic_activation, glu, group_norm, istft, layer_norm, linear, mx_dtype, param, periodic_hann_window, rnn_forward, stft, to_mx, to_torch)
+from .mlx_backend import (check_dtype, generic_activation, glu, group_norm, istft, layer_norm, linear_layer, mx_dtype, periodic_hann_window, rnn_forward, stft, to_mx, to_torch)
 torch_to_mlx_input = to_mx
 def _spectral_stft(stft_module, raw_audio, dtype):
     n_fft, win_length, hop = int(stft_module.n_fft), int(stft_module.win_length), int(stft_module.hop_length)
@@ -15,13 +15,11 @@ def _spectral_stft(stft_module, raw_audio, dtype):
 def _spectral_istft(istft_module, spec, context, length): return istft(spec, context["window"], context["hop"], length, context["dtype"], n_fft=context["n_fft"], center=context["center"], normalized=context["normalized"])
 _activation = generic_activation
 def _norm_fc(module, xb, dtype):
-    if hasattr(module, "combined"): xb = layer_norm(module.combined[0], xb, dtype); return linear(xb, param(module.combined[1], 'weight', module.combined[1].weight, dtype), param(module.combined[1], 'bias', module.combined[1].bias, dtype))
+    if hasattr(module, "combined"): return linear_layer(module.combined[1], layer_norm(module.combined[0], xb, dtype), dtype)
     batch, n_time, in_channels, ribw = xb.shape
     xb = layer_norm(module.norm, xb.reshape(batch, n_time, in_channels * ribw), dtype)
-    w = param(module.fc, "weight", module.fc.weight, dtype)
-    b = param(module.fc, "bias", module.fc.bias, dtype)
-    if module.treat_channel_as_feature: return linear(xb, w, b)
-    return linear(xb.reshape(batch, n_time, in_channels, ribw), w, b).reshape(batch, n_time, -1)
+    if module.treat_channel_as_feature: return linear_layer(module.fc, xb, dtype)
+    return linear_layer(module.fc, xb.reshape(batch, n_time, in_channels, ribw), dtype).reshape(batch, n_time, -1)
 def _band_split(module, x, dtype):
     import mlx.core as mx
     batch, in_channels, _, n_time = x.shape
@@ -41,7 +39,7 @@ def _residual_rnn(module, z, dtype):
     batch, n_uncrossed, n_across, emb_dim = z.shape
     if module.use_batch_trick: z = rnn_forward(module.rnn, z.reshape(batch * n_uncrossed, n_across, emb_dim), dtype); z = z.reshape(batch, n_uncrossed, n_across, -1)
     else: z = mx.stack([rnn_forward(module.rnn, z[:, i], dtype) for i in range(n_uncrossed)], axis=1)
-    return linear(z, param(module.fc, "weight", module.fc.weight, dtype), param(module.fc, "bias", module.fc.bias, dtype)) + z0
+    return linear_layer(module.fc, z, dtype) + z0
 def _tf_model(module, z, dtype):
     if module.parallel_mode:
         for sbm_t, sbm_f in module.seqband: zt = _residual_rnn(sbm_t, z, dtype); zf = _residual_rnn(sbm_f, z.transpose(0, 2, 1, 3), dtype); z = zt + zf.transpose(0, 2, 1, 3)
@@ -56,11 +54,8 @@ def _tf_model(module, z, dtype):
     for sbm in module.seqband: z = _residual_rnn(sbm, z, dtype); z = z.swapaxes(1, 2)
     return z
 def _norm_mlp(module, qb, dtype):
-    x = layer_norm(module.norm, qb, dtype)
-    x = linear(x, param(module.hidden[0], "weight", module.hidden[0].weight, dtype), param(module.hidden[0], "bias", module.hidden[0].bias, dtype))
-    x = _activation(module.hidden[1], x)
-    output = module.output[0]
-    x = glu(linear(x, param(output, "weight", output.weight, dtype), param(output, "bias", output.bias, dtype)), axis=-1)
+    x = _activation(module.hidden[1], linear_layer(module.hidden[0], layer_norm(module.norm, qb, dtype), dtype))
+    x = glu(linear_layer(module.output[0], x, dtype), axis=-1)
     batch, n_time, _ = x.shape
     if module.complex_mask: x = x.reshape(batch, n_time, module.in_channels, module.bandwidth, 2); x = x[..., 0] + 1j * x[..., 1]
     else: x = x.reshape(batch, n_time, module.in_channels, module.bandwidth)

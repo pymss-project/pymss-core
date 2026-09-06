@@ -31,8 +31,8 @@ def mel_filterbank(sr, n_fft, n_mels=128, fmin=0.0, fmax=None, htk=False, norm="
     mel_f = mel_frequencies(int(n_mels) + 2, fmin=fmin, fmax=fmax, htk=htk)
     fdiff = np.diff(mel_f)
     ramps = np.subtract.outer(mel_f, fft_frequencies(sr=sr, n_fft=n_fft))
-    weights = np.clip(-ramps[:-2] / fdiff[:-1, np.newaxis], 0.0, ramps[2:] / fdiff[1:, np.newaxis])
+    weights = np.clip(-ramps[:-2] / fdiff[:-1, None], 0.0, ramps[2:] / fdiff[1:, None])
     if norm == "slaney":
-        weights *= (2.0 / (mel_f[2: int(n_mels) + 2] - mel_f[: int(n_mels)]))[:, np.newaxis]
+        weights *= (2.0 / (mel_f[2: int(n_mels) + 2] - mel_f[: int(n_mels)]))[:, None]
     elif norm is not None: raise ValueError(f"Unsupported mel filterbank norm: {norm!r}")
     return weights.astype(dtype, copy=False)

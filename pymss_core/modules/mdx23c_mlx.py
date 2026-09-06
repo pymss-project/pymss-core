@@ -18,8 +18,8 @@ def _subband_istft(module, x, context):
     n_fft = context["n_fft"]
     full_freq_bins = n_fft // 2 + 1
     if freq_bins < full_freq_bins: x = mx.pad(x, [(0, 0)] * (x.ndim - 2) + [(0, full_freq_bins - freq_bins), (0, 0)])
-    x = x.reshape(-1, 2, full_freq_bins, time_bins).transpose(0, 2, 3, 1)
-    spec = x[..., 0] + (1j * x[..., 1])  # (n, F, T)
+    x = x.reshape(-1, 2, full_freq_bins, time_bins)
+    spec = x[:, 0] + (1j * x[:, 1])  # (n, F, T)
     audio = istft(spec, context["window"], context["hop"], context["audio_length"], context["dtype"], n_fft=context["n_fft"])
     return audio.reshape(*batch_dims, 2, audio.shape[-1])
 _norm = lambda module, x, dtype: (group_norm if isinstance(module, torch.nn.GroupNorm) else batch_norm if isinstance(module, torch.nn.BatchNorm2d) else instance_norm2d)(module, x, dtype)

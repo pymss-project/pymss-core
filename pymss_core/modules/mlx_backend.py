@@ -20,14 +20,16 @@ def to_mx_raw(tensor):  # no dtype cast, keeps fp32 (MPS bridge path)
 def to_torch(array, reference): return torch.from_numpy(np.array(array, copy=False)).to(device=reference.device, dtype=reference.dtype)
 def check_dtype(dtype, name):
     if dtype not in (torch.float16, torch.float32): raise TypeError(f"MLX full {name} supports torch.float16 or torch.float32 compute dtype")
-def param(module, name, tensor, dtype):  # memoize converted weights on the torch module; dtype: torch or mx
+def param(module, name, tensor, dtype, transpose=None):  # memoize converted weights on the torch module; dtype: torch or mx
     cache = getattr(module, "_pymss_mlx_full_param_cache", None)
     if cache is None: cache = {}; module._pymss_mlx_full_param_cache = cache
-    key = (name, tensor.data_ptr(), tensor._version, tuple(tensor.shape), str(dtype))
-    cached = cache.get(name)
+    cache_key = name if transpose is None else f"{name}_{transpose}"
+    key = (name, tensor.data_ptr(), tensor._version, tuple(tensor.shape), str(dtype), transpose)
+    cached = cache.get(cache_key)
     if cached is not None and cached[0] == key: return cached[1]
     value = to_mx(tensor, dtype)
-    cache[name] = (key, value)
+    if transpose is not None: value = value.transpose(transpose)
+    cache[cache_key] = (key, value)
     return value
 def linear(x, weight, bias=None): import mlx.core as mx; y = mx.matmul(x, mx.swapaxes(weight, -1, -2)); return y if bias is None else y + bias
 def linear_layer(module, x, dtype): return linear(x, param(module, "weight", module.weight, dtype), None if module.bias is None else param(module, "bias", module.bias, dtype))
@@ -114,22 +116,22 @@ def conv_padding(conv, ndim=2):
     return padding[0] if ndim == 1 and len(padding) == 1 else padding
 def conv1d(conv, x, dtype):  # NCL in/out
     import mlx.core as mx
-    y = mx.conv1d(x.transpose(0, 2, 1), param(conv, "weight", conv.weight, dtype).transpose(0, 2, 1), stride=conv.stride[0], padding=conv_padding(conv, 1), dilation=conv.dilation[0], groups=conv.groups)
+    y = mx.conv1d(x.transpose(0, 2, 1), param(conv, "weight_mlx1d", conv.weight, dtype, (0, 2, 1)), stride=conv.stride[0], padding=conv_padding(conv, 1), dilation=conv.dilation[0], groups=conv.groups)
     if conv.bias is not None: y = y + param(conv, 'bias', conv.bias, dtype)
     return y.transpose(0, 2, 1)
 def conv_transpose1d(conv, x, dtype):  # NCL in/out
     import mlx.core as mx
-    y = mx.conv_transpose1d(x.transpose(0, 2, 1), param(conv, "weight", conv.weight, dtype).transpose(1, 2, 0), stride=conv.stride[0], padding=conv.padding[0], dilation=conv.dilation[0], output_padding=conv.output_padding[0], groups=conv.groups)
+    y = mx.conv_transpose1d(x.transpose(0, 2, 1), param(conv, "weight_mlxt1d", conv.weight, dtype, (1, 2, 0)), stride=conv.stride[0], padding=conv.padding[0], dilation=conv.dilation[0], output_padding=conv.output_padding[0], groups=conv.groups)
     if conv.bias is not None: y = y + param(conv, 'bias', conv.bias, dtype)
     return y.transpose(0, 2, 1)
 def conv2d(conv, x, dtype, padding=None):  # NCHW in/out
     import mlx.core as mx
-    y = mx.conv2d(x.transpose(0, 2, 3, 1), param(conv, "weight", conv.weight, dtype).transpose(0, 2, 3, 1), stride=conv.stride, padding=conv_padding(conv) if padding is None else padding, dilation=conv.dilation, groups=conv.groups)
+    y = mx.conv2d(x.transpose(0, 2, 3, 1), param(conv, "weight_mlx2d", conv.weight, dtype, (0, 2, 3, 1)), stride=conv.stride, padding=conv_padding(conv) if padding is None else padding, dilation=conv.dilation, groups=conv.groups)
     if conv.bias is not None: y = y + param(conv, 'bias', conv.bias, dtype)
     return y.transpose(0, 3, 1, 2)
 def conv_transpose2d(conv, x, dtype):  # NCHW in/out
     import mlx.core as mx
-    y = mx.conv_transpose2d(x.transpose(0, 2, 3, 1), param(conv, "weight", conv.weight, dtype).transpose(1, 2, 3, 0), stride=conv.stride, padding=conv.padding, dilation=conv.dilation, output_padding=conv.output_padding, groups=conv.groups)
+    y = mx.conv_transpose2d(x.transpose(0, 2, 3, 1), param(conv, "weight_mlxt2d", conv.weight, dtype, (1, 2, 3, 0)), stride=conv.stride, padding=conv.padding, dilation=conv.dilation, output_padding=conv.output_padding, groups=conv.groups)
     if conv.bias is not None: y = y + param(conv, 'bias', conv.bias, dtype)
     return y.transpose(0, 3, 1, 2)
 def group_norm(module, x, dtype):  # NCHW / NC(*)
@@ -176,7 +178,12 @@ def lstm(rnn, x, dtype):
     import mlx.core as mx
     def run(p, reverse=False):
         h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype); c, outs = mx.zeros_like(h), []
-        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]): gates = linear(x[:, t], p["weight_ih"], p.get("bias_ih")) + linear(h, p["weight_hh"], p.get("bias_hh")); i, f, g, o = mx.split(gates, 4, axis=-1); i, f, o = sigmoid(i), sigmoid(f), sigmoid(o); c = f * c + i * mx.tanh(g); h = o * mx.tanh(c); outs.append(h)
+        wx = linear(x, p["weight_ih"], p.get("bias_ih"))
+        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]):
+            gates = wx[:, t] + linear(h, p["weight_hh"], p.get("bias_hh"))
+            i, f, g, o = mx.split(gates, 4, axis=-1)
+            i, f, o = sigmoid(i), sigmoid(f), sigmoid(o)
+            c = f * c + i * mx.tanh(g); h = o * mx.tanh(c); outs.append(h)
         if reverse: outs.reverse()
         return mx.stack(outs, axis=1)
     if rnn.num_layers != 1 or not rnn.batch_first: raise TypeError("MLX RNN supports one-layer batch_first RNNs only")
@@ -188,7 +195,12 @@ def gru(rnn, x, dtype):
     def run(p, reverse=False):
         h = mx.zeros((x.shape[0], rnn.hidden_size), dtype=x.dtype)
         outs = []
-        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]): gi = linear(x[:, t], p["weight_ih"], p.get("bias_ih")); gh = linear(h, p["weight_hh"], p.get("bias_hh")); i_r, i_z, i_n = mx.split(gi, 3, axis=-1); h_r, h_z, h_n = mx.split(gh, 3, axis=-1); reset, update = sigmoid(i_r + h_r), sigmoid(i_z + h_z); h = (1 - update) * mx.tanh(i_n + reset * h_n) + update * h; outs.append(h)
+        wx = linear(x, p["weight_ih"], p.get("bias_ih"))
+        for t in range(x.shape[1] - 1, -1, -1) if reverse else range(x.shape[1]):
+            gi = wx[:, t]; gh = linear(h, p["weight_hh"], p.get("bias_hh"))
+            i_r, i_z, i_n = mx.split(gi, 3, axis=-1); h_r, h_z, h_n = mx.split(gh, 3, axis=-1)
+            reset, update = sigmoid(i_r + h_r), sigmoid(i_z + h_z)
+            h = (1 - update) * mx.tanh(i_n + reset * h_n) + update * h; outs.append(h)
         if reverse: outs.reverse()
         return mx.stack(outs, axis=1)
     if rnn.num_layers != 1 or not rnn.batch_first: raise TypeError("MLX RNN supports one-layer batch_first RNNs only")

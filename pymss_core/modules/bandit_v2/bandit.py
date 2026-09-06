@@ -42,5 +42,5 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
     def separate(self, batch):
         batch["estimates"] = {}
         x, q, length = self.encode(batch)
-        for stem, mem in self.mask_estim.items(): s = self.mask(x, mem(q).to(x.dtype)).reshape(x.shape); batch["estimates"][stem] = {"audio": self.istft(s, length), "spectrogram": s}
+        for stem, mem in self.mask_estim.items(): s = self.mask(x, mem(q).to(x.dtype)); batch["estimates"][stem] = {"audio": self.istft(s, length), "spectrogram": s}
         return batch

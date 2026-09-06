@@ -6,7 +6,7 @@ torch_to_mlx_input = to_mx
 def _pad1d(x, paddings, mode="constant", value=0.0): return pad_last(x, paddings[0], paddings[1], mode=mode, value=value, extend=True)
 def _spectro(x, n_fft, hop, dtype): return stft(x, n_fft, hop, periodic_hann_window(n_fft, dtype), dtype, normalized=True)
 def _ispectro(z, hop, length, dtype): n_fft = 2 * z.shape[-2] - 2; return istft(z, periodic_hann_window(n_fft, dtype), hop, length, dtype, normalized=True)
-def _demucs_spec(module, x, dtype): hop = module.hop_length; le = math.ceil(x.shape[-1] / hop); pad = hop // 2 * 3; x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect"); return _spectro(x, module.nfft, hop, dtype)[..., :-1, :][:, :, :, 2 : 2 + le]
+def _demucs_spec(module, x, dtype): hop = module.hop_length; le = math.ceil(x.shape[-1] / hop); pad = hop // 2 * 3; x = _pad1d(x, (pad, pad + le * hop - x.shape[-1]), mode="reflect"); return _spectro(x, module.nfft, hop, dtype)[..., :-1, 2 : 2 + le]
 def _demucs_ispec(module, z, length, scale, dtype): import mlx.core as mx; hop = module.hop_length // (4**scale); z = mx.pad(z, [(0, 0)] * (z.ndim - 2) + [(0, 1), (2, 2)]); pad = hop // 2 * 3; le = hop * math.ceil(length / hop) + 2 * pad; return _ispectro(z, hop, le, dtype)[..., pad : pad + length]
 _linear_layer = linear_layer
 def _my_group_norm(module, x, dtype): return group_norm(module, x.transpose(0, 2, 1), dtype).transpose(0, 2, 1)
