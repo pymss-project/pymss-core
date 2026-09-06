@@ -139,7 +139,7 @@ def group_norm(module, x, dtype):  # NCHW / NC(*)
     y = x.astype(mx.float32).reshape(b, int(module.num_groups), c // module.num_groups, *rest)
     axes = tuple(range(2, y.ndim))
     mean = mx.mean(y, axis=axes, keepdims=True)
-    var = mx.var(y, axis=axes, keepdims=True)
+    var = mx.mean(mx.square(y - mean), axis=axes, keepdims=True)
     y = ((y - mean) * mx.rsqrt(var + module.eps)).reshape(x.shape).astype(x.dtype)
     if module.affine: shape = (1, -1) + (1,) * len(rest); y = y * param(module, 'weight', module.weight, dtype).reshape(*shape); y = y + param(module, 'bias', module.bias, dtype).reshape(*shape)
     return y
@@ -147,7 +147,7 @@ def layer_norm(module, x, dtype):
     import mlx.core as mx
     x32 = x.astype(mx.float32)
     mean = mx.mean(x32, axis=-1, keepdims=True)
-    var = mx.var(x32, axis=-1, keepdims=True)
+    var = mx.mean(mx.square(x32 - mean), axis=-1, keepdims=True)
     y = ((x32 - mean) * mx.rsqrt(var + module.eps)).astype(x.dtype)
     if module.elementwise_affine:
         y = y * param(module, "weight", module.weight, dtype)
@@ -157,7 +157,7 @@ def instance_norm2d(module, x, dtype):
     import mlx.core as mx
     x32 = x.astype(mx.float32)
     mean = mx.mean(x32, axis=(2, 3), keepdims=True)
-    var = mx.var(x32, axis=(2, 3), keepdims=True)
+    var = mx.mean(mx.square(x32 - mean), axis=(2, 3), keepdims=True)
     y = ((x32 - mean) * mx.rsqrt(var + module.eps)).astype(x.dtype)
     if module.affine: y = y * param(module, 'weight', module.weight, dtype).reshape(1, -1, 1, 1); y = y + param(module, 'bias', module.bias, dtype).reshape(1, -1, 1, 1)
     return y

@@ -114,7 +114,7 @@ def _cross_transformer(module, x, xt, dtype):
             x = _cross_transformer_layer(module.layers[idx], x, xt, dtype)
             xt = _cross_transformer_layer(module.layers_t[idx], xt, old_x, dtype)
     return x.reshape(b, t1, fr, c).transpose(0, 3, 2, 1), xt.transpose(0, 2, 1)
-def _std(x, axes, keepdims): import mlx.core as mx; return mx.std(x, axis=axes, keepdims=keepdims, ddof=1)
+def _std(x, axes, keepdims): import math, mlx.core as mx; mean = mx.mean(x, axis=axes, keepdims=True); return mx.sqrt(mx.sum(mx.square(x - mean), axis=axes, keepdims=keepdims) / max(1, math.prod(x.shape[a] for a in axes) - 1))
 def _validate_supported(module):
     if module.num_subbands != 1 or not module.cac or module.wiener_iters != 0 or module.end_iters != 0: raise TypeError("MLX full HTDemucs supports num_subbands=1, cac=True, wiener_iters=end_iters=0")
     if any(layer.__class__.__name__ == "MultiWrap" for layer in list(module.encoder) + list(module.decoder)): raise TypeError("MLX full HTDemucs does not support MultiWrap/multi_freqs yet")
