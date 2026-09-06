@@ -38,13 +38,13 @@ class BandSplit(Module):
             if cached is not None: return cached
         norms = [self.to_features[i][0] for i in range(start, end)]
         linears = [self.to_features[i][1] for i in range(start, end)]
-        gamma = torch.stack([norm.gamma.to(device=device, dtype=dtype) for norm in norms], dim=0)
+        gamma = torch.stack([norm.gamma.to(device=device, dtype=dtype) for norm in norms], dim=0) * (self.dim_inputs[start] ** 0.5)
         weight, bias = stack_linears(linears, device, dtype)
         cached = (gamma, weight, bias)
         if use_cache: self._group_cache[key] = cached
         return cached
     def _forward_grouped(self, x):
-        def forward_group(start, end, dim_in): offset_start = self._dim_offsets[start]; offset_end = self._dim_offsets[end]; group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in); gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype); group_x = F.normalize(group_x, dim=-1) * (dim_in**0.5) * gamma; return grouped_linear(group_x, weight, bias)
+        def forward_group(start, end, dim_in): offset_start = self._dim_offsets[start]; offset_end = self._dim_offsets[end]; group_x = x[..., offset_start:offset_end].reshape(*x.shape[:-1], end - start, dim_in); gamma, weight, bias = self._get_group_params(start, end, x.device, x.dtype); group_x = F.normalize(group_x, dim=-1) * gamma; return grouped_linear(group_x, weight, bias)
         return torch.cat([forward_group(start, end, dim_in) for start, end, dim_in in self._dim_groups], dim=-2)
     def warm_group_cache(self, device, dtype):
         if self.training: return

@@ -355,9 +355,9 @@ class ChannelwiseLayerNorm(nn.Module):
     def __init__(self, channel_size): super().__init__(); self.gamma = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.beta = nn.Parameter(torch.Tensor(1, channel_size, 1)); self.reset_parameters()
     def reset_parameters(self): self.gamma.data.fill_(1); self.beta.data.zero_()
     def _stat(self, y): return torch.mean(y, dim=1, keepdim=True), torch.var(y, dim=1, keepdim=True, unbiased=False)
-    def forward(self, y): mean, var = self._stat(y); return self.gamma * (y - mean) / torch.pow(var + EPS, 0.5) + self.beta
+    def forward(self, y): mean, var = self._stat(y); return self.gamma * (y - mean) / torch.sqrt(var + EPS) + self.beta
 class GlobalLayerNorm(ChannelwiseLayerNorm):
-    def _stat(self, y): mean = y.mean(dim=1, keepdim=True).mean(dim=2, keepdim=True); return mean, torch.pow(y - mean, 2).mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
+    def _stat(self, y): mean = y.mean(dim=1, keepdim=True).mean(dim=2, keepdim=True); return mean, (y - mean).square().mean(dim=1, keepdim=True).mean(dim=2, keepdim=True)
 def _choose_norm(norm_type, channel_size): klass = {"gLN": GlobalLayerNorm, "cLN": ChannelwiseLayerNorm, "id": nn.Identity}.get(norm_type, nn.BatchNorm1d); return klass(channel_size)
 class TensorChunk:
     def __init__(self, tensor, offset=0, length=None):

@@ -234,10 +234,10 @@ def _ri_from_complex(x): import mlx.core as mx; return mx.stack((x.real, x.imag)
 def _mask_stft_repr_bsr(module, stft_repr, dtype): mask = _forward_mask_core(module, stft_repr, dtype); return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(mask)
 def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     import mlx.core as mx
-    freq_indices = mx.array(module.freq_indices.detach().cpu().numpy())
+    freq_indices = to_mx(module.freq_indices, torch.int32)
     masks = _forward_mask_core(module, stft_repr[:, freq_indices], dtype)
     masks_summed = mx.zeros((context["batch"], len(module.mask_estimators), stft_repr.shape[1], stft_repr.shape[-2], 2), dtype=masks.dtype).at[:, :, freq_indices, :, :].add(masks)
-    denom = mx.array(module.num_bands_per_channel_freq.detach().cpu().numpy(), dtype=masks.dtype)[..., None]
+    denom = to_mx(module.num_bands_per_channel_freq, dtype)[..., None]
     return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(masks_summed / mx.maximum(denom, 1e-8))
 def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
     if dtype not in (torch.float16, torch.float32): raise TypeError("MLX full RoFormer supports torch.float16 or torch.float32 compute dtype")

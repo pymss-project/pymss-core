@@ -37,7 +37,7 @@ class BandSplitModuleBase(nn.Module):
     def forward(self, x):
         b, c, _, t = x.shape
         xr = self._band_view(x)
-        z = torch.zeros(b, self.n_bands, t, self.emb_dim, device=x.device)
+        z = torch.empty(b, self.n_bands, t, self.emb_dim, device=x.device)
         for i, nfm in enumerate(self.norm_fc_modules): f0, f1 = self.band_specs[i]; xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq" else xr[:, :, :, f0:f1].reshape(b, t, -1)); z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
 class _ConfiguredBandSplitModule(BandSplitModuleBase):

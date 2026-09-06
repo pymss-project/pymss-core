@@ -33,7 +33,7 @@ class RMSNorm(nn.Module):
             if input.is_cuda and input.dtype in (torch.float16, torch.bfloat16): weight = _cached_inference_tensor(self, 'rms_weight', self.weight, input, self.weight._version); return F.rms_norm(x, (N,), weight, self.eps).transpose(1, 2)
             return F.rms_norm(x, (N,), None, self.eps).transpose(1, 2).type_as(input) * self.weight.reshape(1, -1, 1)
         x = input.reshape(B, self.groups, -1, T).float()
-        return (x * torch.rsqrt(x.pow(2).mean(-2, keepdim=True) + self.eps)).type_as(input).reshape(B, N, T) * self.weight.reshape(1, -1, 1)
+        return (x * torch.rsqrt(x.square().mean(-2, keepdim=True) + self.eps)).type_as(input).reshape(B, N, T) * self.weight.reshape(1, -1, 1)
 class RMVN(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
@@ -154,7 +154,7 @@ class Apollo(MpsBackendMixin, nn.Module):
     def _packed_rms_norm(input, weight, groups, eps):
         b, bands, c, frames = input.shape
         x = input.reshape(b, bands, groups, c // groups, frames).float()
-        return (x * torch.rsqrt(x.pow(2).mean(3, keepdim=True) + eps)).to(dtype=input.dtype).reshape(b, bands, c, frames) * weight.reshape(1, bands, c, 1)
+        return (x * torch.rsqrt(x.square().mean(3, keepdim=True) + eps)).to(dtype=input.dtype).reshape(b, bands, c, frames) * weight.reshape(1, bands, c, 1)
     def _packed_bn_prefix(self, input, count):
         b, bands, c, frames = input.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_modules("bn", self.BN, count)
@@ -163,8 +163,7 @@ class Apollo(MpsBackendMixin, nn.Module):
         b, bands, c, frames = feature.shape
         norm_weight, conv_weight, conv_bias, groups, eps = self._cached_packed_modules("output", self.output, count)
         output = F.conv1d(self._packed_rms_norm(feature, norm_weight, groups, eps).reshape(b, bands * c, frames), conv_weight, conv_bias, groups=bands).reshape(b, bands, width * 4, frames)
-        left, right = output.chunk(2, dim=2)
-        return (left * torch.sigmoid(right)).reshape(b, bands, 2, width, frames)
+        return F.glu(output, dim=2).reshape(b, bands, 2, width, frames)
     def spec_band_split(self, input):
         spec, norms, powers, band_idx = self._stft(input), [], [], 0
         for width in self.band_width:
