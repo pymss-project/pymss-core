@@ -89,13 +89,13 @@ def batch_norm1d(module, x, dtype):
     import mlx.core as mx
     if module.training: raise TypeError("MLX Conformer BatchNorm1d supports eval mode only")
     y = x.astype(mx.float32)
-    mean = to_mx(module.running_mean, torch.float32).reshape(1, -1, 1)
-    var = to_mx(module.running_var, torch.float32).reshape(1, -1, 1)
+    mean = param(module, 'running_mean', module.running_mean, torch.float32).reshape(1, -1, 1)
+    var = param(module, 'running_var', module.running_var, torch.float32).reshape(1, -1, 1)
     y = (y - mean) * mx.rsqrt(var + module.eps)
     if module.affine: y = y.astype(x.dtype) * param(module, 'weight', module.weight, dtype).reshape(1, -1, 1); y = y + param(module, 'bias', module.bias, dtype).reshape(1, -1, 1)
     return y.astype(x.dtype)
 def _sequence_model(module, x, dtype): return _conformer(module, x, dtype) if isinstance(module, Conformer) else _transformer(module, x, dtype)
-def _final_norm(module, x, dtype): return x if (isinstance(module.final_norm, torch.nn.Identity)) else _rms_norm(x, to_mx(module.final_norm.gamma, dtype))
+def _final_norm(module, x, dtype): return x if (isinstance(module.final_norm, torch.nn.Identity)) else _rms_norm(x, param(module.final_norm, "gamma", module.final_norm.gamma, dtype))
 def _mask_estimator_layers(mlp_with_glu):
     layers = []
     mlp, glu_mod = mlp_with_glu
@@ -111,23 +111,32 @@ def _mask_estimator_cache(estimator, dtype):
     params = [ p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu) if kind == "linear" for p in (layer.weight, layer.bias) ]
     key = (tuple(estimator.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key: return cache
-    band_layers = []
-    for mlp_with_glu in estimator.to_freqs:
+    # stack equal-width bands (contiguous_dim_groups) so the per-band loop lowers to one batched einsum per layer
+    from .bands import contiguous_dim_groups
+    groups = []
+    for start, end, _dim_in in contiguous_dim_groups(estimator.dim_inputs):
+        band_layer_lists = [_mask_estimator_layers(estimator.to_freqs[i]) for i in range(start, end)]
+        depth = len(band_layer_lists[0])
         layers = []
-        for kind, layer in _mask_estimator_layers(mlp_with_glu):
-            if kind == "tanh": layers.append(('tanh', None, None))
-            else: layers.append(('linear', to_mx(layer.weight, dtype), None if layer.bias is None else to_mx(layer.bias, dtype)))
-        band_layers.append(tuple(layers))
-    cache = {"key": key, "band_layers": tuple(band_layers)}
+        for li in range(depth):
+            kinds = {ll[li][0] for ll in band_layer_lists}
+            if kinds == {"tanh"}: layers.append(("tanh", None, None)); continue
+            if kinds != {"linear"}: raise TypeError("inconsistent mask-estimator layer kinds within a width group")
+            stacked_w = to_mx(torch.stack([band_layer_lists[i][li][1].weight for i in range(end - start)]), dtype)
+            biases = [band_layer_lists[i][li][1].bias for i in range(end - start)]
+            stacked_b = None if biases[0] is None else to_mx(torch.stack(biases), dtype)
+            layers.append(("linear", stacked_w, stacked_b))
+        groups.append({"start": start, "end": end, "layers": tuple(layers)})
+    cache = {"key": key, "groups": tuple(groups)}
     estimator._pymss_mlx_full_mask_cache = cache
     return cache
 def _mask_estimator(estimator, x, dtype):
     import mlx.core as mx
     outs = []
-    for band_index, layers in enumerate(_mask_estimator_cache(estimator, dtype)["band_layers"]):
-        group_x = x[:, :, band_index, :]
-        for kind, weight, bias in layers: group_x = mx.tanh(group_x) if kind == "tanh" else linear(group_x, weight, bias)
-        outs.append(glu(group_x, axis=-1))
+    for group in _mask_estimator_cache(estimator, dtype)["groups"]:
+        group_x = x[:, :, group["start"] : group["end"], :]
+        for kind, weight, bias in group["layers"]: group_x = mx.tanh(group_x) if kind == "tanh" else _grouped_linear(group_x, weight, bias)
+        outs.append(glu(group_x, axis=-1).reshape(*group_x.shape[:-2], -1))
     return mx.concatenate(outs, axis=-1)
 def _conv_block(module, x, dtype): x = conv2d(module.conv, x, dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 def _dsconv_block(module, x, dtype): x = conv2d(module.pwconv, conv2d(module.dwconv, x, dtype), dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
@@ -154,7 +163,7 @@ def _adaptive_hyperedge_generation(module, x, dtype):
     import mlx.core as mx
     b, n, c = x.shape
     context = mx.concatenate((mx.mean(x, axis=1), mx.max(x, axis=1)), axis=1)
-    proto = to_mx(module.global_proto, dtype)[None] + linear(context, param(module.context_mapper, "weight", module.context_mapper.weight, dtype)).reshape(b, module.num_hyperedges, c)
+    proto = param(module, "global_proto", module.global_proto, dtype)[None] + linear(context, param(module.context_mapper, "weight", module.context_mapper.weight, dtype)).reshape(b, module.num_hyperedges, c)
     z = linear(x, param(module.query_proj, "weight", module.query_proj.weight, dtype))
     z = z.reshape(b, n, module.num_heads, module.head_dim).transpose(0, 2, 1, 3)
     proto = proto.reshape(b, module.num_hyperedges, module.num_heads, module.head_dim).transpose(0, 2, 3, 1)
@@ -232,12 +241,19 @@ def _forward_mask_core(module, stft_repr, dtype):
 def _complex_from_ri(x): return x[..., 0] + (1j * x[..., 1])
 def _ri_from_complex(x): import mlx.core as mx; return mx.stack((x.real, x.imag), axis=-1)
 def _mask_stft_repr_bsr(module, stft_repr, dtype): mask = _forward_mask_core(module, stft_repr, dtype); return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(mask)
+def _mbr_buffer_cache(module, dtype):
+    cache = getattr(module, "_pymss_mlx_full_mbr_cache", None)
+    key = (module.freq_indices.data_ptr(), module.freq_indices._version, module.num_bands_per_channel_freq.data_ptr(), module.num_bands_per_channel_freq._version, str(dtype))
+    if cache is not None and cache.get("key") == key: return cache
+    cache = { "key": key, "freq_indices": to_mx(module.freq_indices, torch.int32), "denom": to_mx(module.num_bands_per_channel_freq, dtype)[..., None] }
+    module._pymss_mlx_full_mbr_cache = cache
+    return cache
 def _mask_stft_repr_mbr(module, stft_repr, context, dtype):
     import mlx.core as mx
-    freq_indices = to_mx(module.freq_indices, torch.int32)
+    bufs = _mbr_buffer_cache(module, dtype)
+    freq_indices, denom = bufs["freq_indices"], bufs["denom"]
     masks = _forward_mask_core(module, stft_repr[:, freq_indices], dtype)
     masks_summed = mx.zeros((context["batch"], len(module.mask_estimators), stft_repr.shape[1], stft_repr.shape[-2], 2), dtype=masks.dtype).at[:, :, freq_indices, :, :].add(masks)
-    denom = to_mx(module.num_bands_per_channel_freq, dtype)[..., None]
     return _complex_from_ri(stft_repr[:, None]) * _complex_from_ri(masks_summed / mx.maximum(denom, 1e-8))
 def mlx_forward_roformer_mx(module, raw_audio, dtype=_COMPUTE_DTYPE):
     if dtype not in (torch.float16, torch.float32): raise TypeError("MLX full RoFormer supports torch.float16 or torch.float32 compute dtype")
