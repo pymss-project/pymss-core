@@ -50,7 +50,7 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
             masks_summed.scatter_add_(2, scatter_indices, masks)
             masks_summed = torch.view_as_complex(masks_summed.contiguous())
         else:
-            masks = torch.view_as_complex(masks.contiguous()).to(dtype=stft_repr.dtype)
+            masks = torch.view_as_complex(masks).to(dtype=stft_repr.dtype)
             scatter_indices = self.freq_indices[None, None, :, None].expand(b, s, -1, t)
             masks_summed = stft_repr.new_zeros(b, s, f, t)
             masks_summed.scatter_add_(2, scatter_indices, masks)

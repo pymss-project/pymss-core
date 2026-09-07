@@ -70,8 +70,8 @@ class Roformer(nn.Module):
         cos, sin = self._rotary_freq_cache.setdefault((T, feature.device, feature.dtype), (self.cos_freq[:T, 0::2].to(device=feature.device, dtype=feature.dtype).unsqueeze(0), self.sin_freq[:T, 0::2].to(device=feature.device, dtype=feature.dtype).unsqueeze(0)))
         output = torch.empty_like(feature)
         even, odd = feature[..., 0::2], feature[..., 1::2]
-        output[..., 0::2] = even * cos - odd * sin
-        output[..., 1::2] = odd * cos + even * sin
+        torch.sub(even * cos, odd * sin, out=output[..., 0::2])
+        torch.add(odd * cos, even * sin, out=output[..., 1::2])
         return output
     def forward(self, input):
         B, _, T = input.shape

@@ -34,8 +34,8 @@ def apply_rotary_emb_fast(cos, sin, t):
     if t.is_cuda and t.dtype == torch.float16: rot = torch.complex(cos, sin); rotated = torch.view_as_complex(t.reshape(*t.shape[:-1], -1, 2)) * rot; return torch.view_as_real(rotated).reshape_as(t)
     t_even, t_odd = t[..., ::2], t[..., 1::2]
     out = torch.empty_like(t)
-    out[..., ::2] = t_even * cos - t_odd * sin
-    out[..., 1::2] = t_odd * cos + t_even * sin
+    torch.sub(t_even * cos, t_odd * sin, out=out[..., ::2])  # out= writes the strided slice directly: skips the temp + copy of slice assignment (bitwise identical)
+    torch.add(t_odd * cos, t_even * sin, out=out[..., 1::2])
     return out
 def cached_rotary_cos_sin(rotary_embed, seq_len, device, dtype):
     cache = getattr(rotary_embed, "_pymss_cos_sin_cache", None)
