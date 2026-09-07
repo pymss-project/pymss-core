@@ -72,12 +72,18 @@ def glu(x, axis=-1): import mlx.core as mx; a, b = mx.split(x, 2, axis=axis); re
 def swish(x): import mlx.core as mx; return x * mx.sigmoid(x)
 def silu(x): return swish(x)
 def elu(module, x): import mlx.core as mx; return mx.where(x > 0, x, module.alpha * (mx.exp(x) - 1))
+_HANN_MX_CACHE = {}
 def periodic_hann_window(length, dtype):
     import mlx.core as mx
     length = int(length)
-    if length <= 0: return mx.zeros((0,), dtype=dtype)
-    if length == 1: return mx.ones((1,), dtype=dtype)
-    return mx.hanning(length + 1)[:-1].astype(dtype)
+    key = (length, dtype)
+    w = _HANN_MX_CACHE.get(key)
+    if w is not None: return w
+    if length <= 0: w = mx.zeros((0,), dtype=dtype)
+    elif length == 1: w = mx.ones((1,), dtype=dtype)
+    else: w = mx.hanning(length + 1)[:-1].astype(dtype)
+    _HANN_MX_CACHE[key] = w
+    return w
 def compile_cached(module, cache_name, key, fn):
     import mlx.core as mx
     cache = getattr(module, cache_name, None)
@@ -223,14 +229,21 @@ def stft(x, n_fft, hop, window, dtype, center=True, pad_mode="reflect", normaliz
     if normalized: spec = spec / np.sqrt(n_fft)
     spec = mx.moveaxis(spec, -1, -2)  # (n, T, F) -> (n, F, T)
     return spec.reshape(*leading, spec.shape[-2], spec.shape[-1])
+_OVERLAP_ADD_CACHE = {}
 def overlap_add(frames, window, hop):  # weighted overlap-add, 1e-11 denom floor (matches torch istft)
     import mlx.core as mx
     n_fft = window.shape[-1]
     count = frames.shape[1]
-    full_length = n_fft + hop * (count - 1)
-    positions = mx.arange(n_fft)[None, :] + hop * mx.arange(count)[:, None]
+    key = (id(window), hop, count)
+    cached = _OVERLAP_ADD_CACHE.get(key)
+    if cached is None or cached[0] is not window:
+        if len(_OVERLAP_ADD_CACHE) > 64: _OVERLAP_ADD_CACHE.clear()
+        positions = mx.arange(n_fft)[None, :] + hop * mx.arange(count)[:, None]
+        denom = mx.zeros((n_fft + hop * (count - 1),), dtype=frames.dtype).at[positions].add(mx.broadcast_to(mx.square(window).astype(frames.dtype)[None, :], (count, n_fft)))
+        _OVERLAP_ADD_CACHE[key] = cached = (window, positions, denom)
+    _, positions, denom = cached
+    full_length = denom.shape[-1]
     audio = mx.zeros((frames.shape[0], full_length), dtype=frames.dtype).at[:, positions].add(frames)
-    denom = mx.zeros((full_length,), dtype=frames.dtype).at[positions].add(mx.broadcast_to(mx.square(window)[None, :], (count, n_fft)))
     return audio / mx.maximum(denom[None, :], mx.array(1e-11, dtype=frames.dtype))
 def istft(spec, window, hop, length, dtype, n_fft=None, center=True, normalized=False):
     # spec: (..., F, T) complex -> (..., L); n_fft inferred for even sizes only
