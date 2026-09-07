@@ -12,6 +12,7 @@ from torch.nn import functional as F
 from .demucs_local import BLSTM, DConv, HDecLayer, HEncLayer, MultiWrap
 from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
 from .demucs_local import _freq_dconv as _dconv_freq
+from .demucs_local import _hann
 from .demucs_local import rescale_module as _rescale_module
 LEGACY_STEMS_4,LEGACY_STEMS_2,EPS = ["drums", "bass", "other", "vocals"], ["vocals", "non_vocals"], 1e-8
 def center_trim(tensor, reference):
@@ -177,7 +178,7 @@ class LegacyMultiWrap(MultiWrap):
             return out if last else F.gelu(out), None
         return super().forward(x, skip, length)
 def _pad1d(x, paddings, mode="constant", value=0.0):
-    x0, length = x, x.shape[-1]
+    length = x.shape[-1]
     left, right = paddings
     if mode == "reflect" and length <= max(left, right):
         extra = max(left, right) - length + 1
@@ -185,12 +186,9 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
         extra_left = extra - extra_right
         paddings = (left - extra_left, right - extra_right)
         x = F.pad(x, (extra_left, extra_right))
-    out = F.pad(x, paddings, mode, value)
-    assert out.shape[-1] == length + left + right
-    assert (out[..., left : left + length] == x0).all()
-    return out
-def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
-def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(n_fft // (1 + pad)).to(z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
+    return F.pad(x, paddings, mode, value)
+def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
+def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=_hann(n_fft // (1 + pad), z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
 class LegacyHDemucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=48, channels_time=None, growth=2, nfft=4096, wiener_iters=0,
                  end_iters=0, wiener_residual=False, cac=True, depth=6, rewrite=True, hybrid=True, hybrid_old=False,

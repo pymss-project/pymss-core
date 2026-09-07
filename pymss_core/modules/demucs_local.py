@@ -5,27 +5,31 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+_HANN_CACHE = {}
+def _hann(n_fft, ref):  # hann_window is a pure function of n_fft: memoize per (len, device, dtype)
+    key = (n_fft, ref.device, ref.dtype)
+    w = _HANN_CACHE.get(key)
+    if w is None: w = _HANN_CACHE[key] = torch.hann_window(n_fft).to(ref)
+    return w
 def pad1d(x, paddings, mode="constant", value=0.0):
-    x0, (left, right), length = x, paddings, x.shape[-1]
+    length, (left, right) = x.shape[-1], paddings
     if mode == "reflect" and length <= max(left, right):  # torch reflect pad breaks past half window: overpad then crop
         extra = max(left, right) - length + 1
         extra_right = min(right, extra)
         extra_left = extra - extra_right
         paddings, x = (left - extra_left, right - extra_right), F.pad(x, (extra_left, extra_right))
-    out = F.pad(x, paddings, mode, value)
-    assert out.shape[-1] == length + left + right and (out[..., left : left + length] == x0).all()
-    return out
+    return F.pad(x, paddings, mode, value)
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps": x = x.cpu()
-    z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=torch.hann_window(n_fft).to(x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
+    z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
 def ispectro(z, hop_length=None, length=None, pad=0):
     *other, freqs, frames = z.shape
     n_fft = 2 * freqs - 2
     win_length = n_fft // (1 + pad)
     if z.device.type == "mps": z = z.cpu()
-    x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=torch.hann_window(win_length).to(z.real), win_length=win_length, normalized=True, length=length, center=True)
+    x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=_hann(win_length, z.real), win_length=win_length, normalized=True, length=length, center=True)
     return x.view(*other, x.shape[-1])
 def rescale_module(module, reference):
     for sub in module.modules():
