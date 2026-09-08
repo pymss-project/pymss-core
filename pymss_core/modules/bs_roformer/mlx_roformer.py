@@ -111,8 +111,9 @@ def _mask_estimator_cache(estimator, dtype):
     params = [ p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu) if kind == "linear" for p in (layer.weight, layer.bias) ]
     key = (tuple(estimator.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key: return cache
-    # per-band loop: real mel banding fragments into mostly singleton width-groups, where a
-    # stacked einsum measured 2-7% SLOWER end-to-end than plain per-band matmuls (39 groups / 48 bands).
+    # per-band loop: at real mel banding the width-groups fragment (39 groups / 48 bands), so stacked
+    # einsum is performance-neutral vs plain per-band matmuls (tie at controlled load; <=2% worse under
+    # sustained thermal load). Kept per-band: simpler and never slower.
     band_layers = []
     for mlp_with_glu in estimator.to_freqs:
         layers = []
