@@ -631,7 +631,7 @@ wheels = [
 
 [[package]]
 name = "pymss-core"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://mirrors.cernet.edu.cn/pypi/web/simple" }, marker = "python_full_version < '3.11'" },

@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint_sequential
-from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
 class NormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
@@ -22,6 +21,7 @@ class SequentialNormFC(nn.Module):
     def forward(self, xb): return checkpoint_sequential(self.combined, 1, xb, use_reentrant=False)
 class BandSplitModuleBase(nn.Module):
     def __init__(self, band_specs, emb_dim, in_channels, norm_fc_cls, complex_order, flatten_input, require_no_overlap=False, require_no_gap=True, normalize_channel_independently=False, treat_channel_as_feature=True):
+        from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
         super().__init__()
         check_nonzero_bandwidth(band_specs)
         if require_no_gap: check_no_gap(band_specs)

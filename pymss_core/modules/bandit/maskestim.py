@@ -1,7 +1,9 @@
 import torch
 from torch import nn
 from torch.nn.modules import activation
-from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
+def _bsrnn_utils():
+    from .core.model.bsrnn.utils import band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
+    return band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth
 def _resolve_channels(in_channels=None, in_channel=None):
     channels = in_channels if in_channels is not None else in_channel
     if channels is None: raise TypeError("in_channels is required")
@@ -39,6 +41,7 @@ class MaskEstimationModuleSuperBase(nn.Module):
     pass
 class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
     def __init__(self, band_specs, emb_dim, mlp_dim, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, norm_mlp_cls=NormMLP, norm_mlp_kwargs=None):
+        band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth = _bsrnn_utils()
         super().__init__()
         self.band_widths, self.n_bands = band_widths_from_specs(band_specs), len(band_specs)
         self.norm_mlp = nn.ModuleList([ norm_mlp_cls(bandwidth=bw, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=_resolve_channels(in_channels, in_channel), hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs or {}, complex_mask=complex_mask, **(norm_mlp_kwargs or {})) for bw in self.band_widths])
@@ -46,6 +49,7 @@ class MaskEstimationModuleBase(MaskEstimationModuleSuperBase):
     def compute_mask(self, q, b): return self.norm_mlp[b](q[:, b, :, :])
 class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
     def __init__(self, band_specs, freq_weights, n_freq, emb_dim, mlp_dim, in_channels=None, in_channel=None, cond_dim=0, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, norm_mlp_cls=NormMLP, norm_mlp_kwargs=None, use_freq_weights=True, register_all_freq_weights=True, allow_cond=True, output_dtype="mask", compute_all_masks=True):
+        band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth = _bsrnn_utils()
         check_nonzero_bandwidth(band_specs)
         check_no_gap(band_specs)
         if cond_dim > 0 and not allow_cond: raise NotImplementedError
@@ -85,5 +89,6 @@ class MaskEstimationModule(OverlappingMaskEstimationModule):
         check_nonzero_bandwidth(band_specs)
         check_no_gap(band_specs)
         check_no_overlap(band_specs)
+        band_widths_from_specs, check_no_gap, check_no_overlap, check_nonzero_bandwidth = _bsrnn_utils()
         super().__init__(band_specs=band_specs, freq_weights=None, n_freq=0, emb_dim=emb_dim, mlp_dim=mlp_dim, in_channels=in_channels, in_channel=in_channel, hidden_activation=hidden_activation, hidden_activation_kwargs=hidden_activation_kwargs, complex_mask=complex_mask)
     def forward(self, q, cond=None): return torch.concat(self.compute_masks(q), dim=2)
