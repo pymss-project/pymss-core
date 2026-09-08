@@ -6,15 +6,25 @@ from .attend import Attend
 _CUDA_ATTENTION_BACKEND_ALIASES = {"auto": "auto", "torch": "default", "default": "default", "sdpa": "default", "flash": "flash", "flash_attention": "flash", "cudnn": "cudnn", "cudnn_attn": "cudnn", "cudnn_attention": "cudnn", "efficient": "efficient", "mem_efficient": "efficient", "memory_efficient": "efficient", "math": "math", "xformers": "xformers"}
 _SDPA_BACKEND_ENUM_NAMES = {"flash": "FLASH_ATTENTION", "cudnn": "CUDNN_ATTENTION", "efficient": "EFFICIENT_ATTENTION", "math": "MATH"}
 _MPS_BACKENDS = ("torch", "mlx", "mlx_attention", "mlx_transformer")
-def normalize_cuda_attention_backend(backend):
-    backend = str(backend or "cudnn").lower().replace("-", "_")
+def resolve_cuda_attention_backend(backend):
+    # single source of truth for cuda_attention_backend parsing:
+    # None/empty -> platform default (default_cuda_attention_backend), alias table -> canonical name, unknown -> ValueError
+    backend = str(backend or default_cuda_attention_backend()).lower().replace("-", "_")
     if backend not in _CUDA_ATTENTION_BACKEND_ALIASES: raise ValueError("cuda_attention_backend must be one of: auto, default, flash, cudnn, efficient, math, xformers")
     return _CUDA_ATTENTION_BACKEND_ALIASES[backend]
+normalize_cuda_attention_backend = resolve_cuda_attention_backend
 def _sdpa_backend_enum(backend): enum_cls = getattr(getattr(torch.nn, "attention", None), "SDPBackend", None); enum_name = _SDPA_BACKEND_ENUM_NAMES.get(backend); return None if enum_cls is None or enum_name is None else getattr(enum_cls, enum_name, None)
-def default_cuda_attention_backend(): return "cudnn" if _sdpa_backend_enum("cudnn") is not None else "default"
+def default_cuda_attention_backend():
+    # On ROCm (HIP) builds the cuDNN SDPA backend is typically not compiled in,
+    # while the AOTriton memory-efficient kernel works across precisions and GPU
+    # architectures (and matches the flash kernel there anyway), so it is the
+    # direct default under HIP. Runtime failures still fall back to default SDPA.
+    if getattr(torch.version, "hip", None): return "efficient"
+    return "cudnn" if _sdpa_backend_enum("cudnn") is not None else "default"
+def default_mps_attention_backend(): return "torch"
 def set_mps_attention_backend(module, backend=None, min_tokens=128, children=(), keep_mlx_transformer=False):
     # one switch shared by Attention / Transformer / Conformer; mlx_transformer maps to torch at leaf level
-    backend = (backend or "torch").lower()
+    backend = (backend or default_mps_attention_backend()).lower()
     if backend not in _MPS_BACKENDS: raise ValueError("mps_attention_backend must be 'torch', 'mlx', 'mlx_attention', or 'mlx_transformer'")
     module.mps_attention_backend = backend if keep_mlx_transformer else ("torch" if backend == "mlx_transformer" else backend)
     module.mps_mlx_min_tokens = 128 if min_tokens is None else int(min_tokens)
@@ -68,7 +78,7 @@ class Attention(Module):
     def __init__(self, dim, heads=8, dim_head=64, dropout=0.0, shared_qkv_bias=None, shared_out_bias=None, rotary_embed=None, flash=True):
         super().__init__()
         self.heads, self.flash, self.dropout, self.rotary_embed = heads, flash, dropout, rotary_embed
-        self.mps_attention_backend, self.mps_mlx_min_tokens = "torch", 128
+        self.mps_attention_backend, self.mps_mlx_min_tokens = default_mps_attention_backend(), 128
         self.cuda_attention_backend, self._disabled_cuda_attention_backends = default_cuda_attention_backend(), set()
         self.attend, self.norm = Attend(flash=False, dropout=dropout), RMSNorm(dim)
         self.to_qkv = nn.Linear(dim, heads * dim_head * 3, bias=(shared_qkv_bias is not None))
@@ -87,7 +97,7 @@ class Attention(Module):
                 return mlx_bridge_sdpa(q, k, v)
             except Exception as exc:
                 self._pymss_mlx_backend_error = repr(exc)
-                self.mps_attention_backend = "torch"
+                self.mps_attention_backend = default_mps_attention_backend()
         if self.flash: return self._cuda_or_default_attention(q, k, v)
         return self.attend(q, k, v)
     def _cuda_or_default_attention(self, q, k, v):
@@ -121,7 +131,7 @@ class Attention(Module):
                 return mlx_bridge_attention(self, x)
             except Exception as exc:
                 self._pymss_mlx_backend_error = repr(exc)
-                self.mps_attention_backend = "torch"
+                self.mps_attention_backend = default_mps_attention_backend()
         x = self.norm(x)
         q, k, v = qkv_to_bnhd(self.to_qkv(x), self.heads)
         if self.rotary_embed is not None: q, k = rotate_qk_fast_bnhd(self.rotary_embed, q, k)
@@ -133,7 +143,7 @@ class Transformer(Module):
         super().__init__()
         self.layers = ModuleList([ModuleList([ Attention(dim=dim, dim_head=dim_head, heads=heads, dropout=attn_dropout, shared_qkv_bias=shared_qkv_bias, shared_out_bias=shared_out_bias, rotary_embed=rotary_embed, flash=flash_attn), FeedForward(dim=dim, mult=ff_mult, dropout=ff_dropout)]) for _ in range(depth)])
         self.norm = RMSNorm(dim) if norm_output else nn.Identity()
-        self.mps_attention_backend, self.mps_mlx_min_tokens, self.cuda_attention_backend = "torch", 128, default_cuda_attention_backend()
+        self.mps_attention_backend, self.mps_mlx_min_tokens, self.cuda_attention_backend = default_mps_attention_backend(), 128, default_cuda_attention_backend()
     def set_mps_attention_backend(self, backend=None, min_tokens=128): set_mps_attention_backend(self, backend, min_tokens, [attn for attn, _ in self.layers], keep_mlx_transformer=True)
     def set_cuda_attention_backend(self, backend=None): set_cuda_attention_backend(self, backend, [attn for attn, _ in self.layers])
     def _use_mlx_transformer(self, x): return (self.mps_attention_backend == "mlx_transformer" and not self.training and x.device.type == "mps" and (x.dtype == torch.float16 or torch.is_autocast_enabled("mps")) and x.shape[-2] >= self.mps_mlx_min_tokens)
@@ -144,6 +154,6 @@ class Transformer(Module):
                 return mlx_bridge_transformer(self, x)
             except Exception as exc:
                 self._pymss_mlx_backend_error = repr(exc)
-                self.set_mps_attention_backend("torch", self.mps_mlx_min_tokens)
+                self.set_mps_attention_backend(default_mps_attention_backend(), self.mps_mlx_min_tokens)
         for attn, ff in self.layers: x = attn(x) + x; x = ff(x) + x
         return self.norm(x)
