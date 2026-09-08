@@ -111,32 +111,25 @@ def _mask_estimator_cache(estimator, dtype):
     params = [ p for mlp_with_glu in estimator.to_freqs for kind, layer in _mask_estimator_layers(mlp_with_glu) if kind == "linear" for p in (layer.weight, layer.bias) ]
     key = (tuple(estimator.dim_inputs), _cache_key(params, dtype))
     if cache is not None and cache.get("key") == key: return cache
-    # stack equal-width bands (contiguous_dim_groups) so the per-band loop lowers to one batched einsum per layer
-    from .bands import contiguous_dim_groups
-    groups = []
-    for start, end, _dim_in in contiguous_dim_groups(estimator.dim_inputs):
-        band_layer_lists = [_mask_estimator_layers(estimator.to_freqs[i]) for i in range(start, end)]
-        depth = len(band_layer_lists[0])
+    # per-band loop: real mel banding fragments into mostly singleton width-groups, where a
+    # stacked einsum measured 2-7% SLOWER end-to-end than plain per-band matmuls (39 groups / 48 bands).
+    band_layers = []
+    for mlp_with_glu in estimator.to_freqs:
         layers = []
-        for li in range(depth):
-            kinds = {ll[li][0] for ll in band_layer_lists}
-            if kinds == {"tanh"}: layers.append(("tanh", None, None)); continue
-            if kinds != {"linear"}: raise TypeError("inconsistent mask-estimator layer kinds within a width group")
-            stacked_w = to_mx(torch.stack([band_layer_lists[i][li][1].weight for i in range(end - start)]), dtype)
-            biases = [band_layer_lists[i][li][1].bias for i in range(end - start)]
-            stacked_b = None if biases[0] is None else to_mx(torch.stack(biases), dtype)
-            layers.append(("linear", stacked_w, stacked_b))
-        groups.append({"start": start, "end": end, "layers": tuple(layers)})
-    cache = {"key": key, "groups": tuple(groups)}
+        for kind, layer in _mask_estimator_layers(mlp_with_glu):
+            if kind == "tanh": layers.append(('tanh', None, None))
+            else: layers.append(('linear', to_mx(layer.weight, dtype), None if layer.bias is None else to_mx(layer.bias, dtype)))
+        band_layers.append(tuple(layers))
+    cache = {"key": key, "band_layers": tuple(band_layers)}
     estimator._pymss_mlx_full_mask_cache = cache
     return cache
 def _mask_estimator(estimator, x, dtype):
     import mlx.core as mx
     outs = []
-    for group in _mask_estimator_cache(estimator, dtype)["groups"]:
-        group_x = x[:, :, group["start"] : group["end"], :]
-        for kind, weight, bias in group["layers"]: group_x = mx.tanh(group_x) if kind == "tanh" else _grouped_linear(group_x, weight, bias)
-        outs.append(glu(group_x, axis=-1).reshape(*group_x.shape[:-2], -1))
+    for band_index, layers in enumerate(_mask_estimator_cache(estimator, dtype)["band_layers"]):
+        group_x = x[:, :, band_index, :]
+        for kind, weight, bias in layers: group_x = mx.tanh(group_x) if kind == "tanh" else linear(group_x, weight, bias)
+        outs.append(glu(group_x, axis=-1))
     return mx.concatenate(outs, axis=-1)
 def _conv_block(module, x, dtype): x = conv2d(module.conv, x, dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
 def _dsconv_block(module, x, dtype): x = conv2d(module.pwconv, conv2d(module.dwconv, x, dtype), dtype); x = instance_norm2d(module.bn, x, dtype); return x if isinstance(module.act, torch.nn.Identity) else silu(x)
