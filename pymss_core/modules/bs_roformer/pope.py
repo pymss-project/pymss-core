@@ -23,6 +23,7 @@ from math import pi
 import torch
 import torch.nn.functional as F
 from torch import nn
+from ...dml_backend import autocast_disabled
 
 
 class PoPE(nn.Module):
@@ -35,7 +36,7 @@ class PoPE(nn.Module):
     def forward(self, q, k):
         # Keep positions precise even when assign=True loads FP16 checkpoint buffers.
         dtype = torch.float64 if self.inv_freqs.dtype == torch.float64 else torch.float32
-        with torch.autocast(device_type=q.device.type, enabled=False):
+        with autocast_disabled(q):
             positions = torch.arange(k.shape[-2], device=q.device, dtype=dtype)
             freqs = positions[:, None] * self.inv_freqs.to(dtype)[None, :]
             key_freqs = freqs + self.bias.to(dtype).clamp(-2 * pi, 0)[:, None, :]

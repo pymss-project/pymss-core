@@ -1,4 +1,5 @@
 import torch
+from ...dml_backend import is_directml_device, real_to_complex
 from torch.nn import Module
 from .._dsp import mel_filterbank
 from .common import (MaskEstimator, RoformerRuntimeMixin, forward_roformer_mask_core, forward_spectral_roformer, ignore_roformer_training_kwargs, init_conformer_layers, init_roformer_band_modules, init_roformer_layers, init_roformer_runtime, init_roformer_stft, roformer_stft_freq_bins, roformer_transformer_kwargs)
@@ -40,6 +41,12 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         x = stft_repr[:, self.freq_indices]
         self._warm_group_cache(x)
         masks = self._forward_mask_core(x)
+        if is_directml_device(stft_repr):
+            stft_repr, masks = real_to_complex(stft_repr.unsqueeze(1)), real_to_complex(masks)
+            b, s, f, t = context.batch, self._active_source_count(), stft_repr.shape[2], stft_repr.shape[-1]
+            indices = self.freq_indices.cpu()[None, None, :, None].expand(b, s, -1, t)
+            summed = stft_repr.new_zeros(b, s, f, t).scatter_add_(2, indices, masks)
+            return stft_repr * (summed / self.num_bands_per_channel_freq.cpu().clamp(min=1e-8))
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
         num_stems = self._active_source_count()
         b, s, f, t = context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1]

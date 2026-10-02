@@ -14,6 +14,7 @@ from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
 from .demucs_local import _freq_dconv as _dconv_freq
 from .demucs_local import _hann
 from .demucs_local import rescale_module as _rescale_module
+from ..dml_backend import is_directml_device, real_to_model, real_to_complex, DirectMLGLU, glu as backend_glu, real_std, pad as backend_pad
 LEGACY_STEMS_4,LEGACY_STEMS_2,EPS = ["drums", "bass", "other", "vocals"], ["vocals", "non_vocals"], 1e-8
 def center_trim(tensor, reference):
     if hasattr(reference, "size"): reference = reference.size(-1)
@@ -48,7 +49,7 @@ class LegacyDemucs(nn.Module):
         self.resample, self.channels, self.normalize = resample, channels, normalize
         self.samplerate, self.segment_length = samplerate, segment_length
         self.encoder, self.decoder = nn.ModuleList(), nn.ModuleList()
-        activation, ch_scale = (nn.GLU(dim=1), 2) if glu else (nn.ReLU(), 1)
+        activation, ch_scale = (DirectMLGLU(dim=1), 2) if glu else (nn.ReLU(), 1)
         in_channels = audio_channels
         for index in range(depth):
             encode = [nn.Conv1d(in_channels, channels, kernel_size, stride), nn.ReLU()]
@@ -63,7 +64,7 @@ class LegacyDemucs(nn.Module):
     def valid_length(self, length): return _valid_length(self, length, True)
     def forward(self, mix):
         length, x = mix.shape[-1], mix
-        if self.normalize: mono = mix.mean(dim=1, keepdim=True); mean, std = (mono.mean(dim=-1, keepdim=True), mono.std(dim=-1, keepdim=True))
+        if self.normalize: mono = mix.mean(dim=1, keepdim=True); mean, std = (mono.mean(dim=-1, keepdim=True), real_std(mono, dim=-1, keepdim=True))
         else: mean, std = (0, 1)
         x = (x - mean) / (1e-5 + std)
         if self.resample: x = _resample_x2(x)
@@ -80,7 +81,7 @@ class LegacyV3Demucs(nn.Module):
         self.samplerate, self.segment = samplerate, segment
         self.segment_length = int(float(segment) * samplerate)
         self.encoder, self.decoder = nn.ModuleList(), nn.ModuleList()
-        activation, ch_scale = (nn.GLU(dim=1), 2) if glu else (nn.ReLU(), 1)
+        activation, ch_scale = (DirectMLGLU(dim=1), 2) if glu else (nn.ReLU(), 1)
         act2 = nn.GELU if gelu else nn.ReLU
         in_channels = audio_channels
         for index in range(depth):
@@ -104,12 +105,12 @@ class LegacyV3Demucs(nn.Module):
         x, length = mix, mix.shape[-1]
         if self.normalize:
             mono = mix.mean(dim=1, keepdim=True)
-            mean, std = mono.mean(dim=-1, keepdim=True), mono.std(dim=-1, keepdim=True)
+            mean, std = mono.mean(dim=-1, keepdim=True), real_std(mono, dim=-1, keepdim=True)
             x = (x - mean) / (1e-5 + std)
         else:
             mean, std = 0, 1
         delta = self.valid_length(length) - length
-        x = F.pad(x, (delta // 2, delta - delta // 2))
+        x = backend_pad(x, (delta // 2, delta - delta // 2))
         if self.resample: x = _resample_x2(x)
         x = _unet_forward(self, x)
         if self.resample: x = _downsample_x2(x, length + delta)
@@ -150,7 +151,7 @@ class LegacyHDecLayer(HDecLayer):
             y = x
         else:
             x = x + skip  # legacy: dconv/rewrite run on the summed tensor (not GLU-of-rewrite of sum)
-            y = F.glu(self.norm1(self.rewrite(x)), dim=1) if self.rewrite else x
+            y = backend_glu(self.norm1(self.rewrite(x)), dim=1) if self.rewrite else x
             if self.dconv: y = _dconv_freq(self.dconv, y) if self.freq else self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
@@ -185,9 +186,13 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
         extra_right = min(right, extra)
         extra_left = extra - extra_right
         paddings = (left - extra_left, right - extra_right)
-        x = F.pad(x, (extra_left, extra_right))
-    return F.pad(x, paddings, mode, value)
-def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
+        x = backend_pad(x, (extra_left, extra_right))
+    return backend_pad(x, paddings, mode, value)
+def _spectro(x, n_fft=512, hop_length=None, pad=0):
+    *other, length = x.shape
+    if is_directml_device(x): x = x.cpu().float()
+    z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
+    return z.view(*other, z.shape[-2], z.shape[-1])
 def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=_hann(n_fft // (1 + pad), z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
 class LegacyHDemucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=48, channels_time=None, growth=2, nfft=4096, wiener_iters=0,
@@ -244,12 +249,12 @@ class LegacyHDemucs(nn.Module):
     def _ispec(self, z, length=None, scale=0):
         hl = self.hop_length // (4**scale)
         if self.hybrid:
-            z = F.pad(z, (2, 2, 0, 1))
+            z = backend_pad(z, (2, 2, 0, 1))
             pad = hl // 2 * 3
             le = hl * math.ceil(length / hl) + (0 if self.hybrid_old else 2 * pad)
             x = _ispectro(z, hl, length=le)
             return x[..., :length] if self.hybrid_old else x[..., pad : pad + length]
-        return _ispectro(F.pad(z, (0, 0, 0, 1)), hl, length)
+        return _ispectro(backend_pad(z, (0, 0, 0, 1)), hl, length)
     def _magnitude(self, z):
         if self.cac: batch, channels, freqs, time = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(batch, channels * 2, freqs, time)
         return z.abs()
@@ -257,15 +262,15 @@ class LegacyHDemucs(nn.Module):
         if not self.cac: raise ValueError("legacy HDemucs loader supports only CaC checkpoints")
         batch, sources, _channels, freqs, time = m.shape
         out = m.view(batch, sources, -1, 2, freqs, time).permute(0, 1, 2, 4, 5, 3)
-        return torch.view_as_complex(out.contiguous())
+        return real_to_complex(out.contiguous())
     def forward(self, mix):
         length = mix.shape[-1]
         z = self._spec(mix)
-        x = self._magnitude(z)
+        x = real_to_model(self._magnitude(z), mix)
         batch, _, freqs, time = x.shape
-        mean, std = x.mean(dim=(1, 2, 3), keepdim=True), x.std(dim=(1, 2, 3), keepdim=True)
+        mean, std = x.mean(dim=(1, 2, 3), keepdim=True), real_std(x, dim=(1, 2, 3), keepdim=True)
         x = (x - mean) / (1e-5 + std)
-        if self.hybrid: meant, stdt = (mix.mean(dim=(1, 2), keepdim=True), mix.std(dim=(1, 2), keepdim=True)); xt = (mix - meant) / (1e-05 + stdt)
+        if self.hybrid: meant, stdt = (mix.mean(dim=(1, 2), keepdim=True), real_std(mix, dim=(1, 2), keepdim=True)); xt = (mix - meant) / (1e-05 + stdt)
         saved, saved_t, lengths, lengths_t = [], [], [], []
         for index, encode in enumerate(self.encoder):
             lengths.append(x.shape[-1])
@@ -291,7 +296,7 @@ class LegacyHDemucs(nn.Module):
                     else: xt, _ = tdec(xt, saved_t.pop(-1), length_t)
         sources = len(self.sources)
         x = x.view(batch, sources, -1, freqs, time) * std[:, None] + mean[:, None]
-        x = self._ispec(self._mask(z, x), length)
+        x = real_to_model(self._ispec(self._mask(z, x), length), mix)
         if self.hybrid: xt = xt.view(batch, sources, -1, length) * stdt[:, None] + meant[:, None]; x = xt + x
         return x
 def overlap_and_add(signal, frame_step):
@@ -317,7 +322,7 @@ class LegacyConvTasNet(nn.Module):
         for parameter in self.parameters():
             if parameter.dim() > 1: nn.init.xavier_normal_(parameter)
     def valid_length(self, length): return length
-    def forward(self, mixture): mixture_w = self.encoder(mixture); est_source = self.decoder(mixture_w, self.separator(mixture_w)); length = mixture.size(-1); delta = length - est_source.size(-1); return F.pad(est_source, (0, delta)) if delta >= 0 else est_source[..., :length]
+    def forward(self, mixture): mixture_w = self.encoder(mixture); est_source = self.decoder(mixture_w, self.separator(mixture_w)); length = mixture.size(-1); delta = length - est_source.size(-1); return backend_pad(est_source, (0, delta)) if delta >= 0 else est_source[..., :length]
 class Encoder(nn.Module):
     def __init__(self, L, N, audio_channels): super().__init__(); self.L, self.N = L, N; self.conv1d_U = nn.Conv1d(audio_channels, N, kernel_size=L, stride=L // 2, bias=False)
     def forward(self, mixture): return F.relu(self.conv1d_U(mixture))
@@ -375,7 +380,7 @@ class TensorChunk:
         start = self.offset - delta // 2
         end = start + target_length
         correct_start, correct_end = max(0, start), min(self.tensor.shape[-1], end)
-        out = F.pad(self.tensor[..., correct_start:correct_end], (correct_start - start, end - correct_end))
+        out = backend_pad(self.tensor[..., correct_start:correct_end], (correct_start - start, end - correct_end))
         assert out.shape[-1] == target_length
         return out
 def tensor_chunk(tensor_or_chunk): return tensor_or_chunk if isinstance(tensor_or_chunk, TensorChunk) else TensorChunk(tensor_or_chunk)

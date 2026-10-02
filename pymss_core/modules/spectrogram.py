@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from ..dml_backend import real_to_complex, spectrum_to_real, stft_complex, istft_complex
 class SubbandSTFT:
     def __init__(self, config):
         self.n_fft = config.n_fft
@@ -8,15 +9,16 @@ class SubbandSTFT:
         self.dim_f = config.dim_f
     def __call__(self, x):
         b = x.shape[:-2]; c, l = x.shape[-2:]
-        x = torch.view_as_real(torch.stft(x.reshape(-1, l), n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True, return_complex=True))
+        x = spectrum_to_real(stft_complex(x.reshape(-1, l), n_fft=self.n_fft, hop_length=self.hop_length, window=self.window, center=True, return_complex=True), x)
         x = x.permute(0, 3, 1, 2)
         return x.reshape(*b, c * 2, -1, x.shape[-1])[..., : self.dim_f, :]
     def inverse(self, x):
         b = x.shape[:-3]; c, f, t = x.shape[-3:]
         full = self.n_fft // 2 + 1
         if full > f: x = torch.nn.functional.pad(x, (0, 0, 0, full - f))
-        x = torch.view_as_complex(x.reshape(-1, 2, full, t).permute(0, 2, 3, 1).contiguous())
-        return torch.istft(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True).reshape([*b, 2, -1])
+        device = x.device
+        x = real_to_complex(x.reshape(-1, 2, full, t).permute(0, 2, 3, 1).contiguous())
+        return istft_complex(x, n_fft=self.n_fft, hop_length=self.hop_length, window=self.window.to(x.device), center=True, output_device=device).reshape([*b, 2, -1])
 def get_activation(act_type):
     if act_type == "gelu": return nn.GELU()
     if act_type == "relu": return nn.ReLU()

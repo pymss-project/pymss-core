@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.nn.modules import rnn as _rnn
+from ...dml_backend import run_rnn
 class TimeFrequencyModellingModule(nn.Module):
     pass
 class ResidualRNN(nn.Module):
@@ -13,8 +14,8 @@ class ResidualRNN(nn.Module):
     def forward(self, z0):
         z = self.norm(z0) if self.use_layer_norm else self.norm(z0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         b, n_uncrossed, n_across, emb_dim = z.shape
-        if self.use_batch_trick: z = self.rnn(z.reshape(b * n_uncrossed, n_across, emb_dim))[0].reshape(b, n_uncrossed, n_across, -1)
-        else: z = torch.stack([self.rnn(z[:, i, :, :])[0] for i in range(n_uncrossed)], dim=1)
+        if self.use_batch_trick: z = run_rnn(self.rnn, z.reshape(b * n_uncrossed, n_across, emb_dim))[0].reshape(b, n_uncrossed, n_across, -1)
+        else: z = torch.stack([run_rnn(self.rnn, z[:, i, :, :])[0] for i in range(n_uncrossed)], dim=1)
         return self.fc(z) + z0
 class Transpose(nn.Module):
     def __init__(self, dim0, dim1): super().__init__(); self.dim0, self.dim1 = dim0, dim1

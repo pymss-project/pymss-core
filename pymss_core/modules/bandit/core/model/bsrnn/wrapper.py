@@ -1,5 +1,6 @@
 import torch
 from .....mlx_backend import MpsBackendMixin
+from ......dml_backend import is_directml_device
 from .._spectral import _SpectralComponent
 from .core import MultiSourceMultiMaskBandSplitCoreRNN
 from .utils import (BarkBandsplitSpecification, EquivalentRectangularBandsplitSpecification, MelBandsplitSpecification, MusicalBandsplitSpecification, TriangularBarkBandsplitSpecification, VocalBandsplitSpecification)
@@ -29,7 +30,8 @@ class MultiMaskMultiSourceBandSplitBaseSimple(MpsBackendMixin, _SpectralComponen
         with torch.no_grad():
             x = self.stft(batch)
         estimates = [self.istft(spec, batch.shape[-1]) for spec in self.bsrnn(x, cond=None)["spectrogram"].values()]
-        return torch.stack(estimates, dim=1)
+        result = torch.stack(estimates, dim=1)
+        return result.to(batch.device) if is_directml_device(batch) else result
 class MultiMaskMultiSourceBandSplitRNNSimple(MultiMaskMultiSourceBandSplitBaseSimple):
     def __init__(self, in_channel, stems, band_specs, fs=44100, require_no_overlap=False, require_no_gap=True,
                  normalize_channel_independently=False, treat_channel_as_feature=True, n_sqm_modules=12, emb_dim=128,

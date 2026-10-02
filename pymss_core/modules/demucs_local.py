@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from ..dml_backend import is_directml_device, run_rnn, DirectMLGLU, glu as backend_glu, pad as backend_pad
 _HANN_CACHE = {}
 def _hann(n_fft, ref):  # hann_window is a pure function of n_fft: memoize per (len, device, dtype)
     key = (n_fft, ref.device, ref.dtype)
@@ -17,11 +18,12 @@ def pad1d(x, paddings, mode="constant", value=0.0):
         extra = max(left, right) - length + 1
         extra_right = min(right, extra)
         extra_left = extra - extra_right
-        paddings, x = (left - extra_left, right - extra_right), F.pad(x, (extra_left, extra_right))
-    return F.pad(x, paddings, mode, value)
+        paddings, x = (left - extra_left, right - extra_right), backend_pad(x, (extra_left, extra_right))
+    return backend_pad(x, paddings, mode, value)
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps": x = x.cpu()
+    elif is_directml_device(x): x = x.cpu().float()
     z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
 def ispectro(z, hop_length=None, length=None, pad=0):
@@ -48,7 +50,7 @@ class BLSTM(nn.Module):
             frames = x.unfold(-1, width, stride)
             nframes, framed = frames.shape[2], True
             x = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
-        x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
+        x = self.linear(run_rnn(self.lstm, x.permute(2, 0, 1))[0]).permute(1, 2, 0)
         if framed: frames = x.reshape(batch, -1, channels, width); limit = stride // 2; x = torch.cat([frames[:, i, :, limit if i else 0:-limit if i < nframes - 1 or not i else None] for i in range(nframes)], -1)[..., :length]
         return x + y if self.skip else x
 class LegacyLayerScale(nn.Module):
@@ -66,7 +68,7 @@ class DConv(nn.Module):
         self.layers = nn.ModuleList()
         for d in range(abs(depth)):
             dilation = 2**d if depth > 0 else 1
-            mods = [nn.Conv1d(channels, hidden, kernel, dilation=dilation, padding=dilation * (kernel // 2)), norm_fn(hidden), (nn.GELU if gelu else nn.ReLU)(), nn.Conv1d(hidden, 2 * channels, 1), norm_fn(2 * channels), nn.GLU(1), scale_cls(channels)]
+            mods = [nn.Conv1d(channels, hidden, kernel, dilation=dilation, padding=dilation * (kernel // 2)), norm_fn(hidden), (nn.GELU if gelu else nn.ReLU)(), nn.Conv1d(hidden, 2 * channels, 1), norm_fn(2 * channels), DirectMLGLU(1), scale_cls(channels)]
             if legacy and attn:
                 from .legacy_demucs import LegacyLocalState
                 mods.insert(3, LegacyLocalState(hidden, heads=heads, ndecay=ndecay))
@@ -104,13 +106,13 @@ class HEncLayer(nn.Module):
         self.dconv = DConv(chout, **(dconv_kw or {})) if dconv else None
     def forward(self, x, inject=None):
         if not self.freq and x.dim() == 4: x = x.view(x.shape[0], -1, x.shape[-1])
-        if not self.freq and x.shape[-1] % self.stride: x = F.pad(x, (0, self.stride - x.shape[-1] % self.stride))
+        if not self.freq and x.shape[-1] % self.stride: x = backend_pad(x, (0, self.stride - x.shape[-1] % self.stride))
         y = self.conv(x)
         if self.empty: return y
         if inject is not None: y = y + (inject[:, :, None] if inject.dim() == 3 and y.dim() == 4 else inject)
         y = F.gelu(self.norm1(y))
         if self.dconv: y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
-        return F.glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
+        return backend_glu(self.norm2(self.rewrite(y)), dim=1) if self.rewrite else y
 class HDecLayer(nn.Module):
     def __init__(self, chin, chout, last=False, kernel_size=8, stride=4, norm_groups=1, empty=False, freq=True, dconv=True, norm=True, context=1, dconv_kw=None, pad=True, context_freq=True, rewrite=True):
         super().__init__()
@@ -131,7 +133,7 @@ class HDecLayer(nn.Module):
         if self.empty:
             y = x
         else:
-            y = F.glu(self.norm1(self.rewrite(x + skip)), dim=1) if self.rewrite else x + skip
+            y = backend_glu(self.norm1(self.rewrite(x + skip)), dim=1) if self.rewrite else x + skip
             if self.dconv: y = _freq_dconv(self.dconv, y) if self.freq else self.dconv(y)
         z = self.norm2(self.conv_tr(y))
         if self.freq and self.pad:
@@ -160,8 +162,8 @@ class MultiWrap(nn.Module):
                 pad, limit = layer.kernel_size // 4, fr if ratio == 1 else round(fr * ratio)
                 if ratio != 1: le = limit - start + (pad if start == 0 else 0); limit = start + (round((le - layer.kernel_size) / layer.stride + 1) - 1) * layer.stride + layer.kernel_size - (pad if start == 0 else 0)
                 y = x[:, :, start:limit, :]
-                if start == 0: y = F.pad(y, (0, 0, pad, 0))
-                if ratio == 1: y = F.pad(y, (0, 0, 0, pad))
+                if start == 0: y = backend_pad(y, (0, 0, pad, 0))
+                if ratio == 1: y = backend_pad(y, (0, 0, 0, pad))
                 outs.append(layer(y))
                 start = limit - layer.kernel_size + layer.stride
             else:

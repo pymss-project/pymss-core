@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.utils.checkpoint import checkpoint_sequential
+from ...dml_backend import real_to_model
 class NormFC(nn.Module):
     def __init__(self, emb_dim, bandwidth, in_channels, normalize_channel_independently=False, treat_channel_as_feature=True):
         super().__init__()
@@ -36,8 +37,8 @@ class BandSplitModuleBase(nn.Module):
         raise ValueError(f"unsupported complex_order: {self.complex_order}")
     def forward(self, x):
         b, c, _, t = x.shape
-        xr = self._band_view(x)
-        z = torch.empty(b, self.n_bands, t, self.emb_dim, device=x.device)
+        xr = real_to_model(self._band_view(x), next(self.parameters()))
+        z = torch.empty(b, self.n_bands, t, self.emb_dim, device=xr.device)
         for i, nfm in enumerate(self.norm_fc_modules): f0, f1 = self.band_specs[i]; xb = (xr[..., f0:f1].reshape(b, t, c, -1) if self.complex_order == "reim_freq" else xr[:, :, :, f0:f1].reshape(b, t, -1)); z[:, i] = nfm((xb.reshape(b, t, -1) if self.flatten_input else xb).contiguous())
         return z
 class _ConfiguredBandSplitModule(BandSplitModuleBase):
