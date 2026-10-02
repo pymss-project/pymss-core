@@ -1,5 +1,6 @@
 import math
 import torch
+from ...dml_backend import real_to_complex, spectrum_to_real, stft_complex, istft_complex, DirectMLGLU, glu as backend_glu, pad as backend_pad
 import torch.nn.functional as F
 from torch import nn
 from ..mlx_backend import MpsBackendMixin
@@ -11,7 +12,7 @@ class ConvolutionModule(nn.Module):
         super().__init__()
         assert kernel % 2 == 1
         h = int(channels / compress)
-        self.layers = nn.ModuleList([nn.Sequential(nn.GroupNorm(1, channels), nn.Conv1d(channels, h * 2, kernel, padding=kernel // 2), nn.GLU(1), nn.Conv1d(h, h, kernel, padding=kernel // 2, groups=h), nn.GroupNorm(1, h), Swish(), nn.Conv1d(h, channels, 1)) for _ in range(abs(depth))])
+        self.layers = nn.ModuleList([nn.Sequential(nn.GroupNorm(1, channels), nn.Conv1d(channels, h * 2, kernel, padding=kernel // 2), DirectMLGLU(1), nn.Conv1d(h, h, kernel, padding=kernel // 2, groups=h), nn.GroupNorm(1, h), Swish(), nn.Conv1d(h, channels, 1)) for _ in range(abs(depth))])
     def forward(self, x):
         for layer in self.layers: x = x + layer(x)
         return x
@@ -19,14 +20,14 @@ class FusionLayer(nn.Module):
     def __init__(self, channels, kernel_size=3, stride=1, padding=1): super().__init__(); self.conv = nn.Conv2d(channels * 2, channels * 2, kernel_size, stride=stride, padding=padding)
     def forward(self, x, skip=None):
         if skip is not None: x = x + skip
-        return F.glu(self.conv(x.repeat(1, 2, 1, 1)), dim=1)
+        return backend_glu(self.conv(x.repeat(1, 2, 1, 1)), dim=1)
 class SDlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs): super().__init__(); self.convs = nn.ModuleList([nn.Conv2d(channels_in, channels_out, (c["kernel"], 1), (c["stride"], 1)) for c in band_configs.values()]); self.strides = [c["stride"] for c in band_configs.values()]; self.kernels = [c["kernel"] for c in band_configs.values()]; self.SR_low, self.SR_mid = band_configs["low"]["SR"], band_configs["mid"]["SR"]
     def forward(self, x):
         Fr = x.shape[2]
         low, mid = math.ceil(Fr * self.SR_low), math.ceil(Fr * (self.SR_low + self.SR_mid))
         outputs, original_lengths = [], []
-        for conv, stride, kernel, (s, e) in zip(self.convs, self.strides, self.kernels, [(0, low), (low, mid), (mid, Fr)]): p = kernel - stride if stride == 1 else (stride - (e - s) % stride) % stride; outputs.append(conv(F.pad(x[:, :, s:e], (0, 0, p // 2, p - p // 2)))); original_lengths.append(e - s)
+        for conv, stride, kernel, (s, e) in zip(self.convs, self.strides, self.kernels, [(0, low), (low, mid), (mid, Fr)]): p = kernel - stride if stride == 1 else (stride - (e - s) % stride) % stride; outputs.append(conv(backend_pad(x[:, :, s:e], (0, 0, p // 2, p - p // 2)))); original_lengths.append(e - s)
         return outputs, original_lengths
 class SUlayer(nn.Module):
     def __init__(self, channels_in, channels_out, band_configs): super().__init__(); self.convtrs = nn.ModuleList([nn.ConvTranspose2d(channels_in, channels_out, [c["kernel"], 1], [c["stride"], 1]) for c in band_configs.values()])
@@ -70,16 +71,16 @@ class SCNet(MpsBackendMixin, nn.Module):
             except Exception as exc:
                 self._pymss_mlx_full_backend_error = repr(exc)
                 self.mps_model_backend = "torch"
-        B = x.shape[0]
+        B, device = x.shape[0], x.device
         padding = self.hop_length - x.shape[-1] % self.hop_length
         if (x.shape[-1] + padding) // self.hop_length % 2 == 0: padding += self.hop_length
-        x = F.pad(x, (0, padding))
-        x = torch.view_as_real(torch.stft(x.reshape(-1, x.shape[-1]), **self.stft_config, return_complex=True))
+        x = backend_pad(x, (0, padding))
+        x = spectrum_to_real(stft_complex(x.reshape(-1, x.shape[-1]), **self.stft_config, return_complex=True), x)
         x = x.permute(0, 3, 1, 2).reshape(B, self.audio_channels * 2, x.shape[1], x.shape[2])
         _B, _C, Fr, T = x.shape
         saved = []
         for sd_layer in self.encoder: x, skip, lengths, original_lengths = sd_layer(x); saved.append((skip, lengths, original_lengths))
         x = self.separation_net(x)
         for fusion_layer, su_layer in self.decoder: skip, lengths, original_lengths = saved.pop(); x = su_layer(fusion_layer(x, skip), lengths, original_lengths)
-        x = torch.istft(torch.view_as_complex(x.reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()), **self.stft_config)
+        x = istft_complex(real_to_complex(x.reshape(-1, 2, Fr, T).permute(0, 2, 3, 1).contiguous()), **self.stft_config, output_device=device)
         return x.reshape(B, len(self.sources), self.audio_channels, -1)[:, :, :, :-padding]

@@ -2,10 +2,10 @@ import math
 from fractions import Fraction
 import torch
 from torch import nn
-from torch.nn import functional as F
 from ..config import to_plain
 from .demucs_local import (CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, rescale_module, spectro)
 from .mlx_backend import MpsBackendMixin
+from ..dml_backend import is_directml_device, real_to_model, real_to_complex, real_std, pad as backend_pad
 class HTDemucs(MpsBackendMixin, nn.Module):
     def __init__(
         self,
@@ -86,13 +86,14 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         z = spectro(x, nfft, hl)[..., :-1, :]
         assert z.shape[-1] == le + 4, (z.shape, x.shape, le)
         return z[..., 2 : 2 + le]
-    def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = F.pad(z, (2, 2, 0, 1)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
+    def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = backend_pad(z, (2, 2, 0, 1)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
     def _magnitude(self, z):
         if self.cac: B, C, Fr, T = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(B, C * 2, Fr, T)
         return z.abs()
     def _mask(self, z, m):
         niters = self.end_iters if self.training else self.wiener_iters
-        if self.cac: B, S, _C, Fr, T = m.shape; return torch.view_as_complex(m.view(B, S, -1, 2, Fr, T).permute(0, 1, 2, 4, 5, 3).contiguous())
+        if self.cac: B, S, _C, Fr, T = m.shape; return real_to_complex(m.view(B, S, -1, 2, Fr, T).permute(0, 1, 2, 4, 5, 3).contiguous())
+        if is_directml_device(m): m = m.cpu().float()
         if niters < 0: z = z[:, None]; return z / (1e-08 + z.abs()) * m
         return self._wiener(m, z, niters)
     def _wiener(self, mag_out, mix_stft, niters): raise NotImplementedError("non-CaC Wiener Demucs is not supported by the dependency-free path")
@@ -118,13 +119,13 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 self.segment = Fraction(mix.shape[-1], self.samplerate)
             else:
                 training_length = int(self.segment * self.samplerate)
-                if mix.shape[-1] < training_length: length_pre_pad = mix.shape[-1]; mix = F.pad(mix, (0, training_length - length_pre_pad))
+                if mix.shape[-1] < training_length: length_pre_pad = mix.shape[-1]; mix = backend_pad(mix, (0, training_length - length_pre_pad))
         z = self._spec(mix)
-        x = self._magnitude(z) if self.num_subbands <= 1 else self.cac2cws(self._magnitude(z))
+        x = real_to_model(self._magnitude(z) if self.num_subbands <= 1 else self.cac2cws(self._magnitude(z)), mix)
         B, _, Fq, T = x.shape
-        mean, std = x.mean(dim=(1, 2, 3), keepdim=True), x.std(dim=(1, 2, 3), keepdim=True)
+        mean, std = x.mean(dim=(1, 2, 3), keepdim=True), real_std(x, dim=(1, 2, 3), keepdim=True)
         x = (x - mean) / (1e-5 + std)
-        meant, stdt = mix.mean(dim=(1, 2), keepdim=True), mix.std(dim=(1, 2), keepdim=True)
+        meant, stdt = mix.mean(dim=(1, 2), keepdim=True), real_std(mix, dim=(1, 2), keepdim=True)
         xt = (mix - meant) / (1e-5 + stdt)
         saved, saved_t, lengths_t = [], [], []
         for idx, encode in enumerate(self.encoder):
@@ -160,7 +161,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         if self.num_subbands > 1: x = self.cws2cac(x.view(B, -1, Fq, T))
         x = x.view(B, S, -1, Fq * self.num_subbands, T) * std[:, None] + mean[:, None]
         zout = self._mask(z, x)
-        x = self._ispec(zout, length if not self.use_train_segment or self.training else training_length)
+        x = real_to_model(self._ispec(zout, length if not self.use_train_segment or self.training else training_length), mix)
         xt = xt.view(B, S, -1, length if not self.use_train_segment or self.training else training_length)
         x = xt * stdt[:, None] + meant[:, None] + x
         if length_pre_pad: x = x[..., :length_pre_pad]

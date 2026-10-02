@@ -3,6 +3,7 @@ from torch import nn
 from ..bandit.core.model._spectral import _SpectralComponent
 from ..bandit.core.model.bsrnn.utils import MusicalBandsplitSpecification
 from ..mlx_backend import MpsBackendMixin
+from ...dml_backend import multiply_spectrum
 from . import BandSplitModule, OverlappingMaskEstimationModule, SeqBandModellingModule
 class Bandit(MpsBackendMixin, _SpectralComponent):
     def __init__(self, in_channels, stems, fs=44100, band_type="musical", n_bands=64, require_no_overlap=False,
@@ -21,7 +22,7 @@ class Bandit(MpsBackendMixin, _SpectralComponent):
     def mlx_forward_mx(self, raw_audio): from ..bandit_mlx import mlx_forward_bandit_mx; return mlx_forward_bandit_mx(self, raw_audio, self.mps_model_compute_dtype)
     def _use_mlx_full_forward(self, batch): return (not self.training and self.mps_model_backend == "mlx_full" and not isinstance(batch, dict) and batch.device.type == "mps")
     @staticmethod
-    def mask(x, m): return x * m
+    def mask(x, m): return multiply_spectrum(x, m)
     def forward(self, batch, mode="train"):
         if self._use_mlx_full_forward(batch):
             try:

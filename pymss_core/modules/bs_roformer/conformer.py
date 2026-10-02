@@ -1,4 +1,5 @@
 from torch import nn
+from ...dml_backend import DirectMLGLU
 from torch.nn import Module, ModuleList
 from .transformer import (Attention, FeedForward, RMSNorm, default_cuda_attention_backend, set_cuda_attention_backend, set_mps_attention_backend)
 class _TransposeLast(Module):
@@ -12,7 +13,7 @@ class ConformerConvModule(Module):
         inner = dim * expansion_factor
         assert (kernel_size - 1) % 2 == 0, "kernel_size must be odd"
         # Keep Sequential indices aligned with MSST checkpoints (Rearrange slots are parameter-free).
-        self.net = nn.Sequential(RMSNorm(dim), _TransposeLast(), nn.Conv1d(dim, inner * 2, 1), nn.GLU(dim=1), nn.Conv1d(inner, inner, kernel_size, padding=(kernel_size - 1) // 2, groups=inner), nn.BatchNorm1d(inner), nn.SiLU(inplace=True), nn.Conv1d(inner, dim, 1), _TransposeLast(), nn.Dropout(dropout))
+        self.net = nn.Sequential(RMSNorm(dim), _TransposeLast(), nn.Conv1d(dim, inner * 2, 1), DirectMLGLU(dim=1), nn.Conv1d(inner, inner, kernel_size, padding=(kernel_size - 1) // 2, groups=inner), nn.BatchNorm1d(inner), nn.SiLU(inplace=True), nn.Conv1d(inner, dim, 1), _TransposeLast(), nn.Dropout(dropout))
     def forward(self, x): return self.net(x)
 class ConformerBlock(Module):
     def __init__(self, *, dim, heads=8, dim_head=64, ff_mult=4, attn_dropout=0.0, ff_dropout=0.0, conv_expansion_factor=2, conv_kernel_size=31, rotary_embed=None, flash_attn=True, shared_qkv_bias=None, shared_out_bias=None):

@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from torch import nn
+from ...dml_backend import bilinear_resize
 def autopad(k, p=None): return p if p is not None else k // 2 if isinstance(k, int) else [x // 2 for x in k]
 class Conv(nn.Module):
     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, act=True): super().__init__(); self.conv, self.bn, self.act = (nn.Conv2d(c1, c2, k, s, autopad(k, p), groups=g, bias=False), nn.InstanceNorm2d(c2, affine=True, eps=1e-8), nn.SiLU() if act else nn.Identity())
@@ -34,7 +35,7 @@ class AdaptiveHypergraphComputation(nn.Module):
 class C3AH(nn.Module):
     def __init__(self, c1, c2, num_hyperedges=8, num_heads=8, e=0.5): super().__init__(); c_ = int(c1 * e); self.cv1, self.cv2 = Conv(c1, c_, 1, 1), Conv(c1, c_, 1, 1); self.ahc = AdaptiveHypergraphComputation(c_, c_, num_hyperedges, num_heads); self.cv3 = Conv(2 * c_, c2, 1, 1)
     def forward(self, x): return self.cv3(torch.cat((self.ahc(self.cv2(x)), self.cv1(x)), dim=1))
-def _interp(x, size): return F.interpolate(x, size=size, mode="bilinear", align_corners=False)
+def _interp(x, size): return bilinear_resize(x, size)
 class HyperACE(nn.Module):
     def __init__(self, in_channels, out_channels, num_hyperedges=8, num_heads=8, k=2, l=1, c_h=0.5, c_l=0.25):
         super().__init__()

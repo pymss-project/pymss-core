@@ -29,6 +29,17 @@ Apple Silicon 上可选安装 MLX backend：
 pip install "pymss-core[mlx]"
 ```
 
+Windows DirectML 需要独立的 Python 3.10–3.12 环境和固定版本的 `dml` 依赖：
+
+```bash
+pip install torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
+pip install "pymss-core[dml]"
+```
+
+Windows 下使用 uv 开发 DML 时执行 `uv sync --python 3.12 --extra dml --no-group cuda`。默认开发环境在 Windows 和 Linux 使用 CUDA；CUDA 与 DML 依赖组互斥。
+
+模型以 FP32 放到 `torch_directml.device(index)`，推理使用 `torch.no_grad()`。模型内 FFT 与复数边界在 CPU 执行，再把实数张量送到所选 DX12 显卡；CPU、CUDA、MPS、MLX 保留原有路径。音频读写、分块推理和设备选择请使用 `pymss[dml]`。
+
 ## 公共 API
 
 ```python

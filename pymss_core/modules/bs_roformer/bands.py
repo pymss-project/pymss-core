@@ -2,6 +2,7 @@ import os
 from collections import defaultdict
 from itertools import accumulate, pairwise
 import torch
+from ...dml_backend import DirectMLGLU, glu as backend_glu
 import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
@@ -65,7 +66,7 @@ class MaskEstimator(Module):
         # _groupable_layers_cache intentionally removed: id()-keyed caching is
         # unsafe under DataParallel replica recycling (see _groupable_layers).
         dim_hidden = dim * mlp_expansion_factor
-        self.to_freqs = ModuleList([ nn.Sequential(MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth, hidden_layers=mlp_hidden_layers), nn.GLU(dim=-1)) for dim_in in dim_inputs ])
+        self.to_freqs = ModuleList([ nn.Sequential(MLP(dim, dim_in * 2, dim_hidden=dim_hidden, depth=depth, hidden_layers=mlp_hidden_layers), DirectMLGLU(dim=-1)) for dim_in in dim_inputs ])
     def _groupable_layers(self, mlp_with_glu):
         # NOTE: Do not cache by id(mlp_with_glu). Under torch.nn.DataParallel the
         # module is re-replicated on every forward, so band submodules are short
@@ -177,7 +178,7 @@ class MaskEstimator(Module):
         def forward_group(start, end):
             group_x = x[:, :, start:end, :]
             for kind, weight, bias in self._get_group_params(start, end, x.device, x.dtype): group_x = grouped_linear(group_x, weight, bias) if kind == "linear" else inference_tanh(group_x)
-            return F.glu(group_x, dim=-1).flatten(start_dim=-2)
+            return backend_glu(group_x, dim=-1).flatten(start_dim=-2)
         return torch.cat([forward_group(start, end) for start, end, _ in self._dim_groups], dim=-1)
     def _forward_layer_grouped_mlp(self, x):
         plan = self._layer_grouping_plan()
@@ -193,7 +194,7 @@ class MaskEstimator(Module):
                     weight, bias = self._get_layer_group_params(layer_index, signature, indices, x.device, x.dtype)
                     band_index = self._indices_tensor(indices, x.device)
                     selected = group_x.index_select(-2, band_index)
-                    out = F.glu(grouped_linear(selected, weight, bias), dim=-1)
+                    out = backend_glu(grouped_linear(selected, weight, bias), dim=-1)
                     for band_position, band_out in zip(indices, out.unbind(dim=-2)): outs[band_position] = band_out
                 return torch.cat(outs, dim=-1)
             next_x = None
@@ -205,7 +206,7 @@ class MaskEstimator(Module):
                 if next_x is None: next_x = out.new_empty(*group_x.shape[:-1], out.shape[-1])
                 next_x.index_copy_(-2, band_index, out)
             group_x = next_x
-        return F.glu(group_x, dim=-1).flatten(start_dim=-2)
+        return backend_glu(group_x, dim=-1).flatten(start_dim=-2)
     def _forward_by_band_fast(self, x):
         band_layers = self._band_groupable_layers()
         def forward_band(band_index, band_features):
@@ -213,7 +214,7 @@ class MaskEstimator(Module):
             layers = band_layers[band_index]
             if layers is None: return None
             for kind, layer in layers: group_x = inference_tanh(group_x) if kind == "tanh" else layer(group_x)
-            return F.glu(group_x, dim=-1)
+            return backend_glu(group_x, dim=-1)
         outs = [forward_band(band_index, band_features) for band_index, band_features in enumerate(x.unbind(dim=-2))]
         return None if any(out is None for out in outs) else torch.cat(outs, dim=-1)
     @staticmethod
@@ -245,7 +246,7 @@ class MaskEstimator(Module):
             group_x = inference_tanh(group_x)
             weight, bias = first._get_packed_layer_group_params(estimators, 2, final_signature, indices, x.device, x.dtype)
             group_x = grouped_linear(group_x, weight, bias)
-            group_x = F.glu(group_x, dim=-1).reshape(b, t, s, g, -1)
+            group_x = backend_glu(group_x, dim=-1).reshape(b, t, s, g, -1)
             if indices == tuple(range(indices[0], indices[-1] + 1)):
                 offset_start = first._dim_offsets[indices[0]]
                 offset_end = first._dim_offsets[indices[-1] + 1]
@@ -274,7 +275,7 @@ class MaskEstimator(Module):
                     selected = MaskEstimator._select_packed_group(group_x, band_index, stem_count)
                     b, t, s, g, d = selected.shape
                     out = grouped_linear(selected.reshape(b, t, s * g, d), weight, bias)
-                    out = F.glu(out, dim=-1).reshape(b, t, s, g, -1)
+                    out = backend_glu(out, dim=-1).reshape(b, t, s, g, -1)
                     if indices == tuple(range(indices[0], indices[-1] + 1)):
                         offset_start = first._dim_offsets[indices[0]]
                         offset_end = first._dim_offsets[indices[-1] + 1]
@@ -294,7 +295,7 @@ class MaskEstimator(Module):
                 if next_x is None: next_x = out.new_empty(x.shape[0], x.shape[1], stem_count, band_count, out_dim)
                 next_x.index_copy_(-2, band_index, out)
             group_x = next_x
-        out = F.glu(group_x, dim=-1).flatten(start_dim=-2)
+        out = backend_glu(group_x, dim=-1).flatten(start_dim=-2)
         return out.permute(0, 2, 1, 3)
     @staticmethod
     def _forward_packed_estimators_by_band(estimators, x):
@@ -313,7 +314,7 @@ class MaskEstimator(Module):
                 group_x = grouped_linear(group_x, weight, bias)
             offset_start = first._dim_offsets[band_index]
             offset_end = first._dim_offsets[band_index + 1]
-            result[:, :, :, offset_start:offset_end] = F.glu(group_x, dim=-1).transpose(1, 2)
+            result[:, :, :, offset_start:offset_end] = backend_glu(group_x, dim=-1).transpose(1, 2)
         return result
     def forward(self, x):
         if should_use_grouped_forward(self):

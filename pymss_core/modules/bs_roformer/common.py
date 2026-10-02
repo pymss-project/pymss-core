@@ -1,6 +1,7 @@
 from functools import partial
 import torch
 from torch import nn
+from ...dml_backend import is_directml_device, real_to_complex, spectrum_to_real, stft_complex
 from ..mlx_backend import MpsBackendMixin
 from .bands import BandSplit, MaskEstimator
 from .conformer import Conformer
@@ -9,7 +10,10 @@ from .transformer import RMSNorm, Transformer  # noqa: F401 (RMSNorm re-export i
 DEFAULT_FREQS_PER_BANDS = (2,) * 24 + (4,) * 12 + (12,) * 8 + (24,) * 8 + (48,) * 8 + (128, 129)
 class SpectralContext(tuple):
     # (batch, channels, freq_bins, audio_length, stft_window, x_is_mps) with named access
-    def __new__(cls, batch, channels, freq_bins, audio_length, stft_window, x_is_mps): return super().__new__(cls, (batch, channels, freq_bins, audio_length, stft_window, x_is_mps))
+    def __new__(cls, batch, channels, freq_bins, audio_length, stft_window, x_is_mps, device=None):
+        context = super().__new__(cls, (batch, channels, freq_bins, audio_length, stft_window, x_is_mps))
+        context._device = stft_window.device if device is None else device
+        return context
     @property
     def batch(self): return self[0]
     @property
@@ -22,9 +26,12 @@ class SpectralContext(tuple):
     def stft_window(self): return self[4]
     @property
     def x_is_mps(self): return self[5]
+    @property
+    def device(self): return self._device
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, theta=10000): super().__init__(); freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim)); self.freqs = nn.Parameter(freqs, requires_grad=False); self.cache = {}
     def get_seq_pos(self, seq_len, device, dtype, offset=0): return torch.arange(seq_len, device=device, dtype=dtype) + offset
+    def clear_runtime_cache(self): self.cache.clear()
     def forward(self, t, cache_key=None):
         if cache_key in self.cache: return self.cache[cache_key]
         t = t() if callable(t) else t
@@ -97,7 +104,7 @@ class RoformerRuntimeMixin(MpsBackendMixin):
             if packed is not None: self._packed_mask_estimators_available = True; return packed
             self._packed_mask_estimators_available = False
         return torch.stack([fn(x) for fn in estimators], dim=1)
-    def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1)); return stft_repr * torch.view_as_complex(mask).to(dtype=stft_repr.dtype)
+    def _mask_stft_repr(self, stft_repr, context): self._warm_group_cache(stft_repr); mask = self._forward_mask_core(stft_repr); stft_repr = real_to_complex(stft_repr.unsqueeze(1)); return stft_repr * real_to_complex(mask).to(dtype=stft_repr.dtype)
 def forward_roformer_mask_core(module, stft_repr):
     b, fs, model_t, complex_dim = stft_repr.shape
     x = module.band_split(stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim))
@@ -115,15 +122,16 @@ def stft_roformer(module, raw_audio):
     if raw_audio.ndim == 2: raw_audio = raw_audio.unsqueeze(1)
     batch, audio_channels, audio_length = raw_audio.shape
     assert (not module.stereo and audio_channels == 1) or (module.stereo and audio_channels == 2), ("stereo needs to be set to True if passing in audio signal that is stereo (channel dimension of 2). " "also need to be False if mono (channel dimension of 1)")
-    stft_window = module.stft_window(device)
+    stft_window = module.stft_window(torch.device("cpu") if is_directml_device(raw_audio) else device)
     try:
-        stft_repr = torch.stft(raw_audio.reshape(batch * audio_channels, audio_length), **module.stft_kwargs, window=stft_window, return_complex=True)
+        stft_repr = stft_complex(raw_audio.reshape(batch * audio_channels, audio_length), **module.stft_kwargs, window=stft_window, return_complex=True)
     except RuntimeError:  # older MPS torch.stft: fall back to CPU
-        flat = raw_audio.reshape(batch * audio_channels, audio_length)
-        stft_repr = torch.stft(flat.cpu() if x_is_mps else flat, **module.stft_kwargs, window=stft_window.cpu() if x_is_mps else stft_window, return_complex=True).to(device)
-    stft_repr = torch.view_as_real(stft_repr).reshape(batch, audio_channels, -1, stft_repr.shape[-1], 2)
+        if not x_is_mps: raise
+        flat = raw_audio.reshape(batch * audio_channels, audio_length).cpu()
+        stft_repr = torch.stft(flat, **module.stft_kwargs, window=stft_window.cpu(), return_complex=True).to(device)
+    stft_repr = spectrum_to_real(stft_repr, raw_audio).reshape(batch, audio_channels, -1, stft_repr.shape[-1], 2)
     b, s, f, t, c = stft_repr.shape
-    return (stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c), SpectralContext(batch, audio_channels, f, audio_length, stft_window, x_is_mps))
+    return (stft_repr.permute(0, 2, 1, 3, 4).reshape(b, f * s, t, c), SpectralContext(batch, audio_channels, f, audio_length, stft_window, x_is_mps, device))
 def istft_roformer(module, stft_repr, context, length):
     b, n, _, t = stft_repr.shape
     stft_repr = (stft_repr.reshape(b, n, context.freq_bins, context.channels, t).permute(0, 1, 3, 2, 4) .reshape(b * n * context.channels, context.freq_bins, t))
@@ -131,8 +139,10 @@ def istft_roformer(module, stft_repr, context, length):
     try:
         recon_audio = torch.istft(stft_repr, **module.stft_kwargs, window=context.stft_window, return_complex=False, length=length)
     except RuntimeError:  # older MPS torch.istft: fall back to CPU
-        recon_audio = torch.istft(stft_repr.cpu() if context.x_is_mps else stft_repr, **module.stft_kwargs, window=context.stft_window.cpu() if context.x_is_mps else context.stft_window, return_complex=False, length=length).to(context.stft_window.device)
+        if not context.x_is_mps: raise
+        recon_audio = torch.istft(stft_repr.cpu(), **module.stft_kwargs, window=context.stft_window.cpu(), return_complex=False, length=length).to(context.device)
     recon_audio = recon_audio.reshape(context.batch, n, context.channels, recon_audio.shape[-1])
+    if is_directml_device(context.device): recon_audio = recon_audio.to(context.device)
     return recon_audio[:, 0] if n == 1 else recon_audio
 def forward_spectral_roformer(module, raw_audio, match_input_audio_length=True): stft_repr, context = stft_roformer(module, raw_audio); return istft_roformer(module, module._mask_stft_repr(stft_repr, context), context, context.audio_length if match_input_audio_length else None)
 def forward_bandsplit_roformer(module, raw_audio): return forward_spectral_roformer(module, raw_audio, match_input_audio_length=True)

@@ -3,6 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
 from .attend import Attend
+from ...dml_backend import is_directml_device
 _CUDA_ATTENTION_BACKEND_ALIASES = {"auto": "auto", "torch": "default", "default": "default", "sdpa": "default", "flash": "flash", "flash_attention": "flash", "cudnn": "cudnn", "cudnn_attn": "cudnn", "cudnn_attention": "cudnn", "efficient": "efficient", "mem_efficient": "efficient", "memory_efficient": "efficient", "math": "math", "xformers": "xformers"}
 _SDPA_BACKEND_ENUM_NAMES = {"flash": "FLASH_ATTENTION", "cudnn": "CUDNN_ATTENTION", "efficient": "EFFICIENT_ATTENTION", "math": "MATH"}
 _MPS_BACKENDS = ("torch", "mlx", "mlx_attention", "mlx_transformer")
@@ -42,7 +43,7 @@ def _sdpa_with_backend(q, k, v, dropout_p, backend, scale=None):
         return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, scale=scale)
 def _xformers_attention(q, k, v, dropout_p): import xformers.ops as xops; return xops.memory_efficient_attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), p=dropout_p).transpose(1, 2)
 def apply_rotary_emb_fast(cos, sin, t):
-    if t.dtype == torch.float32 or (t.is_cuda and t.dtype == torch.float16):
+    if not is_directml_device(t) and (t.dtype == torch.float32 or (t.is_cuda and t.dtype == torch.float16)):
         # complex-multiply path: one fused mul per pair instead of 4 muls + 2 strided writes (~4.7x on this op).
         # fp32 drift vs the strided form is ~8 ulp (fma reassociation) — far inside the 1e-4 parity gate.
         rot = torch.complex(cos, sin)
@@ -94,6 +95,7 @@ class Attention(Module):
     def _use_mlx_attention_layer(self, x): return (self.flash and not self.training and self.mps_attention_backend == "mlx_attention" and x.device.type == "mps" and (x.dtype == torch.float16 or torch.is_autocast_enabled("mps")) and x.shape[-2] >= self.mps_mlx_min_tokens)
     def _use_mlx_sdpa(self, q): return (self.flash and not self.training and self.mps_attention_backend == "mlx" and q.device.type == "mps" and q.dtype == torch.float16 and q.shape[-2] >= self.mps_mlx_min_tokens)
     def _attention(self, q, k, v):
+        if is_directml_device(q): return self.attend(q, k, v)
         if self._use_mlx_sdpa(q):
             try:
                 from .mlx_attention import mlx_bridge_sdpa
