@@ -10,6 +10,14 @@ def is_directml_device(value):
     return getattr(device, "type", None) == "privateuseone" or isinstance(device, str) and device.split(":", 1)[0] == "privateuseone"
 
 
+def inference_checkpoint(value):
+    """Bound queued DirectML inference resources without changing the output tensor."""
+    if not isinstance(value, torch.Tensor) or torch.is_grad_enabled() or not is_directml_device(value) or not value.is_floating_point() or value.numel() == 0: return value
+    # torch-directml 0.2.5 has no public synchronization API; a scalar read waits for queued block temporaries.
+    value[(0,) * value.ndim].detach().cpu().item()
+    return value
+
+
 def _cpu_spectral_kwargs(kwargs):
     kwargs = dict(kwargs)
     if kwargs.get("window") is not None: kwargs["window"] = kwargs["window"].to(device="cpu", dtype=torch.float32)
@@ -113,8 +121,36 @@ def bilinear_resize(value, size):
     return top * (1 - wy) + bottom * wy
 
 
+_ATTENTION_SCORE_BUDGET_BYTES = 64 * 1024 * 1024
+
+
+def _chunked_attention(q, k, v, *, is_causal=False, scale=None):
+    """Evaluate complete attention in bounded query tiles; keys and values stay complete."""
+    leading = torch.broadcast_shapes(q.shape[:-2], k.shape[:-2], v.shape[:-2])
+    queries, keys = q.shape[-2], k.shape[-2]
+    if queries == 0 or keys == 0: return q.new_zeros((*leading, queries, v.shape[-1]))
+    row_bytes = max(1, prod(leading) * keys * q.element_size())
+    query_step = max(1, min(queries, _ATTENTION_SCORE_BUDGET_BYTES // row_bytes))
+    factor, transposed_keys = q.shape[-1] ** -0.5 if scale is None else scale, k.transpose(-2, -1).contiguous()
+    values, outputs = v.contiguous(), []
+    key_positions = torch.arange(keys, device="cpu") if is_causal else None
+    for start in range(0, queries, query_step):
+        end = min(start + query_step, queries)
+        scores = torch.matmul(q[..., start:end, :].contiguous(), transposed_keys) * factor
+        if is_causal:
+            allowed = key_positions[None, :] <= torch.arange(start, end, device="cpu")[:, None]
+            scores = scores.masked_fill(~allowed.to(q.device), float("-inf"))
+        outputs.append(inference_checkpoint(torch.matmul(scores.softmax(dim=-1), values)))
+    # DirectML slice-copy can misplace rows with nonzero offsets; concatenate completed tiles instead.
+    return inference_checkpoint(torch.cat(outputs, dim=-2))
+
+
 def scaled_dot_product_attention(q, k, v, *, dropout_p=0.0, is_causal=False, scale=None):
     if not is_directml_device(q): return F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
+    leading = torch.broadcast_shapes(q.shape[:-2], k.shape[:-2], v.shape[:-2])
+    score_bytes = prod(leading) * q.shape[-2] * k.shape[-2] * q.element_size()
+    if not torch.is_grad_enabled() and dropout_p == 0.0 and score_bytes > _ATTENTION_SCORE_BUDGET_BYTES:
+        return _chunked_attention(q, k, v, is_causal=is_causal, scale=scale)
     scores = torch.matmul(q, k.transpose(-2, -1)) * (q.shape[-1] ** -0.5 if scale is None else scale)
     if is_causal:
         mask = torch.ones(q.shape[-2], k.shape[-2], dtype=torch.bool, device=q.device).tril()

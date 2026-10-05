@@ -15,6 +15,143 @@ def test_device_detection_uses_torch_backend_and_not_gpu_vendor():
     assert not is_directml_device("cuda:0")
 
 
+def test_inference_checkpoint_preserves_cpu_views_without_transfer(monkeypatch):
+    def unexpected_transfer(value): raise AssertionError("CPU checkpoints must not transfer tensors")
+    value = torch.arange(24, dtype=torch.float64).reshape(2, 3, 4)[:, 1:, ::2]
+    expected, version = value.clone(), value._version
+    monkeypatch.setattr(torch.Tensor, "cpu", unexpected_transfer)
+    with torch.no_grad(): actual = dml_backend.inference_checkpoint(value)
+    assert actual is value and actual._version == version and not actual.is_contiguous()
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_inference_checkpoint_preserves_training_gradients(monkeypatch):
+    def unexpected_transfer(value): raise AssertionError("Training checkpoints must not transfer tensors")
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(torch.Tensor, "cpu", unexpected_transfer)
+    source = torch.tensor([1., 2., 3., 4.], dtype=torch.float64, requires_grad=True)
+    value = source.square()[::2]
+    actual = dml_backend.inference_checkpoint(value)
+    assert actual is value and actual.grad_fn is value.grad_fn
+    actual.sum().backward()
+    torch.testing.assert_close(source.grad, torch.tensor([2., 0., 6., 0.], dtype=torch.float64), rtol=0, atol=0)
+
+
+def test_inference_checkpoint_reads_only_one_scalar_and_preserves_output(monkeypatch):
+    source = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    value = source[:, 1:, ::2]
+    expected, version, transfers = value.clone(), value._version, []
+    native_cpu = torch.Tensor.cpu
+    def capture_transfer(tensor): transfers.append((tensor.ndim, tensor.numel(), tensor.requires_grad)); return native_cpu(tensor)
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(torch.Tensor, "cpu", capture_transfer)
+    with torch.no_grad(): actual = dml_backend.inference_checkpoint(value)
+    assert transfers == [(0, 1, False)]
+    assert actual is value and actual.dtype == torch.float32 and actual._version == version
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("value", [torch.empty(0), torch.ones(2, dtype=torch.complex64), torch.ones(2, dtype=torch.int64), None])
+def test_inference_checkpoint_skips_empty_and_non_real_values(value, monkeypatch):
+    def unexpected_transfer(value): raise AssertionError("Unsupported checkpoints must not transfer tensors")
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(torch.Tensor, "cpu", unexpected_transfer)
+    with torch.no_grad(): assert dml_backend.inference_checkpoint(value) is value
+
+
+def _strided_attention_inputs(dtype, layout, queries=13, keys=17):
+    leading = {"batched": ((2, 3), (2, 3), (2, 3)), "broadcast": ((2, 1), (1, 3), (2, 3)), "value_broadcast": ((2, 1), (1, 1), (1, 3)), "matrix": ((), (), ())}[layout]
+    return tuple(torch.randn(*shape, length, width * 2, dtype=dtype)[..., 1::2] for shape, length, width in zip(leading, (queries, keys, keys), (8, 8, 6)))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("layout,queries", [("batched", 13), ("broadcast", 13), ("value_broadcast", 13), ("matrix", 43)])
+@pytest.mark.parametrize("is_causal,scale", [(False, None), (True, None), (False, 0.17), (True, 0.17)])
+def test_chunked_attention_matches_native_with_strided_broadcast_rectangular_inputs(dtype, layout, queries, is_causal, scale, monkeypatch):
+    torch.manual_seed(7)
+    q, k, v = _strided_attention_inputs(dtype, layout, queries)
+    assert all(not value.is_contiguous() for value in (q, k, v))
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 2560)
+    with torch.no_grad():
+        expected = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=is_causal, scale=scale)
+        actual = dml_backend._chunked_attention(q, k, v, is_causal=is_causal, scale=scale)
+    assert actual.device == q.device and actual.dtype == dtype and actual.shape == expected.shape
+    tolerance = 2e-6 if dtype == torch.float32 else 1e-12
+    torch.testing.assert_close(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("queries,keys", [(0, 17), (13, 0), (0, 0)])
+def test_chunked_attention_preserves_empty_query_and_key_shapes(dtype, queries, keys, monkeypatch):
+    q, k, v = _strided_attention_inputs(dtype, "broadcast", queries, keys)
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 2560)
+    with torch.no_grad():
+        expected = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True)
+        actual = dml_backend._chunked_attention(q, k, v, is_causal=True)
+    assert actual.shape == (2, 3, queries, 6) and actual.device == q.device and actual.dtype == dtype
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_scaled_attention_preserves_training_gradients_without_chunking(monkeypatch):
+    def unexpected_chunking(*args, **kwargs): raise AssertionError("Gradient-enabled attention must use the dense path")
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 1)
+    monkeypatch.setattr(dml_backend, "_chunked_attention", unexpected_chunking)
+    torch.manual_seed(11)
+    inputs = tuple(torch.randn(2, length, width, dtype=torch.float64, requires_grad=True) for length, width in ((7, 4), (5, 4), (5, 6)))
+    actual = dml_backend.scaled_dot_product_attention(*inputs, is_causal=True, scale=0.17)
+    expected = torch.nn.functional.scaled_dot_product_attention(*inputs, is_causal=True, scale=0.17)
+    actual_gradients = torch.autograd.grad(actual.square().sum(), inputs)
+    expected_gradients = torch.autograd.grad(expected.square().sum(), inputs)
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(actual_gradients, expected_gradients, rtol=1e-12, atol=1e-12)
+
+
+def test_scaled_attention_preserves_dropout_rng_without_chunking(monkeypatch):
+    def unexpected_chunking(*args, **kwargs): raise AssertionError("Attention dropout must use the dense path")
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 1)
+    monkeypatch.setattr(dml_backend, "_chunked_attention", unexpected_chunking)
+    q, k = torch.zeros(2, 1, 4, dtype=torch.float64), torch.zeros(2, 5, 4, dtype=torch.float64)
+    v = torch.eye(5, dtype=torch.float64).expand(2, -1, -1)
+    with torch.no_grad():
+        torch.manual_seed(42)
+        expected = torch.nn.functional.dropout(torch.full((2, 1, 5), 0.2, dtype=torch.float64), p=0.25, training=True)
+        torch.manual_seed(42)
+        actual = dml_backend.scaled_dot_product_attention(q, k, v, dropout_p=0.25)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_scaled_attention_keeps_native_cpu_backend_without_chunking(monkeypatch):
+    def unexpected_chunking(*args, **kwargs): raise AssertionError("Native CPU attention must retain its backend")
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 1)
+    monkeypatch.setattr(dml_backend, "_chunked_attention", unexpected_chunking)
+    q, k, v = _strided_attention_inputs(torch.float32, "broadcast")
+    with torch.no_grad():
+        actual = dml_backend.scaled_dot_product_attention(q, k, v, is_causal=True, scale=0.17)
+        expected = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=True, scale=0.17)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("training", [False, True])
+def test_directml_attend_route_preserves_scale_and_training_dropout(training, monkeypatch):
+    from pymss_core.modules.bs_roformer import attend as attend_module
+    module = attend_module.Attend(flash=False, dropout=0.25, scale=0.17).train(training)
+    torch.manual_seed(7)
+    inputs = _strided_attention_inputs(torch.float64, "batched")
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 2560)
+    monkeypatch.setattr(attend_module, "is_directml_device", lambda value: False)
+    with torch.no_grad():
+        torch.manual_seed(42)
+        reference = module(*inputs)
+    monkeypatch.setattr(attend_module, "is_directml_device", lambda value: True)
+    monkeypatch.setattr(dml_backend, "is_directml_device", lambda value: True)
+    with torch.no_grad():
+        torch.manual_seed(42)
+        actual = module(*inputs)
+    torch.testing.assert_close(actual, reference, rtol=1e-12, atol=1e-12)
+
+
 def test_native_complex_helpers_preserve_double_precision():
     real, imag = torch.randn(8, dtype=torch.float64), torch.randn(8, dtype=torch.float64)
     spectrum = dml_backend.complex_from_parts(real, imag)
@@ -80,6 +217,133 @@ def dml_device():
     directml = pytest.importorskip("torch_directml")
     if directml.device_count() == 0: pytest.skip("DirectML adapter unavailable")
     return directml.device(0)
+
+
+def test_directml_inference_checkpoint_preserves_device_values_and_view(dml_device):
+    source = torch.arange(24, dtype=torch.float32).reshape(2, 3, 4)
+    value = source.to(dml_device)[:, 1:, ::2]
+    version = value._version
+    with torch.no_grad(): actual = dml_backend.inference_checkpoint(value)
+    assert actual is value and actual.device == dml_device and actual.dtype == torch.float32
+    assert actual._version == version and not actual.is_contiguous()
+    torch.testing.assert_close(actual.cpu(), source[:, 1:, ::2], rtol=0, atol=0)
+
+
+def test_directml_roformer_chunked_attention_matches_cpu_network(dml_device, monkeypatch):
+    from pymss_core.modules.bs_roformer import BSRoformer
+    torch.manual_seed(7)
+    model = BSRoformer(**_roformer_kwargs(freqs_per_bands=(1,) * 9)).eval()
+    audio = torch.randn(1, 1, 64)
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 2560)
+    with torch.no_grad(): reference = model(audio)
+    clear_model_runtime_caches(model)
+    model.to(dml_device)
+    try:
+        with torch.no_grad(): actual = model(audio.to(dml_device))
+        assert actual.device == dml_device and actual.dtype == torch.float32 and actual.shape == reference.shape
+        assert torch.isfinite(actual.cpu()).all()
+        torch.testing.assert_close(actual.cpu(), reference, rtol=5e-3, atol=5e-3)
+    finally:
+        clear_model_runtime_caches(model)
+        model.to("cpu")
+
+
+@pytest.mark.parametrize("layout,queries,keys,is_causal,scale", [
+    ("batched", 17, 13, True, None),
+    ("broadcast", 13, 17, True, 0.17),
+    ("value_broadcast", 17, 13, False, 0.17),
+    ("matrix", 43, 17, False, None),
+])
+def test_directml_chunked_attention_preserves_all_strided_broadcast_query_rows(layout, queries, keys, is_causal, scale, dml_device, monkeypatch):
+    torch.manual_seed(7)
+    inputs = _strided_attention_inputs(torch.float32, layout, queries, keys)
+    assert all(value.storage_offset() > 0 and not value.is_contiguous() for value in inputs)
+    # Exercise device-side strided slices and verify their exact input values.
+    gpu_inputs = tuple(torch.stack((torch.zeros_like(value), value), dim=-1).flatten(-2).to(dml_device)[..., 1::2] for value in inputs)
+    assert all(not value.is_contiguous() for value in gpu_inputs)
+    for gpu_input, cpu_input in zip(gpu_inputs, inputs):
+        assert gpu_input.shape == cpu_input.shape
+        torch.testing.assert_close(gpu_input.cpu(), cpu_input, rtol=0, atol=0)
+    monkeypatch.setattr(dml_backend, "_ATTENTION_SCORE_BUDGET_BYTES", 2560)
+    with torch.no_grad():
+        expected = torch.nn.functional.scaled_dot_product_attention(*inputs, is_causal=is_causal, scale=scale)
+        actual = dml_backend.scaled_dot_product_attention(*gpu_inputs, is_causal=is_causal, scale=scale)
+    assert actual.device == dml_device and actual.dtype == torch.float32 and actual.shape == expected.shape
+    torch.testing.assert_close(actual.cpu(), expected, rtol=5e-6, atol=5e-6)
+
+
+def test_directml_packed_mask_estimators_preserve_all_stems_and_frequency_offsets(dml_device):
+    from pymss_core.modules.bs_roformer.bands import MaskEstimator
+    torch.manual_seed(7)
+    estimators = torch.nn.ModuleList([MaskEstimator(16, (4, 8, 4, 12), 2, 4) for _ in range(2)]).eval()
+    base = torch.randn(2, 34, 4, 32)
+    inputs = base[:, 1::2, :, 1::2]
+    assert inputs.storage_offset() > 0 and not inputs.is_contiguous()
+    with torch.no_grad():
+        reference = torch.stack([estimator(inputs) for estimator in estimators], dim=1)
+        cpu_packed = MaskEstimator.forward_packed_estimators(estimators, inputs)
+    assert cpu_packed is not None
+    torch.testing.assert_close(cpu_packed, reference, rtol=2e-6, atol=2e-6)
+    clear_model_runtime_caches(estimators)
+    estimators.to(dml_device)
+    try:
+        gpu_inputs = base.to(dml_device)[:, 1::2, :, 1::2]
+        assert gpu_inputs.shape == inputs.shape
+        torch.testing.assert_close(gpu_inputs.cpu(), inputs, rtol=0, atol=0)
+        with torch.no_grad(): actual = MaskEstimator.forward_packed_estimators(estimators, gpu_inputs)
+        assert actual is not None and actual.device == dml_device and actual.shape == (2, 2, 17, 28)
+        torch.testing.assert_close(actual.cpu(), reference, rtol=5e-6, atol=5e-6)
+    finally:
+        clear_model_runtime_caches(estimators)
+        estimators.to("cpu")
+
+
+def test_directml_mask_time_chunks_match_original_core_with_tail_and_sliced_inputs(dml_device):
+    from pymss_core.modules.bs_roformer import BSRoformer
+    torch.manual_seed(7)
+    model = BSRoformer(**_roformer_kwargs(dim=16, heads=2, dim_head=8, stereo=True, num_stems=2,
+        freqs_per_bands=(1, 2, 1, 3), stft_n_fft=12, stft_hop_length=3, stft_win_length=12, mask_estimator_depth=2)).eval()
+    base = torch.randn(2, 262, 4, 32)
+    inputs = base[:, 1::2, :, 1::2]
+    assert inputs.storage_offset() > 0 and not inputs.is_contiguous()
+    with torch.no_grad(): reference = model._estimate_masks_core(inputs)
+    clear_model_runtime_caches(model)
+    model.to(dml_device)
+    try:
+        gpu_inputs = base.to(dml_device)[:, 1::2, :, 1::2]
+        assert gpu_inputs.shape == inputs.shape and gpu_inputs.shape[1] == 131
+        torch.testing.assert_close(gpu_inputs.cpu(), inputs, rtol=0, atol=0)
+        with torch.no_grad(): original_core = model._estimate_masks_core(gpu_inputs)
+        torch.testing.assert_close(original_core.cpu(), reference, rtol=5e-6, atol=5e-6)
+        with torch.no_grad(): actual = model._estimate_masks(gpu_inputs)
+        assert actual.device == dml_device and actual.dtype == reference.dtype and actual.shape == (2, 2, 131, 28)
+        torch.testing.assert_close(actual.cpu(), reference, rtol=5e-6, atol=5e-6)
+    finally:
+        clear_model_runtime_caches(model)
+        model.to("cpu")
+
+
+@pytest.mark.parametrize("layout", ["qkv", "strided"])
+def test_directml_rotary_embedding_preserves_all_even_odd_values_for_sliced_inputs(layout, dml_device):
+    from pymss_core.modules.bs_roformer.transformer import apply_rotary_emb_fast, qkv_to_bnhd
+    torch.manual_seed(7)
+    if layout == "qkv":
+        base = torch.randn(2, 17, 72)
+        inputs = qkv_to_bnhd(base, 3)[1]
+        gpu_inputs = qkv_to_bnhd(base.to(dml_device), 3)[1]
+    else:
+        base = torch.randn(2, 17, 3, 16)
+        inputs, gpu_inputs = base[..., 1::2], base.to(dml_device)[..., 1::2]
+    assert inputs.storage_offset() > 0 and not inputs.is_contiguous()
+    assert gpu_inputs.shape == inputs.shape
+    torch.testing.assert_close(gpu_inputs.cpu(), inputs, rtol=0, atol=0)
+    angles = torch.randn(1, 17, 1, 4)
+    cos, sin = angles.cos(), angles.sin()
+    even, odd = inputs[..., ::2], inputs[..., 1::2]
+    reference = torch.stack((even * cos - odd * sin, odd * cos + even * sin), dim=-1).flatten(-2)
+    with torch.no_grad(): actual = apply_rotary_emb_fast(cos.to(dml_device), sin.to(dml_device), gpu_inputs)
+    assert actual.device == dml_device and actual.dtype == inputs.dtype and actual.shape == inputs.shape
+    torch.testing.assert_close(actual.cpu(), reference, rtol=5e-6, atol=5e-6)
 
 
 def test_directml_spectral_boundaries_keep_complex_tensors_on_cpu(dml_device, monkeypatch):

@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from .mlx_backend import MpsBackendMixin
 from .spectrogram import SubbandSTFT, forward_subband_mask_model, get_activation
+from ..dml_backend import inference_checkpoint
 def get_norm(norm_type):
     if norm_type == "BatchNorm": return nn.BatchNorm2d
     if norm_type == "InstanceNorm": return lambda c: nn.InstanceNorm2d(c, affine=True)
@@ -27,7 +28,7 @@ class TFC_TDF(nn.Module):
             return out
         self.blocks = nn.ModuleList([block() for _ in range(l)])
     def forward(self, x):
-        for block in self.blocks: s = block.shortcut(x); x = block.tfc2((x := block.tfc1(x)) + block.tdf(x)) + s
+        for block in self.blocks: s = block.shortcut(x); x = inference_checkpoint(block.tfc2((x := block.tfc1(x)) + block.tdf(x)) + s)
         return x
 class TFC_TDF_net(MpsBackendMixin, nn.Module):
     def __init__(self, config):

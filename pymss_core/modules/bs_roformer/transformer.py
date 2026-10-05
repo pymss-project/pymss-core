@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 from torch.nn import Module, ModuleList
 from .attend import Attend
-from ...dml_backend import is_directml_device
+from ...dml_backend import is_directml_device, inference_checkpoint
 _CUDA_ATTENTION_BACKEND_ALIASES = {"auto": "auto", "torch": "default", "default": "default", "sdpa": "default", "flash": "flash", "flash_attention": "flash", "cudnn": "cudnn", "cudnn_attn": "cudnn", "cudnn_attention": "cudnn", "efficient": "efficient", "mem_efficient": "efficient", "memory_efficient": "efficient", "math": "math", "xformers": "xformers"}
 _SDPA_BACKEND_ENUM_NAMES = {"flash": "FLASH_ATTENTION", "cudnn": "CUDNN_ATTENTION", "efficient": "EFFICIENT_ATTENTION", "math": "MATH"}
 _MPS_BACKENDS = ("torch", "mlx", "mlx_attention", "mlx_transformer")
@@ -167,4 +167,4 @@ class Transformer(Module):
                 self._pymss_mlx_backend_error = repr(exc)
                 self.set_mps_attention_backend(default_mps_attention_backend(), self.mps_mlx_min_tokens)
         for attn, ff in self.layers: x = attn(x) + x; x = ff(x) + x
-        return self.norm(x)
+        return inference_checkpoint(self.norm(x))

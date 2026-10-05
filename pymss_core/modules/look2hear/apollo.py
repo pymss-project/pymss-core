@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from ..mlx_backend import MpsBackendMixin
-from ...dml_backend import is_directml_device, complex_from_parts, real_to_model, stft_complex, istft_complex, scaled_dot_product_attention, DirectMLGLU, glu as backend_glu
+from ...dml_backend import is_directml_device, complex_from_parts, real_to_model, stft_complex, istft_complex, scaled_dot_product_attention, DirectMLGLU, glu as backend_glu, inference_checkpoint
 def _cached_inference_tensor(module, name, tensor, input, version):
     # fp16/bf16 CUDA inference: memoize casted weights; keyed on _version so in-place param updates invalidate
     if tensor is None or (tensor.device == input.device and tensor.dtype == input.dtype): return tensor
@@ -85,7 +85,7 @@ class Roformer(nn.Module):
         attention_output = scaled_dot_product_attention(Q_rot.contiguous(), K_rot.contiguous(), V.contiguous() if torch.is_grad_enabled() else V, dropout_p=self.attention_drop, is_causal=self.causal)
         output = pointwise_conv1d(attention_output.mT.reshape(B, -1, T), self.output) + input
         gate, z = self.MLP[2](pointwise_conv1d(self.MLP[0](output), self.MLP[1])).chunk(2, dim=1)
-        return output + pointwise_conv1d(F.silu(gate) * z, self.MLP_output), (K_rot, V)
+        return inference_checkpoint(output + pointwise_conv1d(F.silu(gate) * z, self.MLP_output)), (K_rot, V)
 class ConvActNorm1d(nn.Module):
     def __init__(self, in_channel, hidden_channel, kernel=7, causal=False):
         super().__init__()
@@ -109,7 +109,7 @@ class BSNet(nn.Module):
         B, nband, _, T = input.shape
         band, _ = self.band_net(input.permute(0, 3, 2, 1).reshape(B * T, -1, nband))
         band = band.reshape(B, T, -1, nband).permute(0, 3, 2, 1)
-        return self.seq_net(band.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)
+        return inference_checkpoint(self.seq_net(band.reshape(B * nband, -1, T)).reshape(B, nband, -1, T))
 class Apollo(MpsBackendMixin, nn.Module):
     def __init__(self, sr, win, feature_dim, layer):
         super().__init__()

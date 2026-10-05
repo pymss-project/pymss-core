@@ -1,7 +1,7 @@
 from functools import partial
 import torch
 from torch import nn
-from ...dml_backend import is_directml_device, real_to_complex, spectrum_to_real, stft_complex
+from ...dml_backend import is_directml_device, real_to_complex, spectrum_to_real, stft_complex, inference_checkpoint
 from ..mlx_backend import MpsBackendMixin
 from .bands import BandSplit, MaskEstimator
 from .conformer import Conformer
@@ -93,6 +93,12 @@ class RoformerRuntimeMixin(MpsBackendMixin):
         self.band_split.warm_group_cache(tensor.device, tensor.dtype)
         self._pymss_group_cache_warm_key = key
     def _estimate_masks(self, x):
+        if is_directml_device(x) and not torch.is_grad_enabled() and not self.training and x.shape[1] > 64:
+            # Ordinary mask MLPs are independent at each time point; attention keeps its full context.
+            pieces = [inference_checkpoint(self._estimate_masks_core(x[:, start:start+64].contiguous())) for start in range(0, x.shape[1], 64)]
+            return inference_checkpoint(torch.cat(pieces, dim=2))
+        return self._estimate_masks_core(x)
+    def _estimate_masks_core(self, x):
         estimators = self._active_mask_estimators()
         if self._active_source_indices() is not None:
             packed = MaskEstimator.forward_packed_estimators(estimators, x)
