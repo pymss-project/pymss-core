@@ -35,7 +35,7 @@ class SeqBandModellingModule(TimeFrequencyModellingModule):
             for sbm_t, sbm_f in self.seqband: z = sbm_t(z) + sbm_f(z.transpose(1, 2)).transpose(1, 2)
             return z
         if isinstance(self.seqband, nn.Sequential):
-            if self.checkpoint_segments: return checkpoint_sequential(self.seqband, self.checkpoint_segments, z, use_reentrant=False)
+            if self.checkpoint_segments and self.training: return checkpoint_sequential(self.seqband, self.checkpoint_segments, z, use_reentrant=False)
             return self.seqband(z)
         for sbm in self.seqband: z = sbm(z).transpose(1, 2)
         return z

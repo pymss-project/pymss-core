@@ -21,11 +21,32 @@ def grouped_linear(x, weight, bias):
     leading_shape = x.shape[:-2]
     x = x.reshape(-1, group_count, in_features).transpose(0, 1)
     w = weight.transpose(1, 2)
-    if bias is None:
-        out = torch.bmm(x, w)
-    else:
-        if bias.dtype != x.dtype or bias.device != x.device: bias = bias.to(device=x.device, dtype=x.dtype)
-        out = torch.baddbmm(bias.unsqueeze(1), x, w)
+    if bias is not None and (bias.dtype != x.dtype or bias.device != x.device): bias = bias.to(device=x.device, dtype=x.dtype)
+    try:
+        if bias is None:
+            out = torch.bmm(x, w)
+        else:
+            out = torch.baddbmm(bias.unsqueeze(1), x, w)
+    except RuntimeError as error:
+        if x.device.type != "supa" or ("Sublas" not in str(error) and "no valid backend" not in str(error)):
+            raise
+        # batched GEMM shape limits (SUBLAS ErrorCode 7): per-group 2-D matmul
+        # covers the same algebra with shapes the 2-D kernels accept, then CPU
+        try:
+            outs = []
+            for g in range(group_count):
+                y = torch.matmul(x[g], w[g])
+                if bias is not None: y = y + bias[g]
+                outs.append(y)
+            out = torch.stack(outs, dim=0)
+        except RuntimeError:
+            cpu_x, cpu_w = x.cpu(), w.cpu()
+            outs = []
+            for g in range(group_count):
+                y = torch.matmul(cpu_x[g], cpu_w[g])
+                if bias is not None: y = y + bias[g].cpu()
+                outs.append(y)
+            out = torch.stack(outs, dim=0).to(x.device)
     return out.transpose(0, 1).reshape(*leading_shape, group_count, out_features)
 def inference_tanh(x): return torch.tanh(x) if torch.is_grad_enabled() else x.tanh_()
 def stack_linears(linears, device, dtype): weight = torch.stack([linear.weight.to(device=device, dtype=dtype) for linear in linears], dim=0); bias = None if linears[0].bias is None else torch.stack([linear.bias.to(device=device, dtype=dtype) for linear in linears]); return weight, bias

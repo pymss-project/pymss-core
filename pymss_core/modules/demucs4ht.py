@@ -137,7 +137,15 @@ class HTDemucs(MpsBackendMixin, nn.Module):
                 if tenc.empty: inject = xt
                 else: saved_t.append(xt)
             x = encode(x, inject)
-            if idx == 0 and self.freq_emb is not None: frs = torch.arange(x.shape[-2], device=x.device); x = x + self.freq_emb_scale * self.freq_emb(frs).t()[None, :, :, None].expand_as(x)
+            if idx == 0 and self.freq_emb is not None:
+                frs = torch.arange(x.shape[-2], device=x.device)
+                emb = (self.freq_emb_scale * self.freq_emb(frs).t())[None, :, :, None].expand_as(x)
+                try:
+                    x = x + emb.contiguous()
+                except RuntimeError:
+                    # broadcast pointwise can hit invalid-parameter launches on
+                    # the vendor stack; same-shape CPU add is exact
+                    x = (x.cpu() + emb.contiguous().cpu()).to(x.device)
             saved.append((x, skip_length))
         if self.crosstransformer:
             if self.bottom_channels: b, c, f, t = x.shape; x = self.channel_upsampler(x.reshape(b, c, f * t)).reshape(b, -1, f, t); xt = self.channel_upsampler_t(xt)

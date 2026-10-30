@@ -126,6 +126,16 @@ class LegacyLocalState(nn.Module):
         if ndecay: self.query_decay = nn.Conv1d(channels, heads * ndecay, 1); self.query_decay.weight.data *= 0.01; self.query_decay.bias.data[:] = -2
         self.proj = nn.Conv1d(channels + heads * nfreqs, channels, 1)
     def forward(self, x):
+        if x.device.type == "supa":
+            # in-place masked_fill_/einsum combos hit "_copy_from_and_resize"
+            # on the vendor stack; the legacy attention is tiny -- CPU roundtrip
+            # (self moves to CPU once; weights stay there for this path)
+            device = x.device
+            if next(self.parameters()).device.type != "cpu":
+                self.cpu()
+            return self._forward_reference(x.cpu()).to(device)
+        return self._forward_reference(x)
+    def _forward_reference(self, x):
         batch, _, time = x.shape
         heads = self.heads
         indexes = torch.arange(time, device=x.device, dtype=x.dtype)
@@ -187,8 +197,30 @@ def _pad1d(x, paddings, mode="constant", value=0.0):
         paddings = (left - extra_left, right - extra_right)
         x = F.pad(x, (extra_left, extra_right))
     return F.pad(x, paddings, mode, value)
-def _spectro(x, n_fft=512, hop_length=None, pad=0): *other, length = x.shape; z = torch.stft(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect"); return z.view(*other, z.shape[-2], z.shape[-1])
-def _ispectro(z, hop_length=None, length=None, pad=0): *other, freqs, frames = z.shape; n_fft = 2 * freqs - 2; x = torch.istft(z.reshape(-1, freqs, frames), n_fft, hop_length, window=_hann(n_fft // (1 + pad), z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True); return x.view(*other, x.shape[-1])
+def _spectro(x, n_fft=512, hop_length=None, pad=0):
+    """ ``torch.stft`` wrapper; vendors without a complex STFT use npu_fft. """
+    from pymss_core.npu_fft import stft_npu, torch_stft_blocked
+    *other, length = x.shape
+    flat = x.reshape(-1, length)
+    n_fft_full = n_fft * (1 + pad)
+    kwargs = dict(hop_length=hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
+    if torch_stft_blocked(x.device):
+        z = stft_npu(flat, n_fft_full, **kwargs)
+    else:
+        z = torch.stft(flat, n_fft_full, **kwargs)
+    return z.view(*other, z.shape[-2], z.shape[-1])
+def _ispectro(z, hop_length=None, length=None, pad=0):
+    """ ``torch.istft`` wrapper; vendors without a complex STFT use npu_fft. """
+    from pymss_core.npu_fft import istft_npu, torch_stft_blocked
+    *other, freqs, frames = z.shape
+    n_fft = 2 * freqs - 2
+    flat = z.reshape(-1, freqs, frames)
+    kwargs = dict(hop_length=hop_length, window=_hann(n_fft // (1 + pad), z.real), win_length=n_fft // (1 + pad), normalized=True, length=length, center=True)
+    if torch_stft_blocked(z.device):
+        x = istft_npu(flat, n_fft, **kwargs)
+    else:
+        x = torch.istft(flat, n_fft, **kwargs)
+    return x.view(*other, x.shape[-1])
 class LegacyHDemucs(nn.Module):
     def __init__(self, sources, audio_channels=2, channels=48, channels_time=None, growth=2, nfft=4096, wiener_iters=0,
                  end_iters=0, wiener_residual=False, cac=True, depth=6, rewrite=True, hybrid=True, hybrid_old=False,
@@ -301,7 +333,19 @@ def overlap_and_add(signal, frame_step):
     output_subframes = (frame_step * (frames - 1) + frame_length) // subframe_length
     frame = torch.arange(0, output_subframes, device=signal.device).unfold(0, subframes_per_frame, subframe_step)
     result = signal.new_zeros(*outer_dimensions, output_subframes, subframe_length)
-    result.index_add_(-2, frame.long().contiguous().view(-1), signal.view(*outer_dimensions, -1, subframe_length))
+    flat_index = frame.long().contiguous().view(-1)
+    flat_signal = signal.view(*outer_dimensions, -1, subframe_length)
+    from pymss_core.device import scatter_add_blocked
+
+    if scatter_add_blocked(signal.device) or signal.dim() > 3:
+        # BIREN aborts ('vector::reserve') on index_add_ with 5-D sources, so the
+        # overlap-add runs as a one-hot matrix multiply instead: same values, no
+        # scatter kernel.
+        from pymss_core.vendor_shims import scatter_add_equivalent
+
+        result = scatter_add_equivalent(flat_signal.movedim(-2, -2), flat_index, -2, output_subframes)
+        return result.view(*outer_dimensions, -1)
+    result.index_add_(-2, flat_index, flat_signal)
     return result.view(*outer_dimensions, -1)
 class LegacyConvTasNet(nn.Module):
     def __init__(self, sources=None, N=256, L=20, B=256, H=512, P=3, X=8, R=4, C=4, audio_channels=2, norm_type="gLN", causal=False, mask_nonlinear="relu", samplerate=44100, segment_length=44100 * 2 * 4, **_):

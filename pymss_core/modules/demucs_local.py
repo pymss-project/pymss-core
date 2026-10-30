@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from pymss_core.npu_fft import istft_npu as _npu_fft_istft, stft_npu as _npu_fft_stft
+from pymss_core.npu_fft import istft_npu as _npu_fft_istft, stft_npu as _npu_fft_stft, torch_stft_blocked
 _HANN_CACHE = {}
 
 
@@ -27,7 +27,7 @@ def pad1d(x, paddings, mode="constant", value=0.0):
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps": x = x.cpu()
-    fn = _npu_fft_stft if x.device.type == "npu" else torch.stft
+    fn = _npu_fft_stft if torch_stft_blocked(x.device) else torch.stft
     z = fn(x.reshape(-1, length), n_fft * (1 + pad), hop_length or n_fft // 4, window=_hann(n_fft, x), win_length=n_fft, normalized=True, center=True, return_complex=True, pad_mode="reflect")
     return z.view(*other, z.shape[-2], z.shape[-1])
 def ispectro(z, hop_length=None, length=None, pad=0):
@@ -35,7 +35,7 @@ def ispectro(z, hop_length=None, length=None, pad=0):
     n_fft = 2 * freqs - 2
     win_length = n_fft // (1 + pad)
     if z.device.type == "mps": z = z.cpu()
-    fn = _npu_fft_istft if z.device.type == "npu" else torch.istft
+    fn = _npu_fft_istft if torch_stft_blocked(z.device) else torch.istft
     x = fn(z.reshape(-1, freqs, frames), n_fft, hop_length, window=_hann(win_length, z.real), win_length=win_length, normalized=True, length=length, center=True)
     return x.view(*other, x.shape[-1])
 def rescale_module(module, reference):
@@ -45,18 +45,104 @@ def rescale_module(module, reference):
             sub.weight.data /= scale
             if sub.bias is not None: sub.bias.data /= scale
 def _freq_dconv(dconv, y): b, c, fr, t = y.shape; return dconv(y.permute(0, 2, 1, 3).reshape(-1, c, t)).view(b, fr, c, t).transpose(1, 2)
+def _raw_lstm_cpu(seq, weights, bias, num_layers, bidirectional):
+    """Reference LSTM loop; torch_br hooks aten::lstm even for CPU tensors."""
+    layer_input = seq
+    idx = 0
+    for _layer in range(num_layers):
+        outputs = []
+        for direction in (0, 1) if bidirectional else (0,):
+            w_ih, w_hh = weights[idx].t().contiguous(), weights[idx + 1].t().contiguous()
+            b_ih = b_hh = None
+            if bias:
+                b_ih, b_hh = weights[idx + 2], weights[idx + 3]
+            idx += 4 if bias else 2
+            x = layer_input.flip(0) if direction else layer_input
+            hidden = w_ih.shape[1] // 4
+            h = x.new_zeros(x.shape[1], hidden)
+            c = torch.zeros_like(h)
+            steps = []
+            for t in range(x.shape[0]):
+                gates = x[t] @ w_ih
+                hg = h @ w_hh
+                if b_ih is not None:
+                    gates = gates + b_ih
+                    hg = hg + b_hh
+                gates = gates + hg
+                i, f, g, o = gates.chunk(4, dim=-1)
+                c = f.sigmoid() * c + i.sigmoid() * g.tanh()
+                h = o.sigmoid() * c.tanh()
+                steps.append(h)
+            out = torch.stack(steps, dim=0)
+            if direction:
+                out = out.flip(0)
+            outputs.append(out)
+        layer_input = torch.cat(outputs, dim=-1) if bidirectional else outputs[0]
+    return layer_input
+
+
 class BLSTM(nn.Module):
     def __init__(self, dim, layers=1, max_steps=None, skip=False): super().__init__(); self.max_steps = max_steps; self.lstm = nn.LSTM(bidirectional=True, num_layers=layers, hidden_size=dim, input_size=dim); self.linear = nn.Linear(2 * dim, dim); self.skip = skip
     def forward(self, x):
+        # The vendor fused-LSTM kernel drifts the time length on SUPA (skip-add
+        # broadcast 800 vs 860) and torch_br hooks aten::lstm/mm even for CPU
+        # tensors; the manual reference loop below runs on the input device with
+        # element ops + small matmuls that all work, and has no length drift.
+        if x.device.type == "supa":
+            return self._forward_reference(x)
+        return self._forward_torch(x)
+    def _forward_reference(self, x):
+        lstm = self.lstm
+
+        def run(batch):  # (N, C, T) -> (N, C, T) through manual LSTM + linear
+            seq = batch.permute(2, 0, 1)
+            weights = [w.detach() for w in list(lstm._flat_weights)]
+            out = _raw_lstm_cpu(seq, weights, lstm.bias, lstm.num_layers, lstm.bidirectional)
+            return self.linear(out).permute(1, 2, 0)
+
         y, framed = x, False
         if self.max_steps is not None and x.shape[-1] > self.max_steps:
             batch, channels, length = x.shape
             width, stride = self.max_steps, self.max_steps // 2
+            covered = width + stride * -(-(length - width) // stride)  # ceil
+            if covered > length:
+                x = torch.nn.functional.pad(x, (0, covered - length))
             frames = x.unfold(-1, width, stride)
             nframes, framed = frames.shape[2], True
-            x = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
-        x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
-        if framed: frames = x.reshape(batch, -1, channels, width); limit = stride // 2; x = torch.cat([frames[:, i, :, limit if i else 0:-limit if i < nframes - 1 or not i else None] for i in range(nframes)], -1)[..., :length]
+            x = run(frames.permute(0, 2, 1, 3).reshape(-1, channels, width))
+        else:
+            x = run(x)
+        if framed:
+            frames = x.reshape(batch, -1, channels, width); limit = stride // 2
+            pieces = []
+            for i in range(nframes):
+                lo = limit if i else 0
+                hi = width if not (i < nframes - 1 or not i) else width - limit
+                pieces.append(frames[:, i, :, lo:hi])
+            x = torch.cat(pieces, -1)[..., :length]
+        return x + y if self.skip else x
+    def _forward_torch(self, x):
+        y, framed = x, False
+        if self.max_steps is not None and x.shape[-1] > self.max_steps:
+            batch, channels, length = x.shape
+            width, stride = self.max_steps, self.max_steps // 2
+            covered = width + stride * -(-(length - width) // stride)  # ceil
+            if covered > length:
+                x = torch.nn.functional.pad(x, (0, covered - length))
+            frames = x.unfold(-1, width, stride)
+            nframes, framed = frames.shape[2], True
+            flat = frames.permute(0, 2, 1, 3).reshape(-1, channels, width)
+            x = self.linear(self.lstm(flat.permute(2, 0, 1))[0]).permute(1, 2, 0)
+        else:
+            x = self.linear(self.lstm(x.permute(2, 0, 1))[0]).permute(1, 2, 0)
+        if framed:
+            stacked = x.reshape(batch, -1, channels, width); limit = stride // 2
+            pieces = []
+            for i in range(nframes):
+                lo = limit if i else 0
+                hi = width if not (i < nframes - 1 or not i) else width - limit
+                pieces.append(stacked[:, i, :, lo:hi])
+            x = torch.cat(pieces, -1)[..., :length]
         return x + y if self.skip else x
 class LegacyLayerScale(nn.Module):
     def __init__(self, channels, init=0): super().__init__(); self.scale = nn.Parameter(torch.zeros(channels, requires_grad=True)); self.scale.data[:] = init

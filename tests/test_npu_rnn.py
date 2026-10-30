@@ -6,6 +6,7 @@ from torch import nn
 from torch.nn.utils.rnn import pack_padded_sequence, PackedSequence
 
 import pymss_core.npu_rnn as npu_rnn
+from _devices import DEVICES
 
 
 @pytest.fixture
@@ -19,7 +20,7 @@ def patched_runtime(monkeypatch):
 @pytest.mark.parametrize("kind", [nn.LSTM, nn.GRU, nn.RNN])
 @pytest.mark.parametrize("subclass", [False, True])
 @pytest.mark.parametrize("packed", [False, True])
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("device", DEVICES)
 def test_install_preserves_native_forward_and_gradients(patched_runtime, kind, subclass, packed, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA is unavailable")
@@ -50,7 +51,7 @@ def test_cpu_fallback_preserves_packed_and_dense_contract(patched_runtime, monke
     with torch.inference_mode():
         expected, expected_hx = model(input, hx)
     patched_runtime.install_npu_rnn_fallback()
-    monkeypatch.setattr(patched_runtime, "_is_npu_input", lambda value: True)
+    monkeypatch.setattr(patched_runtime, "_needs_cpu_fallback", lambda value: True)
     with torch.inference_mode():
         actual, actual_hx = model(input, hx)
     if packed:
@@ -76,7 +77,7 @@ def test_fallback_does_not_repeat_subclass_forward_or_hooks(patched_runtime, mon
     hooks = []
     handle = model.register_forward_hook(lambda *args: hooks.append(1))
     patched_runtime.install_npu_rnn_fallback()
-    monkeypatch.setattr(patched_runtime, "_is_npu_input", lambda value: True)
+    monkeypatch.setattr(patched_runtime, "_needs_cpu_fallback", lambda value: True)
     with torch.inference_mode():
         actual, _ = model(wave)
     handle.remove()
@@ -100,7 +101,7 @@ def test_reinstall_after_reload_preserves_original_forward(patched_runtime):
 
 def test_npu_fallback_rejects_training_instead_of_detaching_gradients(patched_runtime, monkeypatch):
     patched_runtime.install_npu_rnn_fallback()
-    monkeypatch.setattr(patched_runtime, "_is_npu_input", lambda value: True)
+    monkeypatch.setattr(patched_runtime, "_needs_cpu_fallback", lambda value: True)
     model = nn.GRU(3, 4)
     with pytest.raises(RuntimeError, match="inference"):
         model(torch.randn(5, 2, 3, requires_grad=True))
@@ -123,7 +124,7 @@ def test_cpu_fallback_handles_amp_inputs(patched_runtime, monkeypatch, kind, pac
         expected, expected_hidden = reference(reference_input)
     original_dtype = model.weight_ih_l0.dtype
     patched_runtime.install_npu_rnn_fallback()
-    monkeypatch.setattr(patched_runtime, "_is_npu_input", lambda value: True)
+    monkeypatch.setattr(patched_runtime, "_needs_cpu_fallback", lambda value: True)
     with torch.inference_mode():
         actual, actual_hidden = model(input)
     actual_data = actual.data if packed else actual
@@ -135,3 +136,31 @@ def test_cpu_fallback_handles_amp_inputs(patched_runtime, monkeypatch, kind, pac
     else:
         torch.testing.assert_close(actual_hidden, expected_hidden.to(dtype=dtype))
     assert model.weight_ih_l0.dtype == original_dtype
+
+
+def test_blocked_cell_falls_back_while_native_cell_stays_on_device(patched_runtime, monkeypatch):
+    """BIREN ships native LSTM but no fused GRU cell: only the GRU bounces."""
+    monkeypatch.setattr(npu_rnn, "_needs_cpu_fallback", lambda value: False)
+    monkeypatch.setattr(npu_rnn, "rnn_op_blocked", lambda device, op: op == "gru")
+    calls = []
+    original = npu_rnn._NpuRnnCpuFallback.forward
+
+    def spy(self, input, hx=None):
+        calls.append(type(self._rnn).__name__)
+        return original(self, input, hx)
+
+    monkeypatch.setattr(npu_rnn._NpuRnnCpuFallback, "forward", spy)
+    wave = torch.randn(2, 5, 3)
+    torch.manual_seed(0)
+    lstm = nn.LSTM(3, 4, batch_first=True)
+    gru = nn.GRU(3, 4, batch_first=True)
+    with torch.no_grad():
+        expected_lstm, _ = lstm(wave)
+        expected_gru, _ = gru(wave)
+    patched_runtime.install_npu_rnn_fallback()
+    with torch.no_grad():
+        actual_lstm, _ = lstm(wave)
+        actual_gru, _ = gru(wave)
+    torch.testing.assert_close(actual_lstm, expected_lstm)
+    torch.testing.assert_close(actual_gru, expected_gru)
+    assert calls == ["GRU"]

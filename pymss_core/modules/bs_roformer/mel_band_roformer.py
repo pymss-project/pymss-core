@@ -1,6 +1,8 @@
 import torch
 from torch.nn import Module
 from .._dsp import mel_filterbank
+from ...device import scatter_add_blocked
+from ...vendor_shims import scatter_add_equivalent
 from .common import (MaskEstimator, RoformerRuntimeMixin, forward_roformer_mask_core, forward_spectral_roformer, ignore_roformer_training_kwargs, init_conformer_layers, init_roformer_band_modules, init_roformer_layers, init_roformer_runtime, init_roformer_stft, roformer_stft_freq_bins, roformer_transformer_kwargs)
 class MelBandRoformer(RoformerRuntimeMixin, Module):
     # One class covers mel_band_roformer / mel_band_conformer: conformer=True swaps Transformer->Conformer layers
@@ -43,11 +45,11 @@ class MelBandRoformer(RoformerRuntimeMixin, Module):
         stft_repr = torch.view_as_complex(stft_repr.unsqueeze(1))
         num_stems = self._active_source_count()
         b, s, f, t = context.batch, num_stems, stft_repr.shape[2], stft_repr.shape[-1]
-        if stft_repr.device.type in ("mps", "npu"):  # MPS/NPU complex lacks a scatter_add_ path for stacked ri: scatter in real space
+        if stft_repr.device.type in ("mps", "npu") or scatter_add_blocked(stft_repr.device):
+            # Complex scatter_add_ is unavailable on these stacks; fold the bands
+            # back onto the frequency axis in real space instead.
             masks = masks.contiguous().to(dtype=stft_repr.real.dtype)
-            scatter_indices = self.freq_indices[None, None, :, None, None].expand(b, s, -1, t, 2)
-            masks_summed = masks.new_zeros(b, s, f, t, 2)
-            masks_summed.scatter_add_(2, scatter_indices, masks)
+            masks_summed = scatter_add_equivalent(masks, self.freq_indices, 2, f)
             masks_summed = torch.view_as_complex(masks_summed.contiguous())
         else:
             masks = torch.view_as_complex(masks).to(dtype=stft_repr.dtype)
