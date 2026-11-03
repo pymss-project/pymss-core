@@ -72,6 +72,7 @@ def test_detect_vendor_uses_private_device_types():
     assert detect_vendor("gcu") == ENFLAME
     assert detect_vendor("mlu") == MLU
     assert detect_vendor("supa") == BIREN
+    assert detect_vendor("xpu") == "xpu"
     assert detect_vendor("cpu") == CPU
     assert detect_vendor("mps") == "mps"
 
@@ -130,6 +131,17 @@ def test_amp_flag_can_be_disabled(monkeypatch):
 def test_cpu_and_mps_are_not_accelerators():
     assert not device_profile("cpu").is_accelerator
     assert not device_profile("mps").is_accelerator
+
+
+def test_xpu_profile_properties():
+    profile = device_profile("xpu")
+    assert profile.vendor == "xpu"
+    assert profile.device_type == "xpu"
+    assert profile.is_accelerator
+    assert not profile.supports_amp
+    assert not profile.supports_data_parallel
+    assert not profile.needs_fft_fallback
+    assert not profile.needs_rnn_fallback
 
 
 def test_alias_tables_are_consistent():

@@ -1647,5 +1647,43 @@ def installed_shims() -> frozenset[str]:
 
 
 def reset_shims() -> None:
-    """Forget which shims were installed (tests only; patches stay in place)."""
+    """Forget which shims were installed and restore original functions."""
+    import torch.nn.functional as F
+
+    targets = [
+        (torch.Tensor, "__mul__"),
+        (torch.Tensor, "__rmul__"),
+        (torch, "mul"),
+        (torch.Tensor, "reshape"),
+        (torch.Tensor, "view"),
+        (F, "glu"),
+        (F, "group_norm"),
+        (F, "interpolate"),
+        (F, "conv1d"),
+        (torch, "cat"),
+        (torch.Tensor, "std"),
+        (torch.Tensor, "cpu"),
+        (F, "scaled_dot_product_attention"),
+        (F, "fold"),
+        (torch, "view_as_complex"),
+        (F, "linear"),
+        (F, "embedding"),
+        (torch, "matmul"),
+        (F, "layer_norm"),
+        (torch.nn.LayerNorm, "forward"),
+        (F, "conv_transpose1d"),
+        (torch.Tensor, "as_strided"),
+        (torch, "as_strided"),
+        (torch.Tensor, "unfold"),
+        (torch, "stft"),
+        (torch, "istft"),
+    ]
+    for name in ("rfft", "irfft", "fft", "ifft", "hfft", "ihfft"):
+        if hasattr(torch.fft, name):
+            targets.append((torch.fft, name))
+    for obj, attr in targets:
+        current = getattr(obj, attr, None)
+        while getattr(current, "_pymss_original", None) is not None:
+            current = current._pymss_original
+            setattr(obj, attr, current)
     _installed.clear()

@@ -44,6 +44,7 @@ BIREN = "biren"
 ASCEND = "ascend"
 MLU = "mlu"
 MPS = "mps"
+XPU = "xpu"
 CPU = "cpu"
 
 #: Vendors a user may pass as ``--device``.  ``auto`` is handled by callers.
@@ -54,6 +55,7 @@ DEVICE_ALIASES: tuple[str, ...] = (
     "mps",
     "mlx",
     "npu",
+    "xpu",
     "gcu",
     "mlu",
     "supa",
@@ -71,6 +73,7 @@ ALIAS_TO_VENDOR: dict[str, str] = {
     "mps": MPS,
     "mlx": MPS,
     "npu": ASCEND,
+    "xpu": XPU,
     "gcu": ENFLAME,
     "mlu": MLU,
     "supa": BIREN,
@@ -218,6 +221,7 @@ _PROFILES: dict[str, DeviceProfile] = {
     # and lack a complex STFT path, so both fallbacks are part of the profile.
     ASCEND: DeviceProfile(ASCEND, "npu", plugin="torch_npu", complex_fft=False, rnn=False, multi_device=False),
     MPS: DeviceProfile(MPS, "mps", complex_fft=False, rnn=True, amp=True, channels_last=False, multi_device=False),
+    XPU: DeviceProfile(XPU, "xpu", amp=False, channels_last=False, multi_device=False),
     CPU: DeviceProfile(CPU, "cpu", amp=False, channels_last=False, multi_device=False),
 }
 
@@ -243,6 +247,7 @@ _DEVICE_TYPE_VENDOR: dict[str, str] = {
     "mlu": MLU,
     "supa": BIREN,
     "mps": MPS,
+    "xpu": XPU,
     "cpu": CPU,
 }
 
@@ -623,6 +628,7 @@ __all__ = (
     "MPS",
     "NVIDIA",
     "ROCM",
+    "XPU",
     "amp_supported",
     "apply_vendor_env",
     "autocast_dtype",
