@@ -1,4 +1,7 @@
+import os
+
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.nn.modules import activation
 def _bsrnn_utils():
@@ -35,7 +38,7 @@ class NormMLP(BaseNormMLP):
         return mb.permute(0, 2, 3, 1)
     def forward(self, qb):
         from torch.utils.checkpoint import checkpoint_sequential
-        if hasattr(self, "combined"): mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False) if self.use_checkpoint else self.combined(qb)
+        if hasattr(self, "combined"): mb = checkpoint_sequential(self.combined, 2, qb, use_reentrant=False) if (self.use_checkpoint and self.training) else self.combined(qb)
         else: mb = self.output(self.hidden(self.norm(qb)))
         return self.reshape_output(mb)
 class MultAddNormMLP(NormMLP):
@@ -82,15 +85,77 @@ class OverlappingMaskEstimationModule(MaskEstimationModuleBase):
         mask_list = self.compute_masks(q) if self.compute_all_masks else None
         dtype = torch.complex64 if self.output_dtype == "complex64" else mask_list[0].dtype
         if dtype == torch.complex64 and q.device.type == "npu":
-            # torch_npu cannot zero-fill complex64 directly; build from real parts.
+            # torch_npu/supa cannot zero-fill complex64 directly; build from real parts.
             masks = torch.view_as_complex(torch.zeros(b, self.in_channels, self.n_freq, t, 2, device=q.device, dtype=torch.float32))
         else:
             masks = torch.zeros(b, self.in_channels, self.n_freq, t, device=q.device, dtype=dtype)
+        # BIREN cannot write into tensor slices in place (and cannot allocate a
+        # complex zero tensor either), so each band is zero-padded to the full
+        # frequency axis and summed in real/imaginary space; the bands may overlap,
+        # which makes padding-and-adding the exact equivalent of the slice add.
+        total = None
+        total_is_complex = None
         for im in range(n_bands):
             fstart, fend = self.band_specs[im]
             mask = mask_list[im] if mask_list is not None else self.compute_mask(q, im)
-            if self.use_freq_weights: mask = mask * self.get_buffer(f'freq_weights/{im}')[:, None]
-            masks[:, :, fstart:fend, :] += mask
+            if os.environ.get("PYMSS_DEBUG_MASKS"):
+                print(
+                    f"    band {im} spec=({fstart},{fend}) raw_mask={tuple(mask.shape)} {mask.dtype}"
+                    f" from_list={mask_list is not None} q={tuple(q.shape)} {q.dtype}"
+                    f" in_channels={self.in_channels} n_freq={self.n_freq}",
+                    flush=True,
+                )
+            if self.use_freq_weights:
+                fw = self.get_buffer(f'freq_weights/{im}')
+                if os.environ.get("PYMSS_DEBUG_MASKS"):
+                    print(
+                        f"      freq_weights[{im}]={tuple(fw.shape)} {fw.dtype} {fw.device}"
+                        f" mask_before={tuple(mask.shape)} {mask.dtype} {mask.device}",
+                        flush=True,
+                    )
+                # BIREN mis-broadcasts operands of different rank (a (1,1,w,t) mask
+                # times a (w,1) weight came back as (w,1,w,t)), so the weight is
+                # shaped to the mask explicitly and cast to its real dtype.
+                mask = mask * fw.to(device=mask.device, dtype=mask.real.dtype).reshape(1, 1, -1, 1)
+            if mask.shape[2] != fend - fstart or fend > self.n_freq:
+                total = None
+                break
+            if total_is_complex is None:
+                total_is_complex = bool(mask.is_complex())
+            if total_is_complex:
+                # Accumulate in real/imaginary space: complex zeros cannot be
+                # allocated on BIREN. Real masks join with a trailing singleton.
+                mask = torch.view_as_real(mask.contiguous()) if mask.is_complex() else mask.unsqueeze(-1)
+            if os.environ.get("PYMSS_DEBUG_MASKS"):
+                print(f"      after real/imag: {tuple(mask.shape)} {mask.dtype}", flush=True)
+            # F.pad maps to a padding kernel BIREN rejects ('Unsupported BR type for
+            # ScalarType: 0'); cat of zeros is the same and always works. Padding is
+            # unconditional so no band can skip the alignment.
+            b_, c_, _, t_ = mask.shape[:4]
+            tail = mask.shape[4:]
+            left = mask.new_zeros(b_, c_, fstart, t_, *tail)
+            right = mask.new_zeros(b_, c_, self.n_freq - fend, t_, *tail)
+            if os.environ.get("PYMSS_DEBUG_MASKS"):
+                print(
+                    f"      left={tuple(left.shape)} mask={tuple(mask.shape)} right={tuple(right.shape)}"
+                    f" b_={b_} c_={c_} t_={t_} tail={tuple(tail)}",
+                    flush=True,
+                )
+            mask = torch.cat((left, mask, right), dim=2)
+            if total is not None and mask.shape != total.shape:
+                if mask.dim() == total.dim() - 1:
+                    mask = mask.unsqueeze(-1)
+                elif mask.dim() == total.dim() + 1:
+                    total = total.unsqueeze(-1)
+            if os.environ.get("PYMSS_DEBUG_MASKS"):
+                print(
+                    f"      planes={tuple(mask.shape)} {mask.dtype}"
+                    f" total={None if total is None else (tuple(total.shape), total.dtype)}",
+                    flush=True,
+                )
+            total = mask if total is None else total + mask
+        if total is not None:
+            masks = torch.view_as_complex(total.contiguous()) if total_is_complex else total
         return masks
 class MaskEstimationModule(OverlappingMaskEstimationModule):
     def __init__(self, band_specs, emb_dim, mlp_dim, in_channels=None, in_channel=None, hidden_activation="Tanh", hidden_activation_kwargs=None, complex_mask=True, **kwargs):

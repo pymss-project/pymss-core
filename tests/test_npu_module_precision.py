@@ -6,9 +6,10 @@ import torch
 from pymss_core.modules.bandit.core.model._spectral import _TorchSpectrogram
 from pymss_core.modules.look2hear.apollo import Apollo
 from pymss_core.modules.spectrogram import SubbandSTFT
+from _devices import DEVICES
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("kind", ["bandit", "apollo", "subband"])
 def test_existing_spectral_paths_preserve_input_precision(device, dtype, kind):

@@ -5,9 +5,10 @@ import torch
 
 from pymss_core.modules.bs_roformer.bands import MaskEstimator
 from pymss_core.modules.bs_roformer.common import RoformerRuntimeMixin
+from _devices import DEVICES
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("dim_inputs", [(2, 4, 2), (2, 2, 2)])
 @pytest.mark.parametrize("hidden_layers", [0, 1, 2])
 def test_packed_masks_match_separate_estimators(device, hidden_layers, dim_inputs):
@@ -22,7 +23,7 @@ def test_packed_masks_match_separate_estimators(device, hidden_layers, dim_input
     torch.testing.assert_close(actual, expected)
 
 
-@pytest.mark.parametrize("device", ["cpu", "cuda"])
+@pytest.mark.parametrize("device", DEVICES)
 @pytest.mark.parametrize("packed", [False, True])
 def test_noncontiguous_mask_groups_keep_band_order(device, packed):
     if device == "cuda" and not torch.cuda.is_available():

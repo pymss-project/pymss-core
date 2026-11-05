@@ -27,7 +27,18 @@ class SpectralContext(tuple):
     def x_is_npu(self): return self[6]
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, theta=10000): super().__init__(); freqs = 1.0 / (theta ** (torch.arange(0, dim, 2).float() / dim)); self.freqs = nn.Parameter(freqs, requires_grad=False); self.cache = {}
-    def clear_runtime_cache(self): self.cache.clear()
+    def clear_runtime_cache(self):
+        self.cache.clear()
+        getattr(self, "_pymss_cos_sin_cache", {}).clear()
+    def _apply(self, fn, recurse=True):
+        # Keep inverse frequencies precise when the surrounding network is cast.
+        # Detach before super(): it may replace the Parameter storage in place.
+        freqs = self.freqs.detach()
+        result = super()._apply(fn, recurse=recurse)
+        if self.freqs.dtype in (torch.float16, torch.bfloat16):
+            self.freqs.data = freqs.to(device=self.freqs.device, dtype=torch.float32)
+        self.clear_runtime_cache()
+        return result
     def get_seq_pos(self, seq_len, device, dtype, offset=0): return torch.arange(seq_len, device=device, dtype=dtype) + offset
     def forward(self, t, cache_key=None):
         if cache_key in self.cache: return self.cache[cache_key]
@@ -121,7 +132,13 @@ class RoformerRuntimeMixin(MpsBackendMixin):
         return stft_repr * torch.view_as_complex(mask).to(dtype=stft_repr.dtype)
 def forward_roformer_mask_core(module, stft_repr):
     b, fs, model_t, complex_dim = stft_repr.shape
-    x = module.band_split(stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim))
+    # STFT stays fp32 for complex64 reconstruction. Explicit low-precision model
+    # conversion must cast features at the network boundary, without autocast.
+    features = stft_repr.permute(0, 2, 1, 3).reshape(b, model_t, fs * complex_dim)
+    weights = next(module.band_split.parameters(), None) if isinstance(module.band_split, nn.Module) else None
+    if weights is not None:
+        features = features.to(dtype=weights.dtype)
+    x = module.band_split(features)
     residual_store = [] if getattr(module, "skip_connection", False) else None
     for time_transformer, freq_transformer in module.layers:
         if residual_store is not None:
@@ -161,7 +178,13 @@ def istft_roformer(module, stft_repr, context, length):
             .permute(0, 1, 3, 2, 4, 5)
             .reshape(b * n * context.channels, context.freq_bins, t, 2).contiguous())
     stft_repr = torch.view_as_complex(real)
-    if getattr(module, "zero_dc", False): stft_repr[:, 0] = 0.0
+    if getattr(module, "zero_dc", False):
+        # In-place assignment on a complex tensor is not usable on every vendor
+        # (BIREN: "devToAccess -1 is not a device"), so the DC bin is replaced
+        # functionally instead.
+        planes = torch.view_as_real(stft_repr)
+        planes = torch.cat((torch.zeros_like(planes[:, :1]), planes[:, 1:]), dim=1)
+        stft_repr = torch.view_as_complex(planes.contiguous())
     if context.x_is_npu:
         recon_audio = istft_npu(stft_repr, **module.stft_kwargs, window=context.stft_window, return_complex=False, length=length)
     else:

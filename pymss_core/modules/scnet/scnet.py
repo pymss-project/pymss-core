@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from ..mlx_backend import MpsBackendMixin
-from pymss_core.npu_fft import istft_npu, stft_npu
+from pymss_core.npu_fft import istft_npu, stft_npu, torch_stft_blocked
 from .separation import SeparationNet
 class Swish(nn.Module):
     def forward(self, x): return x * x.sigmoid()
@@ -75,8 +75,9 @@ class SCNet(MpsBackendMixin, nn.Module):
         padding = self.hop_length - x.shape[-1] % self.hop_length
         if (x.shape[-1] + padding) // self.hop_length % 2 == 0: padding += self.hop_length
         x = F.pad(x, (0, padding))
-        stft_fn = stft_npu if x.device.type == "npu" else torch.stft
-        istft_fn = istft_npu if x.device.type == "npu" else torch.istft
+        fft_fallback = torch_stft_blocked(x.device)
+        stft_fn = stft_npu if fft_fallback else torch.stft
+        istft_fn = istft_npu if fft_fallback else torch.istft
         x = torch.view_as_real(stft_fn(x.reshape(-1, x.shape[-1]), **self.stft_config, return_complex=True))
         x = x.permute(0, 3, 1, 2).reshape(B, self.audio_channels * 2, x.shape[1], x.shape[2])
         _B, _C, Fr, T = x.shape

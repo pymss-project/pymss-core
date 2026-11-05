@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+
+from pymss_core.npu_conv import replicate_pad_bins
 from torch import nn
 
 from . import layers_new as layers
@@ -47,7 +49,8 @@ class CascadedNet(nn.Module):
         aux2 = torch.cat([l2, h2], dim=2)
         f3 = self.stg3_full_band_net(torch.cat([input_tensor, aux1, aux2], dim=1))
         mask = torch.sigmoid(self.out(f3))
-        mask = F.pad(mask, (0, 0, 0, self.output_bin - mask.shape[2]), mode="replicate")
+        # F.pad(mode="replicate") is aten::replication_pad2d, which SUPA fails on.
+        mask = replicate_pad_bins(mask, self.output_bin)
         if self.training: aux = torch.sigmoid(self.aux_out(torch.cat([aux1, aux2], dim=1))); aux = F.pad(aux, (0, 0, 0, self.output_bin - aux.shape[2]), mode='replicate'); return (mask, aux)
         return mask
     def predict_mask(self, input_tensor):

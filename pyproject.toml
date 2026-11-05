@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymss-core"
-version = "0.1.14"
+version = "0.1.15"
 description = "Core model, configuration, and checkpoint package for music source separation."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.10"
@@ -38,7 +38,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.26",
     "pyyaml>=6.0.1",
-    "torch>=2.7.1",
+    "torch>=2.4",
 ]
 
 [project.optional-dependencies]
