@@ -91,6 +91,11 @@ class RMSNorm(Module):
     def clear_runtime_cache(self): _clear_cache_dicts(self, "_gamma_dtype_cache")
     def forward(self, x):
         if not self.training and x.dtype in (torch.float16, torch.bfloat16):
+            if torch.compiler.is_compiling():
+                # The dict cache below is keyed by ``data_ptr()``, which dynamo
+                # cannot trace, so a compiled graph takes the plain cast instead.
+                # XLA constant-folds it per layer, so the cache is not needed.
+                return F.rms_norm(x, (x.shape[-1],), self.gamma.to(device=x.device, dtype=x.dtype), eps=1e-12)
             key = (x.device.type, x.device.index, x.dtype, self.gamma.data_ptr(), self.gamma._version)
             gamma = self._gamma_dtype_cache.get(key)
             if gamma is None: gamma = self.gamma.detach().to(device=x.device, dtype=x.dtype); self._gamma_dtype_cache.clear(); self._gamma_dtype_cache[key] = gamma

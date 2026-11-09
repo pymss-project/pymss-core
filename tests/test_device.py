@@ -18,6 +18,7 @@ from pymss_core.device import (
     MLU,
     NVIDIA,
     ROCM,
+    TPU,
     amp_supported,
     eager_conv_enabled,
     apply_vendor_env,
@@ -49,7 +50,8 @@ VENDOR_DEVICE_NAMES = {
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch):
     clear_device_cache()
-    for name in ("PYMSS_DEVICE_BACKEND", "PYMSS_FFT_FALLBACK", "PYMSS_RNN_FALLBACK", "PYMSS_AMP"):
+    for name in ("PYMSS_DEVICE_BACKEND", "PYMSS_FFT_FALLBACK", "PYMSS_RNN_FALLBACK", "PYMSS_AMP",
+                 "PYMSS_MATMUL_PRECISION"):
         monkeypatch.delenv(name, raising=False)
     yield
     clear_device_cache()
@@ -72,6 +74,7 @@ def test_detect_vendor_uses_private_device_types():
     assert detect_vendor("gcu") == ENFLAME
     assert detect_vendor("mlu") == MLU
     assert detect_vendor("supa") == BIREN
+    assert detect_vendor("tpu") == "tpu"
     assert detect_vendor("xpu") == "xpu"
     assert detect_vendor("cpu") == CPU
     assert detect_vendor("mps") == "mps"
@@ -110,6 +113,22 @@ def test_domestic_cuda_impersonators_keep_native_operators(monkeypatch):
     assert profile.device_type == "cuda"
     assert not profile.needs_fft_fallback
     assert profile.is_accelerator
+
+
+def test_matmul_precision_env_override(monkeypatch):
+    """PYMSS_MATMUL_PRECISION wins over the profile default (TPU ships 'high')."""
+    assert device_profile("tpu").matmul_precision == "high"
+    for value in ("highest", "medium", "HIGHEST"):
+        monkeypatch.setenv("PYMSS_MATMUL_PRECISION", value)
+        clear_device_cache()
+        assert device_profile("tpu").matmul_precision == value.lower()
+    monkeypatch.setenv("PYMSS_MATMUL_PRECISION", "nonsense")
+    clear_device_cache()
+    assert device_profile("tpu").matmul_precision == "high"
+    # Vendors that do not set one stay unset.
+    monkeypatch.delenv("PYMSS_MATMUL_PRECISION")
+    clear_device_cache()
+    assert device_profile("cuda").matmul_precision is None
 
 
 def test_env_flags_force_fallbacks(monkeypatch):
@@ -187,6 +206,57 @@ def test_biren_profile_matches_the_measured_birensupa_stack():
     # The fused _VF.lstm is silently wrong on this stack, so every cell bounces.
     assert profile.rnn is False
     assert profile.needs_rnn_fallback is True
+
+
+def test_tpu_profile_matches_the_measured_torch_tpu_stack():
+    """Colab TPU v5e1 + torch 2.14.1+cpu / torch_tpu 0.2.0.
+
+    TPU has no operator gaps -- the profile turns on exactly two shims, both for
+    numerical reasons rather than missing kernels.
+    """
+    profile = device_profile("tpu")
+    assert profile.vendor == TPU
+    assert profile.device_type == "tpu"
+    assert profile.plugin == "torch_tpu"
+    # torch.istft is 1.5e-03 off and 32x slower than pymss's overlap-add path.
+    assert profile.complex_fft is False
+    assert profile.needs_fft_fallback is True
+    # LSTM/GRU are native and accurate on TPU, unlike every domestic vendor.
+    assert profile.rnn is True
+    assert profile.needs_rnn_fallback is False
+    # Non-contiguous input kills TorchTPU's GroupNorm (scnet, htdemucs).
+    assert profile.group_norm_contiguous is True
+    # fp32 matmul/conv run in bf16 by default; 'high' is free and 170x closer.
+    assert profile.matmul_precision == "high"
+    assert profile.amp_dtype is torch.bfloat16
+    # F.fold/col2im accumulate in bf16 (2.6e-03), which the whole track inherits.
+    assert profile.fold_exact is True
+    # torch.fft.rfft/irfft *are* the vendor kernels and are exact (3.1e-07), so the
+    # per-call silent-zero probe only costs two reductions and a host sync.
+    assert profile.fft_result_check is False
+    # No other shim is needed.
+    assert profile.group_norm_shim is False
+    assert profile.glu_shim is False
+    assert profile.interpolate_shim is False
+    assert profile.grouped_conv1d is False
+    assert profile.complex_mul is True
+    assert profile.complex_reshape is True
+    assert profile.window_on_device is True
+    assert profile.as_strided_shim is False
+    assert profile.unfold_shim is False
+    assert profile.std_shim is False
+    assert profile.scatter_add is True
+    assert profile.multi_device is False
+
+
+def test_fft_result_check_stays_on_for_the_vendors_that_silently_zero():
+    # BIREN's FFT answers with zeros for some shapes without raising, so the
+    # per-call probe is the only thing that catches it.  Only TPU, whose FFT is
+    # plain ``torch.fft`` (exact at 3.1e-07), may turn the probe off.
+    assert device_profile("supa").fft_result_check is True
+    assert device_profile("tpu").fft_result_check is False
+    for alias in ("cuda", "cpu", "npu", "mlu", "gcu", "xpu"):
+        assert device_profile(alias).fft_result_check is True, alias
 
 
 def test_rnn_op_blocked_is_per_cell():

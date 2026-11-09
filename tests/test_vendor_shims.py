@@ -200,6 +200,102 @@ class TestGroupNormEquivalent:
         assert torch.allclose(group_norm_equivalent(x, 3), F.group_norm(x, 3), atol=1e-5)
 
 
+class TestGroupNormContiguousShim:
+    """TorchTPU's GroupNorm resolves groups with view() and rejects a permuted input."""
+
+    def test_accepts_a_non_contiguous_input(self):
+        import torch.nn.functional as F
+
+        from pymss_core.vendor_shims import install_group_norm_contiguous_shim, reset_shims
+
+        reset_shims()
+        # Layout that scnet/htdemucs produce: a permute of a conv output.
+        x = torch.randn(2, 32, 16, 16).permute(0, 1, 3, 2)
+        assert not x.is_contiguous()
+        weight, bias = torch.randn(32), torch.randn(32)
+        want = F.group_norm(x.contiguous(), 8, weight, bias, 1e-5)
+
+        assert install_group_norm_contiguous_shim() is True
+        got = F.group_norm(x, 8, weight, bias, 1e-5)
+        assert torch.allclose(got, want, atol=1e-5)
+        reset_shims()
+
+    def test_is_idempotent_and_only_the_tpu_profile_asks_for_it(self):
+        from pymss_core.device import device_profile
+        from pymss_core.vendor_shims import install_group_norm_contiguous_shim, reset_shims
+
+        reset_shims()
+        assert install_group_norm_contiguous_shim() is True
+        assert install_group_norm_contiguous_shim() is False
+        reset_shims()
+        for alias in ("cuda", "cpu", "supa", "npu", "mlu", "gcu", "xpu"):
+            assert device_profile(alias).group_norm_contiguous is False, alias
+        assert device_profile("tpu").group_norm_contiguous is True
+
+
+class TestFoldExactShim:
+    """TorchTPU's col2im accumulates in bf16; the scatter_add_ rewrite is exact."""
+
+    def test_matches_the_reference_fold(self):
+        import torch.nn.functional as F
+
+        from pymss_core.vendor_shims import install_fold_exact_shim, reset_shims
+
+        reset_shims()
+        torch.manual_seed(0)
+        # 2-D case with dilation/padding/stride, and the 1-D case pymss folds.
+        x = torch.randn(1, 3 * 4 * 5, 10 * 7)
+        want = F.fold(x, (20, 20), (3, 4), dilation=(1, 1), padding=(1, 2), stride=(2, 3))
+        windows = torch.stack([torch.rand(64) + 0.5 for _ in range(7)])
+        want_windows = F.fold(windows.transpose(0, 1).unsqueeze(0), (1, 64 + 6 * 16), (1, 64), stride=(1, 16))
+
+        assert install_fold_exact_shim() is True
+        assert torch.allclose(F.fold(x, (20, 20), (3, 4), dilation=(1, 1), padding=(1, 2), stride=(2, 3)), want, atol=1e-6)
+        got = F.fold(windows.transpose(0, 1).unsqueeze(0), (1, 64 + 6 * 16), (1, 64), stride=(1, 16))
+        assert torch.equal(got, want_windows)
+        reset_shims()
+
+    def test_projection_handles_a_single_output_dim(self):
+        from pymss_core.vendor_shims import col2im_equivalent
+
+        # (1, 60) output with one spatial dim still folds along the last axis.
+        # 60 outputs, 8-wide kernel, stride 4 -> (60 - 7 - 1) // 4 + 1 == 14 blocks.
+        x = torch.randn(1, 5 * 8, 14)
+        got = col2im_equivalent(x, (1, 60), (1, 8), (1, 1), (0, 0), (1, 4))
+        import torch.nn.functional as F
+
+        assert torch.allclose(got, F.fold(x, (1, 60), (1, 8), stride=(1, 4)), atol=1e-6)
+
+    def test_is_idempotent_and_only_the_tpu_profile_asks_for_it(self):
+        from pymss_core.device import device_profile
+        from pymss_core.vendor_shims import install_fold_exact_shim, reset_shims
+
+        reset_shims()
+        assert install_fold_exact_shim() is True
+        assert install_fold_exact_shim() is False
+        reset_shims()
+        for alias in ("cuda", "cpu", "supa", "npu", "mlu", "gcu", "xpu"):
+            assert device_profile(alias).fold_exact is False, alias
+        assert device_profile("tpu").fold_exact is True
+
+    def test_the_exact_shim_replaces_the_supa_roundtrip(self):
+        from pymss_core.vendor_shims import SHIMS, install_vendor_shims, reset_shims
+
+        assert SHIMS["fold"] is not SHIMS["fold_exact"]
+        # Installing both would stack two pass-throughs on the same function.
+        reset_shims()
+        names = install_vendor_shims("tpu", fold_exact=True)
+        assert "fold_exact" in names
+        assert "fold" not in names
+        reset_shims()
+
+        # The SUPA roundtrip is still what the domestic vendors get.
+        names = install_vendor_shims("supa", fold_exact=False)
+        assert "fold" in names
+        assert "fold_exact" not in names
+        reset_shims()
+
+
 class TestInterpolateShim:
     def test_bf16_bilinear_keeps_its_dtype_and_shape(self):
         import torch.nn.functional as F
