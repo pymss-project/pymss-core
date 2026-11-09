@@ -226,6 +226,42 @@ def install_glu_shim() -> bool:
     return True
 
 
+def _scatter_add_blocked(device) -> bool:
+    """Return ``True`` when the device profile asks for the scatter fallback."""
+    try:
+        from .device import scatter_add_blocked
+
+        return scatter_add_blocked(device)
+    except Exception:  # noqa: BLE001 - detection must never break a fold
+        return False
+
+
+def _fold_rows(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
+    """Accumulate ``flat`` into ``size`` slots row by row, without scatter.
+
+    Complex sources are folded on their real/imaginary planes: ``index_add_`` has
+    no complex kernel on MUSA, only the real one.
+
+    Args:
+        flat: Source of shape ``(rows, index.numel(), features)``.
+        index_1d: Flat target slot per source entry.
+        size: Number of slots in the result.
+
+    Returns:
+        The accumulated ``(rows, size, features)`` tensor.
+    """
+    if flat.is_complex():
+        planes = torch.view_as_real(flat)
+        out = torch.zeros(flat.shape[0], size, flat.shape[-1], 2, device=flat.device, dtype=planes.dtype)
+        for row in range(planes.shape[0]):
+            out[row].index_add_(0, index_1d, planes[row])
+        return torch.view_as_complex(out.contiguous())
+    out = torch.zeros(flat.shape[0], size, flat.shape[-1], device=flat.device, dtype=flat.dtype)
+    for row in range(flat.shape[0]):
+        out[row].index_add_(0, index_1d, flat[row])
+    return out
+
+
 def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, size: int) -> torch.Tensor:
     """Accumulate ``src`` into ``size`` slots of a new tensor, without scatter.
 
@@ -248,14 +284,14 @@ def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, siz
     leading = moved.shape[:-2]
     flat = moved.reshape(-1, moved.shape[-2], moved.shape[-1])
     index_1d = index.reshape(-1)
-    if src.device.type == "supa":
+    if src.device.type == "supa" or _scatter_add_blocked(src.device):
         # The one-hot matmul hits SUBLAS broadcast limits ("no valid backend: Matmul"
-        # / ErrorCode 15). Real-dtype index_add_ is usable; fall back to a CPU
-        # one-hot matmul when even that fails.
-        out = torch.zeros(flat.shape[0], size, flat.shape[-1], device=src.device, dtype=src.dtype)
+        # / ErrorCode 15) and needs O(size * len(index) * features) memory
+        # elsewhere: 97 GiB for a mel-band fold on MUSA, 24 GiB for a 10 s clip.
+        # Fold row by row instead, and fall back to a CPU one-hot matmul only when
+        # even index_add_ is rejected.
         try:
-            for row in range(flat.shape[0]):
-                out[row].index_add_(0, index_1d, flat[row])
+            out = _fold_rows(flat, index_1d, size)
         except RuntimeError:
             one_hot = (index_1d.cpu().unsqueeze(0) == slots.cpu()).to(flat.cpu().dtype)
             out = torch.matmul(one_hot, flat.cpu()).to(src.device)
@@ -263,8 +299,6 @@ def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, siz
         one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(src.dtype)
         out = torch.matmul(one_hot, flat)
     out = out.reshape(*leading, size, moved.shape[-1])
-    if dim >= 0:
-        return out.movedim(-2, dim)
     return out.movedim(-2, dim)
 
 
@@ -753,6 +787,14 @@ def install_sdpa_shim() -> bool:
     if "sdpa" in _installed:
         return False
     import torch.nn.functional as functional
+
+    # ``nn.MultiheadAttention`` normally takes the fused fastpath, which calls
+    # ``aten::_native_multi_head_attention`` -- a CUDA-only kernel with no musa
+    # equivalent.  Disabling it routes MHA through the math path, which uses the
+    # wrapped ``scaled_dot_product_attention`` below.
+    mha_backend = getattr(getattr(torch, "backends", None), "mha", None)
+    if mha_backend is not None and hasattr(mha_backend, "set_fastpath_enabled"):
+        mha_backend.set_fastpath_enabled(False)
 
     original = functional.scaled_dot_product_attention
 
