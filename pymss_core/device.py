@@ -12,6 +12,9 @@ present themselves to ``torch``:
 * **Cambricon MLU** (``torch_mlu``) -- private device type ``"mlu"``.
 * **Biren** (``torch_br``) -- private device type ``"supa"`` on newer stacks,
   CUDA-impersonating on older ones.
+* **Google TPU** (``torch_tpu``) -- private device type ``"tpu"`` (torch_tpu
+  renames ``PrivateUse1``), and ``torch.tpu.set_device`` is rejected as an
+  internal API; device selection goes through ``torch.accelerator``.
 
 Hardcoding ``device.type == "npu"``-style checks ties the code to a single
 vendor, so this module centralises detection and exposes capability flags
@@ -22,6 +25,7 @@ being brought up::
     PYMSS_FFT_FALLBACK=1         # force the complex-safe STFT/ISTFT path
     PYMSS_RNN_FALLBACK=1         # force the CPU fallback for LSTM/GRU/RNN
     PYMSS_AMP=0                  # disable autocast
+    PYMSS_MATMUL_PRECISION=highest  # override the fp32 matmul precision (TPU)
 
 Capability defaults are deliberately conservative only where a vendor is known
 to be incomplete (Ascend).  Vendors that are still being validated default to
@@ -45,6 +49,7 @@ ASCEND = "ascend"
 MLU = "mlu"
 MPS = "mps"
 XPU = "xpu"
+TPU = "tpu"
 CPU = "cpu"
 
 #: Vendors a user may pass as ``--device``.  ``auto`` is handled by callers.
@@ -64,6 +69,7 @@ DEVICE_ALIASES: tuple[str, ...] = (
     "metax",
     "enflame",
     "hygon",
+    "tpu",
 )
 
 #: ``--device`` alias -> vendor key.
@@ -82,6 +88,7 @@ ALIAS_TO_VENDOR: dict[str, str] = {
     "metax": METAX,
     "enflame": ENFLAME,
     "hygon": HYGON,
+    "tpu": TPU,
     "cpu": CPU,
 }
 
@@ -112,6 +119,17 @@ class DeviceProfile:
             float16 matmul (BIREN br10x).
         channels_last: ``channels_last`` memory format is beneficial/supported.
         multi_device: more than one device index is usable.
+        group_norm_contiguous: ``F.group_norm`` rejects a non-contiguous input
+            (TPU's GroupNorm reaches for ``view()`` internally); copy first.
+        fold_exact: ``F.fold``/``col2im`` accumulate in reduced precision on the
+            device; replace them with the exact ``scatter_add_`` composition.
+        fft_result_check: every FFT result must be verified for a silent zero
+            answer (BIREN returns zeros for some shapes without raising).
+            Devices whose FFT is plain ``torch.fft`` skip the check, which costs
+            two full reductions plus two host syncs per STFT and breaks
+            ``torch.compile`` (``float(tensor)`` is a graph break).
+        matmul_precision: value to install with
+            ``torch.set_float32_matmul_precision`` when the backend is prepared.
     """
 
     vendor: str
@@ -143,6 +161,10 @@ class DeviceProfile:
     amp_dtype: torch.dtype = torch.float16
     channels_last: bool = True
     multi_device: bool = True
+    group_norm_contiguous: bool = False
+    fold_exact: bool = False
+    fft_result_check: bool = True
+    matmul_precision: str | None = None
 
     @property
     def is_accelerator(self) -> bool:
@@ -222,6 +244,46 @@ _PROFILES: dict[str, DeviceProfile] = {
     ASCEND: DeviceProfile(ASCEND, "npu", plugin="torch_npu", complex_fft=False, rnn=False, multi_device=False),
     MPS: DeviceProfile(MPS, "mps", complex_fft=False, rnn=True, amp=True, channels_last=False, multi_device=False),
     XPU: DeviceProfile(XPU, "xpu", amp=False, channels_last=False, multi_device=False),
+    # Measured on Colab TPU v5e1 + torch 2.14.1+cpu / torch_tpu 0.2.0 (Python 3.13),
+    # 16 GiB HBM, device type ``tpu``:
+    # * ``torch.stft`` is exact (rel 3.1e-07) but ``torch.istft`` is not: it
+    #   returns 1.5e-03 rel / 2.8e-03 max error and takes 217 ms where pymss's
+    #   ``istft_npu`` overlap-add composition does it in 6.8 ms at 1.5e-07.
+    #   ``complex_fft=False`` therefore routes both STFT and ISTFT through the
+    #   ``torch.fft`` path, which is 2.1x faster end to end AND 80x more
+    #   accurate (mask-core end-to-end rel 3.8e-05 instead of 3.2e-03).
+    # * ``F.group_norm``/``nn.GroupNorm`` die on a non-contiguous input with
+    #   "view(): cannot create a view of shape [...]", which is what SCNet and
+    #   htdemucs feed them.  A ``.contiguous()`` copy before the kernel makes
+    #   them exact (rel 5.1e-08).
+    # * ``torch.tpu.set_device`` is internal to TorchTPU and raises; device
+    #   selection has to go through ``torch.accelerator``.
+    # * Recurrent cells are native and accurate (LSTM 6.0e-05, GRU 3.0e-05) and
+    #   take 1.2 ms, so no CPU fallback.
+    # * Everything else pymss uses has a native kernel and matches torch: complex
+    #   mul/reshape/cat/view_as_complex, grouped + dilated conv, conv_transpose1d,
+    #   replicate/reflect pad, bilinear upsample, fold/unfold, as_strided, std,
+    #   scatter_add, index_add, GLU.
+    # * fp32 matmul and convolution run in bfloat16 by default (rel 2.4e-03);
+    #   ``high`` gives 1.4e-05 for 27.9/50.2 TFLOPS at 2048/4096 (slightly faster
+    #   than the default at 4096), ``highest`` gives 2.4e-07 for 18.9/27.5
+    #   TFLOPS.  ``high`` is free, so it is the profile default.
+    # * bfloat16 is the native reduced precision; float16 works but is slower
+    #   than fp32 (0.46 ms vs 0.44 ms for one 4096 GEMM) so it is never used.
+    # * ``F.fold``/``col2im`` accumulate in bfloat16 (2.6e-03 over seven chunk
+    #   windows) and take 99 ms where the exact ``scatter_add_`` composition
+    #   takes 4.2 ms.  ``pymss.utils`` folds every chunk window, so the whole
+    #   track inherited the 2.6e-03 even though one forward was 3e-05 off.
+    # * ``torch.fft.rfft``/``irfft`` are the vendor kernels themselves and are
+    #   exact (3.1e-07), so the per-call "did the vendor return silent zeros"
+    #   probe is dead weight: it costs two full reductions and two host syncs per
+    #   STFT and is a ``torch.compile`` graph break.
+    TPU: DeviceProfile(
+        TPU, "tpu", plugin="torch_tpu", complex_fft=False, rnn=True,
+        amp=True, amp_dtype=torch.bfloat16, channels_last=False, multi_device=False,
+        group_norm_contiguous=True, matmul_precision="high",
+        fold_exact=True, fft_result_check=False,
+    ),
     CPU: DeviceProfile(CPU, "cpu", amp=False, channels_last=False, multi_device=False),
 }
 
@@ -248,6 +310,7 @@ _DEVICE_TYPE_VENDOR: dict[str, str] = {
     "supa": BIREN,
     "mps": MPS,
     "xpu": XPU,
+    "tpu": TPU,
     "cpu": CPU,
 }
 
@@ -335,6 +398,9 @@ def _with_overrides(profile: DeviceProfile) -> DeviceProfile:
     rope = os.environ.get("PYMSS_ROPE_BACKEND", "").strip().lower()
     if rope in ("manual", "vendor"):
         updates["rope_shim"] = rope == "vendor"
+    precision = os.environ.get("PYMSS_MATMUL_PRECISION", "").strip().lower()
+    if precision in ("highest", "high", "medium"):
+        updates["matmul_precision"] = precision
     return replace(profile, **updates) if updates else profile
 
 
@@ -457,6 +523,15 @@ def set_current_vendor_device(device_type: str, index: int | None = None) -> int
     """
     if device_type in ("cpu", "meta"):
         return None  # torch.cpu.set_device exists but has nothing to select
+    if device_type == TPU:
+        # torch_tpu deliberately raises from ``torch.tpu.set_device`` ("internal
+        # to TorchTPU"); ``torch.accelerator`` is the public entry point.
+        chosen = index if index is not None else int(os.environ.get("PYMSS_DEVICE_INDEX", "0") or 0)
+        try:
+            torch.accelerator.set_device_index(chosen)
+        except Exception:  # noqa: BLE001 - an older torch has no accelerator API
+            return None
+        return chosen
     module = getattr(torch, device_type, None)
     setter = getattr(module, "set_device", None) if module is not None else None
     if setter is None:
@@ -519,6 +594,8 @@ def prepare_device_alias(alias: str) -> str:
         cpu=profile_now.cpu_shim,
         sdpa=profile_now.sdpa_shim,
         rope=profile_now.rope_shim,
+        group_norm_contiguous=profile_now.group_norm_contiguous,
+        fold_exact=profile_now.fold_exact,
     )
     # Recurrent cells: the fused _VF.lstm is both wrong and catastrophically slow
     # on BIREN (605 s for one (18, 57, 128) call), and the profile already says
@@ -528,12 +605,22 @@ def prepare_device_alias(alias: str) -> str:
         from pymss_core.npu_rnn import install_rnn_cpu_fallback
 
         install_rnn_cpu_fallback()
+    # A global knob, so it is set once here rather than at every matmul site.
+    # TPU executes fp32 matmul/conv in bfloat16 unless asked otherwise, which is
+    # 2.4e-03 relative error over a whole model.
+    if profile_now.matmul_precision:
+        torch.set_float32_matmul_precision(profile_now.matmul_precision)
     return device_type
 
 
 def scatter_add_blocked(device=None) -> bool:
     """Return ``True`` when ``scatter_add_`` has no kernel and must be emulated."""
     return not device_profile(device).scatter_add
+
+
+def fft_result_check_required(device=None) -> bool:
+    """Return ``True`` when FFT results need a per-call silent-zero probe."""
+    return device_profile(device).fft_result_check
 
 
 def fft_fallback_required(device=None) -> bool:
@@ -628,6 +715,7 @@ __all__ = (
     "MPS",
     "NVIDIA",
     "ROCM",
+    "TPU",
     "XPU",
     "amp_supported",
     "apply_vendor_env",
@@ -635,6 +723,7 @@ __all__ = (
     "dilated_conv_blocked",
     "dilated_conv_supported",
     "scatter_add_blocked",
+    "fft_result_check_required",
     "eager_conv_enabled",
     "clear_device_cache",
     "detect_vendor",

@@ -122,6 +122,25 @@ def vendor_fft_trusted(n: int, device=None) -> bool:
     return cached
 
 
+def _result_check_required(device) -> bool:
+    """Return ``True`` when a vendor FFT answer needs the silent-zero probe.
+
+    Only the vendors that answer with zeros instead of raising need this
+    (BIREN).  Where the FFT *is* ``torch.fft`` the probe costs two full
+    reductions plus two host syncs per transform and is a ``torch.compile``
+    graph break, so it is skipped.
+
+    Args:
+        device: Device the transform will run on.
+
+    Returns:
+        ``True`` when the result must be verified.
+    """
+    from .device import fft_result_check_required
+
+    return fft_result_check_required(device)
+
+
 def _degenerate(out: torch.Tensor, source: torch.Tensor) -> bool:
     """Return ``True`` when the vendor answered with a silent zero tensor.
 
@@ -427,7 +446,7 @@ def stft_npu(
         except Exception:
             _VENDOR_FFT_BAD.add(n_fft)
             spec = None
-        if spec is None or _degenerate(spec, frames_flat):
+        if spec is None or (_result_check_required(frames_flat.device) and _degenerate(spec, frames_flat)):
             _VENDOR_FFT_BAD.add(n_fft)
             spec = _rfft_matmul(frames_flat, n_fft)
     else:
@@ -482,7 +501,7 @@ def istft_npu(
         except Exception:
             _VENDOR_FFT_BAD.add(n_fft)
             frames = None
-        if frames is None or _degenerate(frames, flat_spec):
+        if frames is None or (_result_check_required(flat_spec.device) and _degenerate(frames, flat_spec)):
             _VENDOR_FFT_BAD.add(n_fft)
             frames = _irfft_matmul(flat_spec, n_fft)
     else:

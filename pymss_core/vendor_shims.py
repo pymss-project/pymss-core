@@ -339,6 +339,35 @@ def group_norm_equivalent(x: torch.Tensor, num_groups: int, weight=None, bias=No
     return out
 
 
+def install_group_norm_contiguous_shim() -> bool:
+    """Make ``F.group_norm`` accept a non-contiguous input on TPU.
+
+    TorchTPU's GroupNorm resolves the group axis with ``view()``, which raises
+    ``view(): cannot create a view of shape [2, 4, 32768] from the input tensor
+    of shape [2, 64, 64, 32] and strides [...]`` as soon as the input has a
+    non-trivial layout.  SCNet and htdemucs both feed it one (a ``permute`` of a
+    convolutional output), so both models abort.  A copy costs one pass over the
+    tensor and restores exact results (rel 5.1e-08).
+
+    Returns:
+        ``True`` when the shim was installed, ``False`` when it already was.
+    """
+    if "group_norm_contiguous" in _installed:
+        return False
+    import torch.nn.functional as F
+
+    original = F.group_norm
+
+    def group_norm(input, num_groups, weight=None, bias=None, eps=1e-5):
+        return original(input.contiguous(), num_groups, weight, bias, eps)
+
+    group_norm._vendor_shim = True
+    group_norm._pymss_original = original
+    F.group_norm = group_norm
+    _installed.add("group_norm_contiguous")
+    return True
+
+
 def install_group_norm_shim() -> bool:
     """Replace ``F.group_norm`` on vendor devices.
 
@@ -1416,6 +1445,58 @@ def install_linear_dtype_shim() -> bool:
     return True
 
 
+def _pair_size(value):
+    """Normalise an int or sequence to a 2-tuple, matching ``F.fold``."""
+    if isinstance(value, (list, tuple)):
+        return (int(value[0]), int(value[-1])) if len(value) > 1 else (int(value[0]), int(value[0]))
+    return (int(value), int(value))
+
+
+def col2im_equivalent(input, output_size, kernel_size, dilation=(1, 1), padding=(0, 0), stride=(1, 1)):
+    """``F.fold`` rebuilt from ``scatter_add_`` (exact, all device kernels).
+
+    TorchTPU accumulates the overlap-add in bfloat16: folding seven 16000-sample
+    Hann windows drifts 2.6e-03 from the fp32 reference and takes 99 ms, where
+    this composition is exact and takes 4.2 ms.  It is the whole inference
+    pipeline that pays for it -- ``pymss.utils`` folds every chunk window -- so a
+    whole track came out 2.6e-03 off while a single forward was 3e-05 off.
+
+    Args:
+        input: ``(N, C * kh * kw, L)`` unfolded blocks.
+        output_size: ``(oh, ow)`` output spatial size.
+        kernel_size: ``(kh, kw)``.
+        dilation: ``(dh, dw)``.
+        padding: ``(ph, pw)``.
+        stride: ``(sh, sw)``.
+
+    Returns:
+        The folded tensor, shape ``(N, C, oh, ow)``.
+    """
+    n, ckk, nblocks = input.shape
+    oh, ow = _pair_size(output_size)
+    kh, kw = _pair_size(kernel_size)
+    dh, dw = _pair_size(dilation)
+    ph, pw = _pair_size(padding)
+    sh, sw = _pair_size(stride)
+    khw = kh * kw
+    channels = ckk // khw
+    ih = (oh + 2 * ph - dh * (kh - 1) - 1) // sh + 1
+    iw = (ow + 2 * pw - dw * (kw - 1) - 1) // sw + 1
+    if ih * iw != nblocks:
+        raise ValueError(f"col2im expects {ih}x{iw}={ih * iw} blocks, got {nblocks}")
+    height, width = oh + 2 * ph + sh - 1, ow + 2 * pw + sw - 1
+    out = input.new_zeros((n, channels, height * width))
+    pos = torch.arange(nblocks, device=input.device)
+    base = torch.div(pos, iw, rounding_mode="floor") * sh * width + (pos % iw) * sw
+    offsets = ((torch.arange(kh, device=input.device) * dh)[:, None] * width
+               + (torch.arange(kw, device=input.device) * dw)[None, :])
+    index = (base.view(nblocks, 1, 1) + offsets.view(1, kh, kw)).reshape(1, 1, -1)
+    flat = input.view(n, channels, khw, nblocks).permute(0, 1, 3, 2).reshape(n, channels, -1)
+    out.scatter_add_(2, index.expand(n, channels, -1), flat)
+    out = out.view(n, channels, height, width)
+    return out[:, :, ph : ph + oh, pw : pw + ow].contiguous()
+
+
 def install_fold_shim() -> bool:
     """Run ``F.fold``/``F.col2im`` on CPU for vendor devices.
 
@@ -1440,6 +1521,39 @@ def install_fold_shim() -> bool:
     if hasattr(F, "col2im"):
         F.col2im = _cpu_variant(F.col2im)
     _installed.add("fold")
+    return True
+
+
+def install_fold_exact_shim() -> bool:
+    """Replace ``F.fold`` with the exact ``scatter_add_`` composition.
+
+    TorchTPU's col2im accumulates in bfloat16 (2.6e-03 relative error on the
+    chunk windows the inference loop folds) while every device runs
+    ``scatter_add_`` in fp32.  Unlike :func:`install_fold_shim` this stays on the
+    device and is 24x faster than the vendor kernel it replaces.
+
+    Returns:
+        ``True`` when the shim was installed, ``False`` when it already was.
+    """
+    if "fold_exact" in _installed:
+        return False
+    import torch.nn.functional as F
+
+    original_fold = F.fold
+
+    def fold(input, output_size, kernel_size, dilation=1, padding=0, stride=1):
+        device = getattr(input, "device", None)
+        if device is None or device.type in ("cpu", "meta"):
+            return original_fold(input, output_size, kernel_size, dilation, padding, stride)
+        folded = col2im_equivalent(
+            input, output_size, kernel_size, dilation, padding, stride
+        )
+        return folded.reshape(input.shape[0], -1, *_pair_size(output_size))
+
+    fold._vendor_shim = True
+    fold._pymss_original = original_fold
+    F.fold = fold
+    _installed.add("fold_exact")
     return True
 
 
@@ -1472,6 +1586,7 @@ SHIMS = {
     "window": install_window_shim,
     "glu": install_glu_shim,
     "group_norm": install_group_norm_shim,
+    "group_norm_contiguous": install_group_norm_contiguous_shim,
     "interpolate": install_interpolate_shim,
     "conv1d": install_conv1d_shim,
     "complex_cat": install_complex_cat_shim,
@@ -1482,6 +1597,7 @@ SHIMS = {
     "sdpa": install_sdpa_shim,
     "rope": install_rope_shim,
     "fold": install_fold_shim,
+    "fold_exact": install_fold_exact_shim,
     "complex_view": install_complex_view_shim,
     "linear_dtype": install_linear_dtype_shim,
     "embedding": install_embedding_shim,
@@ -1576,6 +1692,8 @@ def install_vendor_shims(
     rope: bool = False,
     as_strided_shim: bool = False,
     unfold_shim: bool = False,
+    group_norm_contiguous: bool = False,
+    fold_exact: bool = False,
 ) -> list[str]:
     """Install the shims a device profile asks for.
 
@@ -1593,6 +1711,11 @@ def install_vendor_shims(
         std: ``True`` when ``Tensor.std`` must be rebuilt from ``var``.
         cpu: ``True`` when a non-contiguous host copy must go via ``contiguous``.
         sdpa: ``True`` when fused attention must be expressed as matmuls.
+        group_norm_contiguous: ``True`` when ``F.group_norm`` needs a contiguous
+            input (TorchTPU resolves groups with ``view()``).
+        fold_exact: ``True`` when ``F.fold`` must leave the device kernel: TPU's
+            col2im accumulates in bf16, which costs the overlap-add pipeline
+            2.6e-03.
         rope: ``True`` when the vendor RoPE kernel should replace the rotary
             path for models prepared with ``prepare_model_for_vendor_rope``.
 
@@ -1601,7 +1724,11 @@ def install_vendor_shims(
     """
     if device_type in ("cpu", "meta"):
         return []
-    wanted = ["fold", "complex_view", "linear_dtype", "embedding", "matmul_guard", "layer_norm", "layernorm_module", "conv_transpose1d"]
+    wanted = ["complex_view", "linear_dtype", "embedding", "matmul_guard", "layer_norm", "layernorm_module", "conv_transpose1d"]
+    if not fold_exact:
+        # The exact variant below also replaces F.fold, so installing the SUPA
+        # CPU-roundtrip wrapper first would only stack two pass-throughs.
+        wanted.append("fold")
     if not complex_mul:
         wanted.append("complex_mul")
     if not complex_reshape:
@@ -1638,6 +1765,10 @@ def install_vendor_shims(
         installed.append("as_strided")
     if unfold_shim and install_unfold_shim(device_type):
         installed.append("unfold")
+    if group_norm_contiguous and install_group_norm_contiguous_shim():
+        installed.append("group_norm_contiguous")
+    if fold_exact and install_fold_exact_shim():
+        installed.append("fold_exact")
     return installed
 
 

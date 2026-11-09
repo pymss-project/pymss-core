@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import torch
 
-_CANDIDATES = ("cuda", "supa", "npu", "gcu", "mlu", "xpu")
+_CANDIDATES = ("cuda", "supa", "npu", "gcu", "mlu", "xpu", "tpu")
 
 
 def _accel_available(name: str) -> bool:
