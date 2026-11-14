@@ -10,6 +10,14 @@ from pymss_core import ModelTypeDetectionError, detect_model_type, get_model_fro
     ({"model": {"freqs_per_bands": [4, 5], "use_pope": True}}, "bs_roformer"),
     ({"model": {"num_bands": 60}}, "mel_band_roformer"),
     ({"model": {"freqs_per_bands": [4, 5], "time_conformer_depth": 2}}, "bs_conformer"),
+    ({"model": {
+        "freqs_per_bands": [4, 5], "bridge_layers": [0, 3, 6, 9],
+        "time_channels": [64, 128, 192, 256], "time_strides": [8, 8, 16],
+    }}, "ht_roformer"),
+    ({"model": {
+        "bridge_layers": [0, 3, 6, 9],
+        "time_channels": [64, 128, 192, 256], "time_strides": [8, 8, 16],
+    }}, "ht_roformer"),
     ({"model": {"num_bands": 60, "freq_conformer_depth": 2}}, "mel_band_conformer"),
     ({"model": "htdemucs", "htdemucs": {"channels": 48}}, "htdemucs"),
     ({"model": {"num_subbands": 4, "num_scales": 3, "num_blocks_per_scale": 2, "bottleneck_factor": 4}}, "mdx23c"),

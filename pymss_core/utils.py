@@ -28,6 +28,7 @@ def get_model_from_config(model_type, config_path, model_kwargs_override=None):
         "bandit_v2": ("bandit_v2.bandit", "Bandit", "kwargs"),
         "scnet": ("scnet", "SCNet", "model"),
         "apollo": ("look2hear.apollo", "Apollo", "model"),
+        "ht_roformer": ("bs_roformer", "HTRoFormer", "model"),
     }
     if model_type not in models: raise ValueError(f"Model type {model_type} not supported")
     package, class_name, config_key = models[model_type]

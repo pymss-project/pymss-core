@@ -12,4 +12,5 @@ BSConformer.__name__ = BSConformer.__qualname__ = "BSConformer"
 MelBandConformer = _conformer_variant(MelBandRoformer, inject_norm_output=True)
 MelBandConformer.__name__ = MelBandConformer.__qualname__ = "MelBandConformer"
 from .bs_roformer_hyperace import BSRoformerHyperACE
-__all__ = ("BSConformer", "BSRoformer", "BSRoformerHyperACE", "MelBandConformer", "MelBandRoformer")
+from .ht_roformer import HTRoFormer
+__all__ = ("BSConformer", "BSRoformer", "BSRoformerHyperACE", "HTRoFormer", "MelBandConformer", "MelBandRoformer")
