@@ -23,6 +23,16 @@ import torch
 
 #: Names of the shims installed for the current device, for logging/debugging.
 _installed: set[str] = set()
+_MISSING = object()
+_patches: list[tuple[object, str, object, object]] = []
+_fft_dtype_devices: set[str | None] = set()
+
+
+def _patch(obj, attr, replacement):
+    original = getattr(obj, attr, _MISSING)
+    _patches.append((obj, attr, replacement, original))
+    setattr(obj, attr, replacement)
+
 
 
 def _is_number(value) -> bool:
@@ -133,9 +143,9 @@ def install_complex_mul_shim() -> bool:
             return complex_planes_product(a, b)
         return torch_mul(a, b, *args, **kwargs)
 
-    torch.Tensor.__mul__ = mul
-    torch.Tensor.__rmul__ = rmul
-    torch.mul = mul_fn
+    _patch(torch.Tensor, '__mul__', mul)
+    _patch(torch.Tensor, '__rmul__', rmul)
+    _patch(torch, 'mul', mul_fn)
     _installed.add("complex_mul")
     return True
 
@@ -171,7 +181,7 @@ def install_window_shim() -> bool:
         return wrapper
 
     for name, original in originals.items():
-        setattr(torch, name, make(name, original))
+        _patch(torch, name, make(name, original))
     _installed.add("window")
     return True
 
@@ -211,7 +221,7 @@ def install_glu_shim() -> bool:
         return glu_equivalent(input, dim)
 
     glu._vendor_shim = True
-    F.glu = glu
+    _patch(F, 'glu', glu)
     _installed.add("glu")
     return True
 
@@ -304,8 +314,8 @@ def install_complex_reshape_shim() -> bool:
             return complex_reshape(self, *shape)
         return original_view(self, *shape)
 
-    torch.Tensor.reshape = reshape
-    torch.Tensor.view = view
+    _patch(torch.Tensor, 'reshape', reshape)
+    _patch(torch.Tensor, 'view', view)
     _installed.add("complex_reshape")
     return True
 
@@ -358,7 +368,7 @@ def install_group_norm_shim() -> bool:
         return group_norm_equivalent(input, num_groups, weight, bias, eps)
 
     group_norm._vendor_shim = True
-    F.group_norm = group_norm
+    _patch(F, 'group_norm', group_norm)
     _installed.add("group_norm")
     return True
 
@@ -404,7 +414,7 @@ def install_interpolate_shim() -> bool:
         return original(input.float(), *args, **kwargs).to(torch.bfloat16)
 
     interpolate._vendor_shim = True
-    F.interpolate = interpolate
+    _patch(F, 'interpolate', interpolate)
     _installed.add("interpolate")
     return True
 
@@ -503,7 +513,7 @@ def install_conv1d_shim() -> bool:
                             stride, padding, dilation, groups).to(input.device)
 
     conv1d._vendor_shim = True
-    F.conv1d = conv1d
+    _patch(F, 'conv1d', conv1d)
     _installed.add("conv1d")
     return True
 
@@ -534,7 +544,7 @@ def install_complex_cat_shim() -> bool:
         return original(tensors, dim, *args, **kwargs)
 
     cat._vendor_shim = True
-    torch.cat = cat
+    _patch(torch, 'cat', cat)
     _installed.add("complex_cat")
     return True
 
@@ -575,8 +585,8 @@ def install_fft_shim() -> bool:
 
     rfft._vendor_shim = True
     irfft._vendor_shim = True
-    torch.fft.rfft = rfft
-    torch.fft.irfft = irfft
+    _patch(torch.fft, 'rfft', rfft)
+    _patch(torch.fft, 'irfft', irfft)
     _installed.add("fft")
     return True
 
@@ -773,8 +783,8 @@ def install_sdpa_shim() -> bool:
     scaled_dot_product_attention._vendor_shim = True
     scaled_dot_product_attention._pymss_sdpa_backend = backend
     logging.getLogger(__name__).info("Installed vendor SDPA backend: %s (sudnn applies to SUPA only)", backend)
-    functional.scaled_dot_product_attention = scaled_dot_product_attention
-    torch.scaled_dot_product_attention = scaled_dot_product_attention
+    _patch(functional, 'scaled_dot_product_attention', scaled_dot_product_attention)
+    _patch(torch, 'scaled_dot_product_attention', scaled_dot_product_attention)
     _installed.add("sdpa")
     return True
 
@@ -1062,9 +1072,9 @@ def install_rope_shim() -> bool:
     feedforward_forward._pymss_original = original_feedforward_forward
     logging.getLogger(__name__).info(
         "Installed vendor RoPE + FFN shim (SUPA only; accelerate via prepare_model_for_vendor_rope)")
-    _transformer.rotate_qk_fast_bnhd = rotate_qk_fast_bnhd
-    _transformer.Attention.forward = attention_forward
-    _transformer.FeedForward.forward = feedforward_forward
+    _patch(_transformer, 'rotate_qk_fast_bnhd', rotate_qk_fast_bnhd)
+    _patch(_transformer.Attention, 'forward', attention_forward)
+    _patch(_transformer.FeedForward, 'forward', feedforward_forward)
     _installed.add("rope")
     return True
 
@@ -1111,7 +1121,7 @@ def install_cpu_shim() -> bool:
         return original(self, *args, **kwargs)
 
     cpu._vendor_shim = True
-    torch.Tensor.cpu = cpu
+    _patch(torch.Tensor, 'cpu', cpu)
     _installed.add("cpu")
     return True
 
@@ -1132,13 +1142,13 @@ def install_std_shim() -> bool:
         return std_equivalent(self, *args, **kwargs)
 
     std._vendor_shim = True
-    torch.Tensor.std = std
+    _patch(torch.Tensor, 'std', std)
     _installed.add("std")
     return True
 
 
 #: Shim name -> installer.
-def install_fft_dtype_shim() -> bool:
+def install_fft_dtype_shim(device_type: str | None = None) -> bool:
     """Upcast half inputs before ``torch.fft``/``stft`` on hipFFT stacks.
 
     DTK/hipFFT rejects half-precision transforms outright ("hipFFT doesn't
@@ -1146,8 +1156,13 @@ def install_fft_dtype_shim() -> bool:
     itself is supported in fp32, so promote the operand, run the vendor FFT,
     and cast real outputs back.
     """
+    _fft_dtype_devices.add(device_type)
     if "fft_dtype" in _installed:
         return False
+
+    def applies(tensor):
+        kind = getattr(getattr(tensor, "device", None), "type", None)
+        return kind not in (None, "cpu", "meta") and (None in _fft_dtype_devices or kind in _fft_dtype_devices)
 
     wrapped = {}
     for name in ("rfft", "irfft", "fft", "ifft", "hfft", "ihfft"):
@@ -1158,7 +1173,7 @@ def install_fft_dtype_shim() -> bool:
         def make_guarded(op, orig):
             def guarded(input, *args, **kwargs):
                 device = getattr(input, "device", None)
-                if device is not None and device.type not in ("cpu", "meta"):
+                if device is not None and applies(input):
                     if input.dtype in (torch.float16, torch.bfloat16):
                         out = orig(input.float(), *args, **kwargs)
                         return out.to(input.dtype) if out.is_floating_point() else out
@@ -1172,7 +1187,7 @@ def install_fft_dtype_shim() -> bool:
             return guarded
 
         wrapped[name] = make_guarded(name, original)
-        setattr(torch.fft, name, wrapped[name])
+        _patch(torch.fft, name, wrapped[name])
 
     # torch.stft/istft lower into the same hipFFT plans; promote their operands
     original_stft = torch.stft
@@ -1188,13 +1203,13 @@ def install_fft_dtype_shim() -> bool:
 
     def stft(input, *args, **kwargs):
         promoted, kind = _promote(input)
-        if kind is not None and input.device.type not in ("cpu", "meta"):
+        if kind is not None and applies(input):
             return original_stft(promoted, *args, **kwargs)
         return original_stft(input, *args, **kwargs)
 
     def istft(input, *args, **kwargs):
         promoted, kind = _promote(input)
-        if kind is not None and input.device.type not in ("cpu", "meta"):
+        if kind is not None and applies(input):
             out = original_istft(promoted, *args, **kwargs)
             return out.to(input.dtype if kind is torch.complex32 else kind) if out.is_floating_point() else out
         return original_istft(input, *args, **kwargs)
@@ -1203,8 +1218,8 @@ def install_fft_dtype_shim() -> bool:
     stft._pymss_original = original_stft
     istft._vendor_shim = True
     istft._pymss_original = original_istft
-    torch.stft = stft
-    torch.istft = istft
+    _patch(torch, 'stft', stft)
+    _patch(torch, 'istft', istft)
     _installed.add("fft_dtype")
     return True
 
@@ -1236,7 +1251,7 @@ def install_embedding_shim() -> bool:
 
     embedding._vendor_shim = True
     embedding._pymss_original = original
-    F.embedding = embedding
+    _patch(F, 'embedding', embedding)
     _installed.add("embedding")
     return True
 
@@ -1267,7 +1282,7 @@ def install_matmul_guard_shim() -> bool:
 
     matmul._vendor_shim = True
     matmul._pymss_original = original
-    torch.matmul = matmul
+    _patch(torch, 'matmul', matmul)
     _installed.add("matmul_guard")
     return True
 
@@ -1310,7 +1325,7 @@ def install_conv_transpose1d_shim() -> bool:
                             stride, padding, output_padding, groups, dilation).to(input.device)
 
     conv_transpose1d._vendor_shim = True
-    F.conv_transpose1d = conv_transpose1d
+    _patch(F, 'conv_transpose1d', conv_transpose1d)
     _installed.add("conv_transpose1d")
     return True
 
@@ -1332,7 +1347,7 @@ def install_layernorm_module_shim() -> bool:
         return F.layer_norm(input, self.normalized_shape, self.weight, self.bias, self.eps)
 
     forward._vendor_shim = True
-    nn.LayerNorm.forward = forward
+    _patch(nn.LayerNorm, 'forward', forward)
     _installed.add("layernorm_module")
     return True
 
@@ -1363,8 +1378,8 @@ def install_layer_norm_shim() -> bool:
 
     layer_norm._vendor_shim = True
     layer_norm._pymss_original = original
-    F.layer_norm = layer_norm
-    torch.nn.functional.layer_norm = layer_norm
+    _patch(F, 'layer_norm', layer_norm)
+    _patch(torch.nn.functional, 'layer_norm', layer_norm)
     _installed.add("layer_norm")
     return True
 
@@ -1411,7 +1426,7 @@ def install_linear_dtype_shim() -> bool:
 
     linear._vendor_shim = True
     linear._pymss_original = original
-    F.linear = linear
+    _patch(F, 'linear', linear)
     _installed.add("linear_dtype")
     return True
 
@@ -1436,9 +1451,9 @@ def install_fold_shim() -> bool:
         wrapper._pymss_original = original
         return wrapper
 
-    F.fold = _cpu_variant(F.fold)
+    _patch(F, 'fold', _cpu_variant(F.fold))
     if hasattr(F, "col2im"):
-        F.col2im = _cpu_variant(F.col2im)
+        _patch(F, 'col2im', _cpu_variant(F.col2im))
     _installed.add("fold")
     return True
 
@@ -1461,7 +1476,7 @@ def install_complex_view_shim() -> bool:
 
     view_as_complex._vendor_shim = True
     view_as_complex._pymss_original = original
-    torch.view_as_complex = view_as_complex
+    _patch(torch, 'view_as_complex', view_as_complex)
     _installed.add("complex_view")
     return True
 
@@ -1520,10 +1535,10 @@ def install_as_strided_shim(device_type: str) -> bool:
             return flat[torch.from_numpy(idx).to(flat.device)]
         return original(input, size, stride, storage_offset=storage_offset)
 
-    torch.as_strided = as_strided_safe
-    torch.Tensor.as_strided = lambda self, size, stride, storage_offset=None: as_strided_safe(
+    _patch(torch, 'as_strided', as_strided_safe)
+    _patch(torch.Tensor, 'as_strided', lambda self, size, stride, storage_offset=None: as_strided_safe(
         self, size, stride, storage_offset
-    )
+    ))
     _installed.add("as_strided")
     return True
 
@@ -1552,7 +1567,7 @@ def install_unfold_shim(device_type: str) -> bool:
             return picked.permute(*perm)
         return original(self, dimension, size, step)
 
-    torch.Tensor.unfold = unfold_safe
+    _patch(torch.Tensor, 'unfold', unfold_safe)
     _installed.add("unfold")
     return True
 
@@ -1632,7 +1647,8 @@ def install_vendor_shims(
         wanted.append("rope")
     installed = []
     for name in wanted:
-        if SHIMS[name]():
+        changed = SHIMS[name](device_type) if name == "fft_dtype" else SHIMS[name]()
+        if changed:
             installed.append(name)
     if as_strided_shim and install_as_strided_shim(device_type):
         installed.append("as_strided")
@@ -1647,43 +1663,14 @@ def installed_shims() -> frozenset[str]:
 
 
 def reset_shims() -> None:
-    """Forget which shims were installed and restore original functions."""
-    import torch.nn.functional as F
-
-    targets = [
-        (torch.Tensor, "__mul__"),
-        (torch.Tensor, "__rmul__"),
-        (torch, "mul"),
-        (torch.Tensor, "reshape"),
-        (torch.Tensor, "view"),
-        (F, "glu"),
-        (F, "group_norm"),
-        (F, "interpolate"),
-        (F, "conv1d"),
-        (torch, "cat"),
-        (torch.Tensor, "std"),
-        (torch.Tensor, "cpu"),
-        (F, "scaled_dot_product_attention"),
-        (F, "fold"),
-        (torch, "view_as_complex"),
-        (F, "linear"),
-        (F, "embedding"),
-        (torch, "matmul"),
-        (F, "layer_norm"),
-        (torch.nn.LayerNorm, "forward"),
-        (F, "conv_transpose1d"),
-        (torch.Tensor, "as_strided"),
-        (torch, "as_strided"),
-        (torch.Tensor, "unfold"),
-        (torch, "stft"),
-        (torch, "istft"),
-    ]
-    for name in ("rfft", "irfft", "fft", "ifft", "hfft", "ihfft"):
-        if hasattr(torch.fft, name):
-            targets.append((torch.fft, name))
-    for obj, attr in targets:
-        current = getattr(obj, attr, None)
-        while getattr(current, "_pymss_original", None) is not None:
-            current = current._pymss_original
-            setattr(obj, attr, current)
+    """Restore owned patches, preserving replacements made by other libraries."""
+    for obj, attr, replacement, original in reversed(_patches):
+        if getattr(obj, attr, _MISSING) is not replacement:
+            continue
+        if original is _MISSING:
+            delattr(obj, attr)
+        else:
+            setattr(obj, attr, original)
+    _patches.clear()
+    _fft_dtype_devices.clear()
     _installed.clear()

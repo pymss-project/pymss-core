@@ -43,6 +43,7 @@ ENFLAME = "enflame"
 BIREN = "biren"
 ASCEND = "ascend"
 MLU = "mlu"
+MOORE = "moore"
 MPS = "mps"
 XPU = "xpu"
 CPU = "cpu"
@@ -64,6 +65,8 @@ DEVICE_ALIASES: tuple[str, ...] = (
     "metax",
     "enflame",
     "hygon",
+    "musa",
+    "moore",
 )
 
 #: ``--device`` alias -> vendor key.
@@ -82,6 +85,8 @@ ALIAS_TO_VENDOR: dict[str, str] = {
     "metax": METAX,
     "enflame": ENFLAME,
     "hygon": HYGON,
+    "musa": MOORE,
+    "moore": MOORE,
     "cpu": CPU,
 }
 
@@ -217,6 +222,10 @@ _PROFILES: dict[str, DeviceProfile] = {
         scatter_add=False,
     ),
     MLU: DeviceProfile(MLU, "mlu", plugin="torch_mlu"),
+    MOORE: DeviceProfile(
+        MOORE, "musa", plugin="torch_musa", fft_dtype_shim=True,
+        scatter_add=False, amp=False, multi_device=False,
+    ),
     # Ascend's torch_npu builds ship npu_lstm/npu_gru without inference support
     # and lack a complex STFT path, so both fallbacks are part of the profile.
     ASCEND: DeviceProfile(ASCEND, "npu", plugin="torch_npu", complex_fft=False, rnn=False, multi_device=False),
@@ -246,6 +255,7 @@ _DEVICE_TYPE_VENDOR: dict[str, str] = {
     "gcu": ENFLAME,
     "mlu": MLU,
     "supa": BIREN,
+    "musa": MOORE,
     "mps": MPS,
     "xpu": XPU,
     "cpu": CPU,
@@ -486,15 +496,20 @@ def prepare_device_alias(alias: str) -> str:
     profile = profile_for_alias(alias)
     if profile is None:
         return str(alias)
+    plugin_module = None
     if profile.plugin:
         # The backend reads its tuning switches when the extension loads.
         apply_vendor_env(profile.vendor)
-        __import__(profile.plugin)
+        plugin_module = __import__(profile.plugin)
     clear_device_cache()
     device_type = profile.device_type
     if device_type == "supa" and not hasattr(torch, "supa"):
         # Older BIRENSUPA releases expose SUPA devices as CUDA.
         device_type = "cuda"
+    module = getattr(torch, device_type, None) or plugin_module
+    available = getattr(module, "is_available", None)
+    if callable(available) and not available():
+        return device_type
     # PrivateUse1 backends do not set a current device on their own.
     set_current_vendor_device(device_type)
     # Kernel gaps that every model would otherwise have to work around.
@@ -625,6 +640,7 @@ __all__ = (
     "ILUVATAR",
     "METAX",
     "MLU",
+    "MOORE",
     "MPS",
     "NVIDIA",
     "ROCM",

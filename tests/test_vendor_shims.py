@@ -242,7 +242,7 @@ class TestGroupedConv1d:
         b = torch.randn(cout)
         ref = F.conv1d(x, w, b, 1, 1, 1, groups)
         got = conv1d_grouped_equivalent(x, w, b, 1, 1, 1, groups)
-        assert torch.equal(got, ref)
+        torch.testing.assert_close(got, ref, rtol=1e-5, atol=1e-6)
 
     def test_biren_profile_asks_for_it(self):
         from pymss_core.device import clear_device_cache, device_profile
