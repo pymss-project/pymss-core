@@ -10,7 +10,7 @@ class ModelTypeDetectionError(RuntimeError):
 _MODEL_TYPES = frozenset({
     "bs_roformer", "bs_roformer_hyperace", "bs_conformer",
     "mel_band_roformer", "mel_band_conformer", "htdemucs", "mdx23c",
-    "apollo", "bandit", "bandit_v2", "scnet", "vr",
+    "apollo", "bandit", "bandit_v2", "scnet", "vr", "ht_roformer",
 })
 
 
@@ -56,8 +56,11 @@ def detect_model_type(config):
     if isinstance(model, Mapping):
         keys = model.keys()
         conformer_depths = "time_conformer_depth" in keys or "freq_conformer_depth" in keys
-        if "freqs_per_bands" in keys:
+        ht_roformer = {"bridge_layers", "time_channels", "time_strides"} <= keys
+        if "freqs_per_bands" in keys and not ht_roformer:
             candidates.add("bs_conformer" if conformer_depths else "bs_roformer")
+        if ht_roformer:
+            candidates.add("ht_roformer")
         if "num_bands" in keys:
             candidates.add("mel_band_conformer" if conformer_depths else "mel_band_roformer")
         if {"num_subbands", "num_scales", "num_blocks_per_scale", "bottleneck_factor"} <= keys:
