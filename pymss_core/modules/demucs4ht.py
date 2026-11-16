@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from ..config import to_plain
-from .demucs_local import (CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, rescale_module, spectro)
+from .demucs_local import (CrossTransformerEncoder, HDecLayer, HEncLayer, MultiWrap, ScaledEmbedding, ispectro, pad1d, pad_complex, rescale_module, spectro)
 from .mlx_backend import MpsBackendMixin
 class HTDemucs(MpsBackendMixin, nn.Module):
     def __init__(
@@ -86,7 +86,7 @@ class HTDemucs(MpsBackendMixin, nn.Module):
         z = spectro(x, nfft, hl)[..., :-1, :]
         assert z.shape[-1] == le + 4, (z.shape, x.shape, le)
         return z[..., 2 : 2 + le]
-    def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = F.pad(z, (2, 2, 0, 1)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
+    def _ispec(self, z, length=None, scale=0): hl = self.hop_length // (4**scale); z = pad_complex(z, (2, 2, 0, 1)); pad = hl // 2 * 3; le = hl * math.ceil(length / hl) + 2 * pad; return ispectro(z, hl, length=le)[..., pad : pad + length]
     def _magnitude(self, z):
         if self.cac: B, C, Fr, T = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(B, C * 2, Fr, T)
         return z.abs()

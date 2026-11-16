@@ -1,4 +1,6 @@
 """The shims that route around missing vendor kernels."""
+from types import SimpleNamespace
+
 import pytest
 import torch
 
@@ -129,6 +131,62 @@ class TestScatterAddEquivalent:
         want = torch.zeros(4, 7)
         want.scatter_add_(1, index[None, :].expand(4, 6), src)
         assert torch.allclose(scatter_add_equivalent(src, index, 1, 7), want, atol=1e-6)
+    def test_blocked_devices_fold_row_wise(self, monkeypatch):
+        """A profile that blocks scatter_add must not build the one-hot matrix.
+
+        The one-hot matmul is ``size x index.numel() x features``: 24.24 GiB for a
+        10 s mel-band clip, which OOMs the 7 GiB MUSA cards.  ``scatter_add=False``
+        therefore has to route through the row-wise fold.
+        """
+        from pymss_core import vendor_shims
+
+        folds = []
+        real_fold = vendor_shims._fold_rows
+
+        def spy(flat, index_1d, size):
+            folds.append((tuple(flat.shape), int(size)))
+            return real_fold(flat, index_1d, size)
+
+        monkeypatch.setattr(vendor_shims, "_fold_rows", spy)
+        monkeypatch.setattr(vendor_shims, "_scatter_add_blocked", lambda device: True)
+
+        torch.manual_seed(2)
+        src = torch.randn(2, 3, 4, 5)
+        index = torch.tensor([0, 0, 1, 2])
+        want = torch.zeros(2, 3, 6, 5)
+        want.scatter_add_(2, index[None, None, :, None].expand(2, 3, -1, 5), src)
+        got = vendor_shims.scatter_add_equivalent(src, index, 2, 6)
+        assert folds == [((6, 4, 5), 6)]
+        assert torch.allclose(got, want, atol=1e-6)
+
+    def test_unblocked_devices_keep_the_one_hot_matmul(self, monkeypatch):
+        from pymss_core import vendor_shims
+
+        monkeypatch.setattr(
+            vendor_shims, "_fold_rows",
+            lambda *args, **kwargs: pytest.fail("row-wise fold asked for on a native device"),
+        )
+        monkeypatch.setattr(vendor_shims, "_scatter_add_blocked", lambda device: False)
+        torch.manual_seed(3)
+        src = torch.randn(2, 3, 4, 5)
+        index = torch.tensor([0, 0, 1, 2])
+        want = torch.zeros(2, 3, 6, 5)
+        want.scatter_add_(2, index[None, None, :, None].expand(2, 3, -1, 5), src)
+        assert torch.allclose(vendor_shims.scatter_add_equivalent(src, index, 2, 6), want, atol=1e-6)
+
+    def test_complex_sources_fold_on_the_real_planes(self):
+        """MUSA has no complex ``index_add_``, so complex folds run re/im plane-wise."""
+        from pymss_core.vendor_shims import _fold_rows
+
+        torch.manual_seed(4)
+        src = torch.randn(2, 4, 3, dtype=torch.complex64)
+        index = torch.tensor([0, 0, 1, 2])
+        want = torch.zeros(2, 5, 3, dtype=torch.complex64)
+        for row in range(2):
+            want[row].index_add_(0, index, src[row])
+        got = _fold_rows(src, index, 5)
+        assert got.dtype == torch.complex64
+        assert torch.allclose(got, want, atol=1e-6)
 
 
 class TestPlaneProductPredicate:
@@ -454,3 +512,86 @@ class TestSdpaTransposedKey:
         monkeypatch.setenv("PYMSS_SDPA_BATCH_CHUNK", "4")
         piecewise = sdpa_equivalent(q, k, v)
         assert torch.allclose(whole, piecewise, atol=1e-6)
+
+
+class _FakeTensor:
+    """Duck-typed tensor: the shim only reads ``dtype``, ``device`` and ``shape``."""
+
+    def __init__(self, kind, dtype, shape):
+        self.dtype = dtype
+        self.shape = shape
+        self.device = SimpleNamespace(type=kind, index=0)
+
+
+class TestRopeKernelTable:
+    """The fused kernel wants the angles interleaved, not in halves."""
+
+    def test_even_lanes_carry_the_reference_angles(self):
+        from pymss_core.modules.bs_roformer.common import RotaryEmbedding
+        from pymss_core.modules.bs_roformer.transformer import cached_rotary_cos_sin
+        from pymss_core.vendor_shims import _fused_rope_table
+
+        rotary, device, seq_len, dim = RotaryEmbedding(8), torch.device("cpu"), 4, 8
+        table = _fused_rope_table(rotary, seq_len, device, torch.float32)
+        cos, _ = cached_rotary_cos_sin(rotary, seq_len, device, torch.float32)
+        assert table.shape == (seq_len, dim)
+        # One angle per axis element, duplicated: widening in halves instead
+        # would rotate the wrong pairs.
+        assert torch.allclose(table[..., ::2].cos(), cos[0, :, 0, :])
+        assert torch.allclose(table[..., 1::2].cos(), cos[0, :, 0, :])
+
+
+class TestRopeKernelShim:
+    """``aten::_fused_rope_forward`` replaces the reference rotation on MUSA only.
+
+    Measured on MTT S70 + torch_musa 2.7.1: 372 us -> 49 us for the q/k pair of a
+    roformer at ``(1, 517, 8, 64)``, with attention scores matching to 3.6e-07.
+    """
+
+    def test_missing_vendor_kernel_installs_nothing(self, monkeypatch):
+        from pymss_core import vendor_shims
+
+        reset_shims()
+        monkeypatch.setattr(vendor_shims, "_fused_rope_op", lambda: None)
+        assert vendor_shims.install_rope_kernel_shim("musa") is False
+        assert installed_shims() == frozenset()
+
+    def test_routes_musa_fp32_through_the_kernel_and_restores(self, monkeypatch):
+        from pymss_core import vendor_shims
+        from pymss_core.modules.bs_roformer import transformer as transformer_module
+
+        fused_calls, fallbacks = [], []
+
+        def fused(tensor, table, interleaved, conjugate):
+            fused_calls.append((tensor.device.type, tuple(table.shape), interleaved, conjugate))
+            return tensor
+
+        def original(rotary_embed, q, k):
+            fallbacks.append(q.device.type)
+            return q, k
+
+        monkeypatch.setattr(vendor_shims, "_fused_rope_op", lambda: fused)
+        # The table needs a real device, so it is stubbed out here; its own
+        # correctness is covered by TestRopeKernelTable.
+        monkeypatch.setattr(vendor_shims, "_fused_rope_table", lambda *args: torch.ones(4, 8))
+        monkeypatch.setattr(transformer_module, "rotate_qk_fast_bnhd", original)
+        reset_shims()
+        try:
+            assert vendor_shims.install_rope_kernel_shim("musa") is True
+            assert "rope_kernel" in installed_shims()
+            rotate = transformer_module.rotate_qk_fast_bnhd
+            rotary = SimpleNamespace(dim=8)
+
+            rotate(rotary, _FakeTensor("musa", torch.float32, (1, 4, 2, 8)), _FakeTensor("musa", torch.float32, (1, 4, 2, 8)))
+            assert fused_calls == [("musa", (4, 8), True, True), ("musa", (4, 8), True, True)]
+
+            # Half precision keeps the reference implementation even on MUSA,
+            # and so does every other device type.
+            rotate(rotary, _FakeTensor("musa", torch.float16, (1, 4, 2, 8)), _FakeTensor("musa", torch.float16, (1, 4, 2, 8)))
+            rotate(rotary, torch.zeros(1, 4, 2, 8), torch.zeros(1, 4, 2, 8))
+            assert fallbacks == ["musa", "cpu"]
+            assert len(fused_calls) == 2
+        finally:
+            reset_shims()
+        assert transformer_module.rotate_qk_fast_bnhd is original
+        assert installed_shims() == frozenset()

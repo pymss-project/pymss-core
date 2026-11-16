@@ -36,7 +36,8 @@ jobs:
       - name: Verify device and runtime contracts
         run: |
           python -m pytest -q tests/test_device.py tests/test_device_release_contracts.py \
-            tests/test_vendor_shims.py tests/test_npu_conv.py tests/test_npu_fft.py \
+            tests/test_vendor_shims.py tests/test_demucs_complex_pad.py \
+            tests/test_npu_conv.py tests/test_npu_fft.py \
             tests/test_npu_module_precision.py tests/test_npu_rnn.py \
             tests/test_npu_roformer_regression.py tests/test_roformer_dtype.py \
             tests/test_core_api.py tests/test_runtime_cache.py tests/test_model_detection.py
