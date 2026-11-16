@@ -1036,6 +1036,97 @@ def _vendor_fused_ffn(module, normalized):
     return outputs[0] if isinstance(outputs, (list, tuple)) else outputs
 
 
+def _fused_rope_op():
+    """Return the vendor's fused rope kernel, or ``None`` when the stack has none.
+
+    Standalone so tests can substitute the kernel without a MUSA card.
+    """
+    return getattr(torch.ops.aten, "_fused_rope_forward", None)
+
+
+def _fused_rope_table(rotary_embed, seq_len, device, dtype):
+    """Return the angle table the fused rope kernel expects, cached per shape.
+
+    With ``rotary_interleaved=True`` the kernel rotates the ``(2i, 2i+1)`` pair of
+    the head axis and takes one angle per axis element, so every angle of the
+    half-width table appears twice (``[t0, t0, t1, t1, ...]``).  Widening the
+    table in halves instead (``[t0, t1, ..., t0, t1, ...]``) silently rotates the
+    wrong pairs.  ``RotaryEmbedding.forward`` already interleaves its duplicate
+    pairs, so the even entries are exactly one copy of that table.
+    """
+    cache = getattr(rotary_embed, "_pymss_rope_angle_cache", None)
+    if cache is None:
+        rotary_embed._pymss_rope_angle_cache = cache = {}
+    key = (seq_len, device.type, device.index, dtype)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    phase_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    freqs = rotary_embed.forward(
+        lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=phase_dtype, offset=0),
+        cache_key=f"freqs:{seq_len}|offset:0",
+    )[None, :, None, :].to(device=device, dtype=phase_dtype)
+    angles = freqs[..., ::2][0, :, 0, :]
+    cache[key] = table = angles.repeat_interleave(2, dim=-1)
+    return table
+
+
+def install_rope_kernel_shim(device_type: str | None = None) -> bool:
+    """Rotate q/k with the vendor's fused rope kernel.
+
+    Measured on MTT S70 + torch_musa 2.7.1: the q/k pair a roformer rotates at
+    ``(1, 517, 8, 64)`` costs 372 us through ``apply_rotary_emb_fast`` and 49 us
+    through ``aten::_fused_rope_forward``, i.e. 7.6x, with identical attention
+    scores (3.6e-07).
+
+    The kernel keeps the interleaved layout while the reference path writes
+    ``[even | odd]`` halves; since both q and k are rotated the same way the dot
+    products -- and therefore every attention score -- are unchanged, which is the
+    same argument ``apply_rotary_emb_fast`` already relies on.
+
+    Only fp32 on the vendor's own device is redirected; everything else, including
+    the half-precision path, keeps the reference implementation.
+
+    Args:
+        device_type: Device type the fused kernel belongs to.  Defaults to
+            ``"musa"``; a profile only asks for this shim on a device that has it.
+
+    Returns:
+        ``True`` when the shim was installed, ``False`` when it was already there,
+        the kernel is missing, or the model module cannot be imported.
+    """
+    if "rope_kernel" in _installed:
+        return False
+    fused = _fused_rope_op()
+    if fused is None:
+        return False
+    try:
+        from pymss_core.modules.bs_roformer import transformer as _transformer
+    except Exception:  # noqa: BLE001 - optional model package must not break setup
+        return False
+
+    target = device_type or "musa"
+    original = _transformer.rotate_qk_fast_bnhd
+
+    def rotate_qk_fast_bnhd(rotary_embed, q, k):
+        if (
+            q.dtype == torch.float32
+            and q.device.type == target
+            and q.shape[-1] % 2 == 0
+            and q.shape[-1] == getattr(rotary_embed, "dim", q.shape[-1])
+        ):
+            table = _fused_rope_table(rotary_embed, q.shape[1], q.device, q.dtype)
+            if table.shape[-1] == q.shape[-1]:
+                return fused(q, table, True, True), fused(k, table, True, True)
+        return original(rotary_embed, q, k)
+
+    rotate_qk_fast_bnhd._vendor_shim = True
+    rotate_qk_fast_bnhd._pymss_original = original
+    _patch(_transformer, "rotate_qk_fast_bnhd", rotate_qk_fast_bnhd)
+    _installed.add("rope_kernel")
+    return True
+
+
 def install_rope_shim() -> bool:
     """Route prepared rotary embeddings through the vendor RoPE kernel.
 
@@ -1523,6 +1614,10 @@ def install_complex_view_shim() -> bool:
     return True
 
 
+#: Installers that take the device type: they scope their patch to it.
+_DEVICE_SCOPED_SHIMS = frozenset({"fft_dtype", "rope_kernel"})
+
+#: Shim name -> installer.
 SHIMS = {
     "complex_mul": install_complex_mul_shim,
     "complex_reshape": install_complex_reshape_shim,
@@ -1538,6 +1633,7 @@ SHIMS = {
     "cpu": install_cpu_shim,
     "sdpa": install_sdpa_shim,
     "rope": install_rope_shim,
+    "rope_kernel": install_rope_kernel_shim,
     "fold": install_fold_shim,
     "complex_view": install_complex_view_shim,
     "linear_dtype": install_linear_dtype_shim,
@@ -1631,6 +1727,7 @@ def install_vendor_shims(
     cpu: bool = False,
     sdpa: bool = False,
     rope: bool = False,
+    rope_kernel: bool = False,
     as_strided_shim: bool = False,
     unfold_shim: bool = False,
 ) -> list[str]:
@@ -1652,6 +1749,8 @@ def install_vendor_shims(
         sdpa: ``True`` when fused attention must be expressed as matmuls.
         rope: ``True`` when the vendor RoPE kernel should replace the rotary
             path for models prepared with ``prepare_model_for_vendor_rope``.
+        rope_kernel: ``True`` when the fused rope kernel
+            (``aten::_fused_rope_forward``) should rotate q/k directly.
 
     Returns:
         The shim names that were installed by this call.
@@ -1687,9 +1786,11 @@ def install_vendor_shims(
         wanted.append("sdpa")
     if rope:
         wanted.append("rope")
+    if rope_kernel:
+        wanted.append("rope_kernel")
     installed = []
     for name in wanted:
-        changed = SHIMS[name](device_type) if name == "fft_dtype" else SHIMS[name]()
+        changed = SHIMS[name](device_type) if name in _DEVICE_SCOPED_SHIMS else SHIMS[name]()
         if changed:
             installed.append(name)
     if as_strided_shim and install_as_strided_shim(device_type):

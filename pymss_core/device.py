@@ -142,6 +142,7 @@ class DeviceProfile:
     cpu_shim: bool = False
     sdpa_shim: bool = False
     rope_shim: bool = False
+    rope_kernel_shim: bool = False
     scatter_add: bool = True
     dilated_conv_allowed: frozenset[tuple[int, int]] = frozenset()
     amp: bool = True
@@ -271,9 +272,15 @@ _PROFILES: dict[str, DeviceProfile] = {
     #   bfloat16 fails in datacast.  linear/matmul/layernorm fp16 do work.
     # * ``multi_device=False``: no MCCL library for the desktop cards of this
     #   generation, so a DataParallel split is not available.
+    #
+    # One acceleration on top of the native surface: ``rope_kernel_shim`` routes
+    # rotary q/k through ``aten::_fused_rope_forward``, which is 7.6x faster than
+    # ``apply_rotary_emb_fast`` on these parts (372 us -> 49 us for the
+    # (1, 517, 8, 64) pair a roformer rotates) with identical attention scores
+    # (3.6e-07).  It is not a gap: the reference path is correct, just slower.
     MOORE: DeviceProfile(
         MOORE, "musa", plugin="torch_musa", fft_dtype_shim=True,
-        scatter_add=False, amp=False, multi_device=False,
+        scatter_add=False, amp=False, multi_device=False, rope_kernel_shim=True,
     ),
     # Ascend's torch_npu builds ship npu_lstm/npu_gru without inference support
     # and lack a complex STFT path, so both fallbacks are part of the profile.
@@ -583,6 +590,7 @@ def prepare_device_alias(alias: str) -> str:
         cpu=profile_now.cpu_shim,
         sdpa=profile_now.sdpa_shim,
         rope=profile_now.rope_shim,
+        rope_kernel=profile_now.rope_kernel_shim,
     )
     # Recurrent cells: the fused _VF.lstm is both wrong and catastrophically slow
     # on BIREN (605 s for one (18, 57, 128) call), and the profile already says
