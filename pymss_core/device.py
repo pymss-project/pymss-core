@@ -222,6 +222,55 @@ _PROFILES: dict[str, DeviceProfile] = {
         scatter_add=False,
     ),
     MLU: DeviceProfile(MLU, "mlu", plugin="torch_mlu"),
+    # ---- Moore Threads (MUSA) ------------------------------------------------
+    # HARDWARE AND STACK CEILING -- DO NOT RAISE WITHOUT RE-MEASURING
+    #
+    # Every flag below was measured on the first Moore Threads generation, the
+    # 春晓 (Chunxiao) architecture: MTT S70 and MTT S80 -- the only two parts of
+    # that generation sold as consumer desktop cards -- plus the S3000
+    # workstation part.  All of them report compute capability (2, 1).
+    #
+    # The versions named here are the highest 春晓 can run:
+    #
+    #   torch_musa  2.7.1        (2.9.x needs MUSA SDK >= 4.3.2, 2.11 needs >= 5.1)
+    #   MUSA SDK    4.3.0.CC2.1  (mcc 4.3.0, muDNN 3.1.0.CC2.1, driver 3.3.0)
+    #
+    # Raising either breaks 春晓 outright: the newer user-space SDK and driver do
+    # not run those cards, and torch_musa >= 2.9 refuses to load.  The flags are
+    # only true from 2.7.1 on -- torch_musa 2.5 has no complex-by-real
+    # multiply/divide, no complex cat/fill/reshape and no
+    # ``_thnn_fused_gru_cell`` -- so a user pinned to an older wheel needs the
+    # per-run escapes (``PYMSS_FFT_FALLBACK`` / ``PYMSS_RNN_FALLBACK`` /
+    # ``PYMSS_AMP``) or the profile below will claim kernels that do not exist.
+    #
+    # Building torch_musa for this generation: the desktop cards (S70/S80) need
+    # USE_MCCL=0, because the SDK ships no MCCL library for them -- the S3000
+    # does have MCCL -- and TORCH_MUSA_ARCH_LIST=21 keeps the build to mp_21.
+    #
+    # Generation 2 (capability (2, 2) and up) is where the capability-gated
+    # features open up: flash SDPA needs mp >= 2.2, and so do the
+    # half-precision muFFT transforms that ``fft_dtype_shim`` works around.  It
+    # is also where these parts are expected to gain tensor units and MCCL, i.e.
+    # where ``amp``/``multi_device`` should flip -- NOT MEASURED YET, so do not
+    # flip them here: measure the target card with an op sweep plus one real
+    # model per family, then add a generation-2 entry *next to* this one.
+    #
+    # On the ceiling stack almost everything is native -- rfft/irfft 1.9e-07,
+    # complex-by-real rel 0, complex cat/fill/copy, ``_thnn_fused_gru_cell``,
+    # ``_native_multi_head_attention`` -- so only the gaps annotated below are
+    # left; every other flag keeps its native default:
+    #
+    # * ``fft_dtype_shim``: fp16 muFFT transforms are a hardware gate below
+    #   mp 2.2 ("not supported on current GPU arch"), so spectra are promoted to
+    #   fp32 and cast back.
+    # * ``scatter_add=False``: complex ``scatter_add_``/``index_add_`` are still
+    #   missing in every released torch_musa (the real-dtype ones work), so band
+    #   folds take the real-plane path in ``scatter_add_equivalent``.
+    # * ``amp=False``: fp16 autocast aborts on real models -- muDNN's fused fp16
+    #   conv raises "ConvNd MUDNN failed in: RunFusion" on conv1d/conv2d and
+    #   bfloat16 fails in datacast.  linear/matmul/layernorm fp16 do work.
+    # * ``multi_device=False``: no MCCL library for the desktop cards of this
+    #   generation, so a DataParallel split is not available.
     MOORE: DeviceProfile(
         MOORE, "musa", plugin="torch_musa", fft_dtype_shim=True,
         scatter_add=False, amp=False, multi_device=False,
