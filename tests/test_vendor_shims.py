@@ -130,6 +130,27 @@ class TestScatterAddEquivalent:
         want.scatter_add_(1, index[None, :].expand(4, 6), src)
         assert torch.allclose(scatter_add_equivalent(src, index, 1, 7), want, atol=1e-6)
 
+    def test_one_hot_is_not_broadcast_across_rows(self, monkeypatch):
+        # A batched matmul broadcasts the (size, N) one-hot to every row; MPS
+        # materializes it (rows x size x N), which is tens of GB for a mel-band chunk.
+        from pymss_core.vendor_shims import scatter_add_equivalent
+
+        native = torch.matmul
+        shapes = []
+
+        def recording_matmul(left, right, *args, **kwargs):
+            shapes.append((left.dim(), right.dim()))
+            return native(left, right, *args, **kwargs)
+
+        monkeypatch.setattr(torch, "matmul", recording_matmul)
+        torch.manual_seed(2)
+        src = torch.randn(1, 2, 40, 31, 2)
+        index = torch.randint(0, 24, (40,))
+        want = torch.zeros(1, 2, 24, 31, 2)
+        want.scatter_add_(2, index[None, None, :, None, None].expand(1, 2, -1, 31, 2), src)
+        assert torch.allclose(scatter_add_equivalent(src, index, 2, 24), want, atol=1e-5)
+        assert shapes == [(2, 2)]
+
 
 class TestPlaneProductPredicate:
     def test_scalar_on_either_side_requests_the_plane_kernel(self):

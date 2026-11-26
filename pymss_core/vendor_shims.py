@@ -260,8 +260,12 @@ def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, siz
             one_hot = (index_1d.cpu().unsqueeze(0) == slots.cpu()).to(flat.cpu().dtype)
             out = torch.matmul(one_hot, flat.cpu()).to(src.device)
     else:
+        # Contract the index axis with one 2-D GEMM. A batched matmul broadcasts the
+        # one-hot to every row, and MPS materializes that (rows x size x N) tensor.
+        rows, entries, channels = flat.shape
+        columns = flat.movedim(1, 0).reshape(entries, rows * channels)
         one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(src.dtype)
-        out = torch.matmul(one_hot, flat)
+        out = torch.matmul(one_hot, columns).reshape(size, rows, channels).movedim(0, 1)
     out = out.reshape(*leading, size, moved.shape[-1])
     if dim >= 0:
         return out.movedim(-2, dim)
