@@ -66,6 +66,18 @@ class TestShimInstallation:
         assert window.device.type == "meta"
         reset_shims()
 
+    def test_sdpa_shim_disables_the_mha_fastpath_until_reset(self):
+        from pymss_core.vendor_shims import install_sdpa_shim
+
+        reset_shims()
+        assert torch.backends.mha.get_fastpath_enabled()
+        try:
+            assert install_sdpa_shim()
+            assert not torch.backends.mha.get_fastpath_enabled()
+        finally:
+            reset_shims()
+        assert torch.backends.mha.get_fastpath_enabled()
+
 
 class TestGluShim:
     def test_equivalent_matches_the_fused_kernel(self):
@@ -131,23 +143,19 @@ class TestScatterAddEquivalent:
         want = torch.zeros(4, 7)
         want.scatter_add_(1, index[None, :].expand(4, 6), src)
         assert torch.allclose(scatter_add_equivalent(src, index, 1, 7), want, atol=1e-6)
-    def test_blocked_devices_fold_row_wise(self, monkeypatch):
-        """A profile that blocks scatter_add must not build the one-hot matrix.
 
-        The one-hot matmul is ``size x index.numel() x features``: 24.24 GiB for a
-        10 s mel-band clip, which OOMs the 7 GiB MUSA cards.  ``scatter_add=False``
-        therefore has to route through the row-wise fold.
-        """
+    def test_blocked_devices_fold_with_index_add(self, monkeypatch):
+        """A profile that blocks scatter_add folds with index_add_, not the one-hot matmul."""
         from pymss_core import vendor_shims
 
         folds = []
-        real_fold = vendor_shims._fold_rows
+        real_fold = vendor_shims._index_add_fold
 
         def spy(flat, index_1d, size):
             folds.append((tuple(flat.shape), int(size)))
             return real_fold(flat, index_1d, size)
 
-        monkeypatch.setattr(vendor_shims, "_fold_rows", spy)
+        monkeypatch.setattr(vendor_shims, "_index_add_fold", spy)
         monkeypatch.setattr(vendor_shims, "_scatter_add_blocked", lambda device: True)
 
         torch.manual_seed(2)
@@ -163,8 +171,8 @@ class TestScatterAddEquivalent:
         from pymss_core import vendor_shims
 
         monkeypatch.setattr(
-            vendor_shims, "_fold_rows",
-            lambda *args, **kwargs: pytest.fail("row-wise fold asked for on a native device"),
+            vendor_shims, "_index_add_fold",
+            lambda *args, **kwargs: pytest.fail("index_add_ fold asked for on a native device"),
         )
         monkeypatch.setattr(vendor_shims, "_scatter_add_blocked", lambda device: False)
         torch.manual_seed(3)
@@ -176,7 +184,7 @@ class TestScatterAddEquivalent:
 
     def test_complex_sources_fold_on_the_real_planes(self):
         """MUSA has no complex ``index_add_``, so complex folds run re/im plane-wise."""
-        from pymss_core.vendor_shims import _fold_rows
+        from pymss_core.vendor_shims import _index_add_fold
 
         torch.manual_seed(4)
         src = torch.randn(2, 4, 3, dtype=torch.complex64)
@@ -184,9 +192,54 @@ class TestScatterAddEquivalent:
         want = torch.zeros(2, 5, 3, dtype=torch.complex64)
         for row in range(2):
             want[row].index_add_(0, index, src[row])
-        got = _fold_rows(src, index, 5)
+        got = _index_add_fold(src, index, 5)
         assert got.dtype == torch.complex64
         assert torch.allclose(got, want, atol=1e-6)
+
+    def test_index_add_fold_launches_once_for_all_rows(self, monkeypatch):
+        from pymss_core.vendor_shims import _index_add_fold
+
+        native = torch.Tensor.index_add_
+        calls = []
+
+        def recording_index_add(tensor, dim, index, source, *args, **kwargs):
+            calls.append((tensor.dim(), dim))
+            return native(tensor, dim, index, source, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "index_add_", recording_index_add)
+        torch.manual_seed(5)
+        src = torch.randn(6, 9, 4)
+        index = torch.randint(0, 5, (9,))
+        want = torch.zeros(6, 5, 4)
+        for row in range(6):
+            want[row].index_add_(0, index, src[row])
+        calls.clear()
+        assert torch.allclose(_index_add_fold(src, index, 5), want, atol=1e-6)
+        assert calls == [(2, 0)]
+
+    def test_rejected_index_add_falls_back_to_one_cpu_gemm(self, monkeypatch):
+        from pymss_core import vendor_shims
+
+        def rejected(*args, **kwargs):
+            raise RuntimeError("index_add_ is not implemented")
+
+        native = torch.matmul
+        shapes = []
+
+        def recording_matmul(left, right, *args, **kwargs):
+            shapes.append((left.dim(), right.dim()))
+            return native(left, right, *args, **kwargs)
+
+        monkeypatch.setattr(vendor_shims, "_scatter_add_blocked", lambda device: True)
+        monkeypatch.setattr(vendor_shims, "_index_add_fold", rejected)
+        monkeypatch.setattr(torch, "matmul", recording_matmul)
+        torch.manual_seed(6)
+        src = torch.randn(2, 3, 8, 5)
+        index = torch.randint(0, 6, (8,))
+        want = torch.zeros(2, 3, 6, 5)
+        want.scatter_add_(2, index[None, None, :, None].expand(2, 3, -1, 5), src)
+        assert torch.allclose(vendor_shims.scatter_add_equivalent(src, index, 2, 6), want, atol=1e-6)
+        assert shapes == [(2, 2)]
 
     def test_one_hot_is_not_broadcast_across_rows(self, monkeypatch):
         # A batched matmul broadcasts the (size, N) one-hot to every row; MPS

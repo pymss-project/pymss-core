@@ -26,6 +26,8 @@ _installed: set[str] = set()
 _MISSING = object()
 _patches: list[tuple[object, str, object, object]] = []
 _fft_dtype_devices: set[str | None] = set()
+#: MHA fastpath setting replaced by the SDPA shim, ``None`` when it was not changed.
+_mha_fastpath_enabled: bool | None = None
 
 
 def _patch(obj, attr, replacement):
@@ -236,11 +238,13 @@ def _scatter_add_blocked(device) -> bool:
         return False
 
 
-def _fold_rows(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
-    """Accumulate ``flat`` into ``size`` slots row by row, without scatter.
+def _index_add_fold(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
+    """Accumulate ``flat`` into ``size`` slots with a single ``index_add_``, without scatter.
 
-    Complex sources are folded on their real/imaginary planes: ``index_add_`` has
-    no complex kernel on MUSA, only the real one.
+    The rows are laid side by side as columns, so the call keeps the 2-D, dim-0
+    form of a per-row fold while launching once instead of once per row.  Complex
+    sources are folded on their real/imaginary planes: ``index_add_`` has no
+    complex kernel on MUSA, only the real one.
 
     Args:
         flat: Source of shape ``(rows, index.numel(), features)``.
@@ -250,16 +254,33 @@ def _fold_rows(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.T
     Returns:
         The accumulated ``(rows, size, features)`` tensor.
     """
-    if flat.is_complex():
-        planes = torch.view_as_real(flat)
-        out = torch.zeros(flat.shape[0], size, flat.shape[-1], 2, device=flat.device, dtype=planes.dtype)
-        for row in range(planes.shape[0]):
-            out[row].index_add_(0, index_1d, planes[row])
-        return torch.view_as_complex(out.contiguous())
-    out = torch.zeros(flat.shape[0], size, flat.shape[-1], device=flat.device, dtype=flat.dtype)
-    for row in range(flat.shape[0]):
-        out[row].index_add_(0, index_1d, flat[row])
-    return out
+    source = torch.view_as_real(flat) if flat.is_complex() else flat
+    columns = source.movedim(1, 0).reshape(source.shape[1], -1)
+    out = columns.new_zeros((size, columns.shape[1]))
+    out.index_add_(0, index_1d, columns)
+    out = out.reshape(size, source.shape[0], *source.shape[2:]).movedim(0, 1)
+    return torch.view_as_complex(out.contiguous()) if flat.is_complex() else out
+
+
+def _one_hot_fold(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
+    """Accumulate ``flat`` into ``size`` slots with one 2-D one-hot GEMM.
+
+    A batched matmul would broadcast the ``(size, index.numel())`` one-hot to every
+    row, and MPS materializes that ``rows x size x index.numel()`` tensor.
+
+    Args:
+        flat: Source of shape ``(rows, index.numel(), features)``.
+        index_1d: Flat target slot per source entry.
+        size: Number of slots in the result.
+
+    Returns:
+        The accumulated ``(rows, size, features)`` tensor.
+    """
+    rows, entries, features = flat.shape
+    slots = torch.arange(size, device=flat.device, dtype=index_1d.dtype)
+    columns = flat.movedim(1, 0).reshape(entries, rows * features)
+    one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(flat.dtype)
+    return torch.matmul(one_hot, columns).reshape(size, rows, features).movedim(0, 1)
 
 
 def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, size: int) -> torch.Tensor:
@@ -279,29 +300,21 @@ def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, siz
     Returns:
         The accumulated tensor with ``size`` slots along ``dim``.
     """
-    slots = torch.arange(size, device=src.device, dtype=index.dtype)
     moved = src.movedim(dim, -2)
     leading = moved.shape[:-2]
     flat = moved.reshape(-1, moved.shape[-2], moved.shape[-1])
     index_1d = index.reshape(-1)
     if src.device.type == "supa" or _scatter_add_blocked(src.device):
-        # The one-hot matmul hits SUBLAS broadcast limits ("no valid backend: Matmul"
-        # / ErrorCode 15) and needs O(size * len(index) * features) memory
-        # elsewhere: 97 GiB for a mel-band fold on MUSA, 24 GiB for a 10 s clip.
-        # Fold row by row instead, and fall back to a CPU one-hot matmul only when
-        # even index_add_ is rejected.
+        # SUBLAS rejects the one-hot matmul ("no valid backend: Matmul" / ErrorCode
+        # 15).  Devices whose profile blocks scatter_add fold with the real-dtype
+        # index_add_ they do implement; fall back to a CPU one-hot GEMM only when
+        # even that is rejected.
         try:
-            out = _fold_rows(flat, index_1d, size)
+            out = _index_add_fold(flat, index_1d, size)
         except RuntimeError:
-            one_hot = (index_1d.cpu().unsqueeze(0) == slots.cpu()).to(flat.cpu().dtype)
-            out = torch.matmul(one_hot, flat.cpu()).to(src.device)
+            out = _one_hot_fold(flat.cpu(), index_1d.cpu(), size).to(src.device)
     else:
-        # Contract the index axis with one 2-D GEMM. A batched matmul broadcasts the
-        # one-hot to every row, and MPS materializes that (rows x size x N) tensor.
-        rows, entries, channels = flat.shape
-        columns = flat.movedim(1, 0).reshape(entries, rows * channels)
-        one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(src.dtype)
-        out = torch.matmul(one_hot, columns).reshape(size, rows, channels).movedim(0, 1)
+        out = _one_hot_fold(flat, index_1d, size)
     out = out.reshape(*leading, size, moved.shape[-1])
     return out.movedim(-2, dim)
 
@@ -792,14 +805,7 @@ def install_sdpa_shim() -> bool:
         return False
     import torch.nn.functional as functional
 
-    # ``nn.MultiheadAttention`` normally takes the fused fastpath, which calls
-    # ``aten::_native_multi_head_attention`` -- a CUDA-only kernel with no musa
-    # equivalent.  Disabling it routes MHA through the math path, which uses the
-    # wrapped ``scaled_dot_product_attention`` below.
-    mha_backend = getattr(getattr(torch, "backends", None), "mha", None)
-    if mha_backend is not None and hasattr(mha_backend, "set_fastpath_enabled"):
-        mha_backend.set_fastpath_enabled(False)
-
+    global _mha_fastpath_enabled
     original = functional.scaled_dot_product_attention
 
     backend = os.environ.get("PYMSS_SDPA_BACKEND", "manual")
@@ -831,6 +837,15 @@ def install_sdpa_shim() -> bool:
     logging.getLogger(__name__).info("Installed vendor SDPA backend: %s (sudnn applies to SUPA only)", backend)
     _patch(functional, 'scaled_dot_product_attention', scaled_dot_product_attention)
     _patch(torch, 'scaled_dot_product_attention', scaled_dot_product_attention)
+    # ``nn.MultiheadAttention`` normally takes the fused fastpath, which calls
+    # ``aten::_native_multi_head_attention`` and bypasses the wrapped
+    # ``scaled_dot_product_attention``.  Disabling it routes MHA through the math
+    # path; ``reset_shims`` restores the setting found before the first install.
+    mha_backend = getattr(getattr(torch, "backends", None), "mha", None)
+    if mha_backend is not None and hasattr(mha_backend, "set_fastpath_enabled"):
+        if _mha_fastpath_enabled is None:
+            _mha_fastpath_enabled = mha_backend.get_fastpath_enabled()
+        mha_backend.set_fastpath_enabled(False)
     _installed.add("sdpa")
     return True
 
@@ -1055,8 +1070,8 @@ def _fused_rope_table(rotary_embed, seq_len, device, dtype):
     the head axis and takes one angle per axis element, so every angle of the
     half-width table appears twice (``[t0, t0, t1, t1, ...]``).  Widening the
     table in halves instead (``[t0, t1, ..., t0, t1, ...]``) silently rotates the
-    wrong pairs.  ``RotaryEmbedding.forward`` already interleaves its duplicate
-    pairs, so the even entries are exactly one copy of that table.
+    wrong pairs.  ``RotaryEmbedding.forward`` already returns that interleaved
+    layout, so its output is used as is.
     """
     cache = getattr(rotary_embed, "_pymss_rope_angle_cache", None)
     if cache is None:
@@ -1069,9 +1084,8 @@ def _fused_rope_table(rotary_embed, seq_len, device, dtype):
     freqs = rotary_embed.forward(
         lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=phase_dtype, offset=0),
         cache_key=f"freqs:{seq_len}|offset:0",
-    )[None, :, None, :].to(device=device, dtype=phase_dtype)
-    angles = freqs[..., ::2][0, :, 0, :]
-    cache[key] = table = angles.repeat_interleave(2, dim=-1)
+    )
+    cache[key] = table = freqs.to(device=device, dtype=phase_dtype)
     return table
 
 
@@ -1811,6 +1825,10 @@ def installed_shims() -> frozenset[str]:
 
 def reset_shims() -> None:
     """Restore owned patches, preserving replacements made by other libraries."""
+    global _mha_fastpath_enabled
+    if _mha_fastpath_enabled is not None:
+        torch.backends.mha.set_fastpath_enabled(_mha_fastpath_enabled)
+        _mha_fastpath_enabled = None
     for obj, attr, replacement, original in reversed(_patches):
         if getattr(obj, attr, _MISSING) is not replacement:
             continue
