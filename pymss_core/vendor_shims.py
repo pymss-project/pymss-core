@@ -26,6 +26,8 @@ _installed: set[str] = set()
 _MISSING = object()
 _patches: list[tuple[object, str, object, object]] = []
 _fft_dtype_devices: set[str | None] = set()
+#: MHA fastpath setting replaced by the SDPA shim, ``None`` when it was not changed.
+_mha_fastpath_enabled: bool | None = None
 
 
 def _patch(obj, attr, replacement):
@@ -226,6 +228,61 @@ def install_glu_shim() -> bool:
     return True
 
 
+def _scatter_add_blocked(device) -> bool:
+    """Return ``True`` when the device profile asks for the scatter fallback."""
+    try:
+        from .device import scatter_add_blocked
+
+        return scatter_add_blocked(device)
+    except Exception:  # noqa: BLE001 - detection must never break a fold
+        return False
+
+
+def _index_add_fold(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
+    """Accumulate ``flat`` into ``size`` slots with a single ``index_add_``, without scatter.
+
+    The rows are laid side by side as columns, so the call keeps the 2-D, dim-0
+    form of a per-row fold while launching once instead of once per row.  Complex
+    sources are folded on their real/imaginary planes: ``index_add_`` has no
+    complex kernel on MUSA, only the real one.
+
+    Args:
+        flat: Source of shape ``(rows, index.numel(), features)``.
+        index_1d: Flat target slot per source entry.
+        size: Number of slots in the result.
+
+    Returns:
+        The accumulated ``(rows, size, features)`` tensor.
+    """
+    source = torch.view_as_real(flat) if flat.is_complex() else flat
+    columns = source.movedim(1, 0).reshape(source.shape[1], -1)
+    out = columns.new_zeros((size, columns.shape[1]))
+    out.index_add_(0, index_1d, columns)
+    out = out.reshape(size, source.shape[0], *source.shape[2:]).movedim(0, 1)
+    return torch.view_as_complex(out.contiguous()) if flat.is_complex() else out
+
+
+def _one_hot_fold(flat: torch.Tensor, index_1d: torch.Tensor, size: int) -> torch.Tensor:
+    """Accumulate ``flat`` into ``size`` slots with one 2-D one-hot GEMM.
+
+    A batched matmul would broadcast the ``(size, index.numel())`` one-hot to every
+    row, and MPS materializes that ``rows x size x index.numel()`` tensor.
+
+    Args:
+        flat: Source of shape ``(rows, index.numel(), features)``.
+        index_1d: Flat target slot per source entry.
+        size: Number of slots in the result.
+
+    Returns:
+        The accumulated ``(rows, size, features)`` tensor.
+    """
+    rows, entries, features = flat.shape
+    slots = torch.arange(size, device=flat.device, dtype=index_1d.dtype)
+    columns = flat.movedim(1, 0).reshape(entries, rows * features)
+    one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(flat.dtype)
+    return torch.matmul(one_hot, columns).reshape(size, rows, features).movedim(0, 1)
+
+
 def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, size: int) -> torch.Tensor:
     """Accumulate ``src`` into ``size`` slots of a new tensor, without scatter.
 
@@ -243,32 +300,22 @@ def scatter_add_equivalent(src: torch.Tensor, index: torch.Tensor, dim: int, siz
     Returns:
         The accumulated tensor with ``size`` slots along ``dim``.
     """
-    slots = torch.arange(size, device=src.device, dtype=index.dtype)
     moved = src.movedim(dim, -2)
     leading = moved.shape[:-2]
     flat = moved.reshape(-1, moved.shape[-2], moved.shape[-1])
     index_1d = index.reshape(-1)
-    if src.device.type == "supa":
-        # The one-hot matmul hits SUBLAS broadcast limits ("no valid backend: Matmul"
-        # / ErrorCode 15). Real-dtype index_add_ is usable; fall back to a CPU
-        # one-hot matmul when even that fails.
-        out = torch.zeros(flat.shape[0], size, flat.shape[-1], device=src.device, dtype=src.dtype)
+    if src.device.type == "supa" or _scatter_add_blocked(src.device):
+        # SUBLAS rejects the one-hot matmul ("no valid backend: Matmul" / ErrorCode
+        # 15).  Devices whose profile blocks scatter_add fold with the real-dtype
+        # index_add_ they do implement; fall back to a CPU one-hot GEMM only when
+        # even that is rejected.
         try:
-            for row in range(flat.shape[0]):
-                out[row].index_add_(0, index_1d, flat[row])
+            out = _index_add_fold(flat, index_1d, size)
         except RuntimeError:
-            one_hot = (index_1d.cpu().unsqueeze(0) == slots.cpu()).to(flat.cpu().dtype)
-            out = torch.matmul(one_hot, flat.cpu()).to(src.device)
+            out = _one_hot_fold(flat.cpu(), index_1d.cpu(), size).to(src.device)
     else:
-        # Contract the index axis with one 2-D GEMM. A batched matmul broadcasts the
-        # one-hot to every row, and MPS materializes that (rows x size x N) tensor.
-        rows, entries, channels = flat.shape
-        columns = flat.movedim(1, 0).reshape(entries, rows * channels)
-        one_hot = (index_1d.unsqueeze(0) == slots.unsqueeze(1)).to(src.dtype)
-        out = torch.matmul(one_hot, columns).reshape(size, rows, channels).movedim(0, 1)
+        out = _one_hot_fold(flat, index_1d, size)
     out = out.reshape(*leading, size, moved.shape[-1])
-    if dim >= 0:
-        return out.movedim(-2, dim)
     return out.movedim(-2, dim)
 
 
@@ -758,6 +805,7 @@ def install_sdpa_shim() -> bool:
         return False
     import torch.nn.functional as functional
 
+    global _mha_fastpath_enabled
     original = functional.scaled_dot_product_attention
 
     backend = os.environ.get("PYMSS_SDPA_BACKEND", "manual")
@@ -789,6 +837,15 @@ def install_sdpa_shim() -> bool:
     logging.getLogger(__name__).info("Installed vendor SDPA backend: %s (sudnn applies to SUPA only)", backend)
     _patch(functional, 'scaled_dot_product_attention', scaled_dot_product_attention)
     _patch(torch, 'scaled_dot_product_attention', scaled_dot_product_attention)
+    # ``nn.MultiheadAttention`` normally takes the fused fastpath, which calls
+    # ``aten::_native_multi_head_attention`` and bypasses the wrapped
+    # ``scaled_dot_product_attention``.  Disabling it routes MHA through the math
+    # path; ``reset_shims`` restores the setting found before the first install.
+    mha_backend = getattr(getattr(torch, "backends", None), "mha", None)
+    if mha_backend is not None and hasattr(mha_backend, "set_fastpath_enabled"):
+        if _mha_fastpath_enabled is None:
+            _mha_fastpath_enabled = mha_backend.get_fastpath_enabled()
+        mha_backend.set_fastpath_enabled(False)
     _installed.add("sdpa")
     return True
 
@@ -996,6 +1053,96 @@ def _vendor_fused_ffn(module, normalized):
     outputs = _supa_fused_ffn_fwd(normalized, first.weight, second.weight,
                                   first.bias, second.bias, act_mode='gelu')
     return outputs[0] if isinstance(outputs, (list, tuple)) else outputs
+
+
+def _fused_rope_op():
+    """Return the vendor's fused rope kernel, or ``None`` when the stack has none.
+
+    Standalone so tests can substitute the kernel without a MUSA card.
+    """
+    return getattr(torch.ops.aten, "_fused_rope_forward", None)
+
+
+def _fused_rope_table(rotary_embed, seq_len, device, dtype):
+    """Return the angle table the fused rope kernel expects, cached per shape.
+
+    With ``rotary_interleaved=True`` the kernel rotates the ``(2i, 2i+1)`` pair of
+    the head axis and takes one angle per axis element, so every angle of the
+    half-width table appears twice (``[t0, t0, t1, t1, ...]``).  Widening the
+    table in halves instead (``[t0, t1, ..., t0, t1, ...]``) silently rotates the
+    wrong pairs.  ``RotaryEmbedding.forward`` already returns that interleaved
+    layout, so its output is used as is.
+    """
+    cache = getattr(rotary_embed, "_pymss_rope_angle_cache", None)
+    if cache is None:
+        rotary_embed._pymss_rope_angle_cache = cache = {}
+    key = (seq_len, device.type, device.index, dtype)
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    phase_dtype = torch.float32 if dtype in (torch.float16, torch.bfloat16) else dtype
+    freqs = rotary_embed.forward(
+        lambda: rotary_embed.get_seq_pos(seq_len, device=device, dtype=phase_dtype, offset=0),
+        cache_key=f"freqs:{seq_len}|offset:0",
+    )
+    cache[key] = table = freqs.to(device=device, dtype=phase_dtype)
+    return table
+
+
+def install_rope_kernel_shim(device_type: str | None = None) -> bool:
+    """Rotate q/k with the vendor's fused rope kernel.
+
+    Measured on MTT S70 + torch_musa 2.7.1: the q/k pair a roformer rotates at
+    ``(1, 517, 8, 64)`` costs 372 us through ``apply_rotary_emb_fast`` and 49 us
+    through ``aten::_fused_rope_forward``, i.e. 7.6x, with identical attention
+    scores (3.6e-07).
+
+    The kernel keeps the interleaved layout while the reference path writes
+    ``[even | odd]`` halves; since both q and k are rotated the same way the dot
+    products -- and therefore every attention score -- are unchanged, which is the
+    same argument ``apply_rotary_emb_fast`` already relies on.
+
+    Only fp32 on the vendor's own device is redirected; everything else, including
+    the half-precision path, keeps the reference implementation.
+
+    Args:
+        device_type: Device type the fused kernel belongs to.  Defaults to
+            ``"musa"``; a profile only asks for this shim on a device that has it.
+
+    Returns:
+        ``True`` when the shim was installed, ``False`` when it was already there,
+        the kernel is missing, or the model module cannot be imported.
+    """
+    if "rope_kernel" in _installed:
+        return False
+    fused = _fused_rope_op()
+    if fused is None:
+        return False
+    try:
+        from pymss_core.modules.bs_roformer import transformer as _transformer
+    except Exception:  # noqa: BLE001 - optional model package must not break setup
+        return False
+
+    target = device_type or "musa"
+    original = _transformer.rotate_qk_fast_bnhd
+
+    def rotate_qk_fast_bnhd(rotary_embed, q, k):
+        if (
+            q.dtype == torch.float32
+            and q.device.type == target
+            and q.shape[-1] % 2 == 0
+            and q.shape[-1] == getattr(rotary_embed, "dim", q.shape[-1])
+        ):
+            table = _fused_rope_table(rotary_embed, q.shape[1], q.device, q.dtype)
+            if table.shape[-1] == q.shape[-1]:
+                return fused(q, table, True, True), fused(k, table, True, True)
+        return original(rotary_embed, q, k)
+
+    rotate_qk_fast_bnhd._vendor_shim = True
+    rotate_qk_fast_bnhd._pymss_original = original
+    _patch(_transformer, "rotate_qk_fast_bnhd", rotate_qk_fast_bnhd)
+    _installed.add("rope_kernel")
+    return True
 
 
 def install_rope_shim() -> bool:
@@ -1485,6 +1632,10 @@ def install_complex_view_shim() -> bool:
     return True
 
 
+#: Installers that take the device type: they scope their patch to it.
+_DEVICE_SCOPED_SHIMS = frozenset({"fft_dtype", "rope_kernel"})
+
+#: Shim name -> installer.
 SHIMS = {
     "complex_mul": install_complex_mul_shim,
     "complex_reshape": install_complex_reshape_shim,
@@ -1500,6 +1651,7 @@ SHIMS = {
     "cpu": install_cpu_shim,
     "sdpa": install_sdpa_shim,
     "rope": install_rope_shim,
+    "rope_kernel": install_rope_kernel_shim,
     "fold": install_fold_shim,
     "complex_view": install_complex_view_shim,
     "linear_dtype": install_linear_dtype_shim,
@@ -1593,6 +1745,7 @@ def install_vendor_shims(
     cpu: bool = False,
     sdpa: bool = False,
     rope: bool = False,
+    rope_kernel: bool = False,
     as_strided_shim: bool = False,
     unfold_shim: bool = False,
 ) -> list[str]:
@@ -1614,6 +1767,8 @@ def install_vendor_shims(
         sdpa: ``True`` when fused attention must be expressed as matmuls.
         rope: ``True`` when the vendor RoPE kernel should replace the rotary
             path for models prepared with ``prepare_model_for_vendor_rope``.
+        rope_kernel: ``True`` when the fused rope kernel
+            (``aten::_fused_rope_forward``) should rotate q/k directly.
 
     Returns:
         The shim names that were installed by this call.
@@ -1649,9 +1804,11 @@ def install_vendor_shims(
         wanted.append("sdpa")
     if rope:
         wanted.append("rope")
+    if rope_kernel:
+        wanted.append("rope_kernel")
     installed = []
     for name in wanted:
-        changed = SHIMS[name](device_type) if name == "fft_dtype" else SHIMS[name]()
+        changed = SHIMS[name](device_type) if name in _DEVICE_SCOPED_SHIMS else SHIMS[name]()
         if changed:
             installed.append(name)
     if as_strided_shim and install_as_strided_shim(device_type):
@@ -1668,6 +1825,10 @@ def installed_shims() -> frozenset[str]:
 
 def reset_shims() -> None:
     """Restore owned patches, preserving replacements made by other libraries."""
+    global _mha_fastpath_enabled
+    if _mha_fastpath_enabled is not None:
+        torch.backends.mha.set_fastpath_enabled(_mha_fastpath_enabled)
+        _mha_fastpath_enabled = None
     for obj, attr, replacement, original in reversed(_patches):
         if getattr(obj, attr, _MISSING) is not replacement:
             continue

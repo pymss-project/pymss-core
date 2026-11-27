@@ -24,6 +24,26 @@ def pad1d(x, paddings, mode="constant", value=0.0):
         extra_left = extra - extra_right
         paddings, x = (left - extra_left, right - extra_right), F.pad(x, (extra_left, extra_right))
     return F.pad(x, paddings, mode, value)
+def pad_complex(z, pad):
+    """`F.pad` for a complex tensor, applied on the real/imaginary planes.
+
+    Some backends have no complex fill/copy kernel, so padding a complex tensor
+    raises "SetMUTensorDType Unsupported tensor dtype: ComplexFloat" (Moore
+    Threads MUSA).  Moving the plane axis to the front pads exactly the same
+    spatial dimensions and is numerically identical.
+
+    Args:
+        z: Complex tensor to pad.
+        pad: Pad spec for the last two dimensions, in `F.pad` order.
+
+    Returns:
+        The padded complex tensor.
+    """
+    if not z.is_complex():
+        return F.pad(z, pad)
+    planes = torch.view_as_real(z).movedim(-1, 0)
+    planes = F.pad(planes, pad)
+    return torch.view_as_complex(planes.movedim(0, -1).contiguous())
 def spectro(x, n_fft=512, hop_length=None, pad=0):
     *other, length = x.shape
     if x.device.type == "mps": x = x.cpu()

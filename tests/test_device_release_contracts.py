@@ -27,7 +27,27 @@ def test_musa_aliases_share_a_conservative_profile():
     assert not profile.amp and not profile.multi_device
     assert profile.fft_dtype_shim and not profile.fft_shim
     assert not profile.scatter_add and not profile.rope_shim
+    assert profile.rope_kernel_shim
 
+
+def test_moore_profile_matches_the_measured_stack():
+    """Pins the flags measured on MTT S70 + torch_musa 2.7.1 (rationale in device.py).
+
+    Native on that stack: complex STFT/ISTFT, rfft/irfft, complex-by-real
+    multiply/divide, complex cat/fill/copy, ``_thnn_fused_gru_cell`` and
+    ``_native_multi_head_attention``.  Only the gaps are overridden.
+    """
+    profile = device.profile_for_alias('musa')
+    assert profile.complex_fft and not profile.fft_shim
+    assert profile.complex_mul and profile.complex_reshape and not profile.complex_cat
+    assert profile.rnn and not profile.rnn_blocked and not profile.sdpa_shim
+    # fp16 muFFT is a hardware gate below capability (2, 2); complex
+    # scatter_add_/index_add_ are missing in every released torch_musa.
+    assert profile.fft_dtype_shim and not profile.scatter_add
+    # fp16 autocast aborts in muDNN's fused conv; no MCCL on these desktop cards.
+    assert not profile.amp and not profile.multi_device
+    # Acceleration only: the reference rotary path is correct without it.
+    assert profile.rope_kernel_shim and not profile.rope_shim
 
 def test_prepare_musa_imports_plugin_and_selects_current_device(monkeypatch):
     selected = []
@@ -121,6 +141,7 @@ def test_fft_dtype_shim_only_promotes_registered_backends(monkeypatch):
     shims.install_complex_view_shim,
     lambda: shims.install_as_strided_shim('supa'),
     lambda: shims.install_unfold_shim('supa'),
+    shims.install_rope_kernel_shim,
 ])
 def test_reset_restores_all_patched_targets(installer):
     missing = object()

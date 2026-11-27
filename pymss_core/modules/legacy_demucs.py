@@ -13,6 +13,7 @@ from .demucs_local import BLSTM, DConv, HDecLayer, HEncLayer, MultiWrap
 from .demucs_local import ScaledEmbedding as LegacyScaledEmbedding
 from .demucs_local import _freq_dconv as _dconv_freq
 from .demucs_local import _hann
+from .demucs_local import pad_complex
 from .demucs_local import rescale_module as _rescale_module
 LEGACY_STEMS_4,LEGACY_STEMS_2,EPS = ["drums", "bass", "other", "vocals"], ["vocals", "non_vocals"], 1e-8
 def center_trim(tensor, reference):
@@ -276,12 +277,12 @@ class LegacyHDemucs(nn.Module):
     def _ispec(self, z, length=None, scale=0):
         hl = self.hop_length // (4**scale)
         if self.hybrid:
-            z = F.pad(z, (2, 2, 0, 1))
+            z = pad_complex(z, (2, 2, 0, 1))
             pad = hl // 2 * 3
             le = hl * math.ceil(length / hl) + (0 if self.hybrid_old else 2 * pad)
             x = _ispectro(z, hl, length=le)
             return x[..., :length] if self.hybrid_old else x[..., pad : pad + length]
-        return _ispectro(F.pad(z, (0, 0, 0, 1)), hl, length)
+        return _ispectro(pad_complex(z, (0, 0, 0, 1)), hl, length)
     def _magnitude(self, z):
         if self.cac: batch, channels, freqs, time = z.shape; return torch.view_as_real(z).permute(0, 1, 4, 2, 3).reshape(batch, channels * 2, freqs, time)
         return z.abs()
@@ -305,8 +306,16 @@ class LegacyHDemucs(nn.Module):
             if self.hybrid and index < len(self.tencoder):
                 lengths_t.append(xt.shape[-1])
                 tenc = self.tencoder[index]
-                xt, inject = tenc(xt), xt if tenc.empty else None
-                if not tenc.empty: saved_t.append(xt)
+                # Run the time encoder first, then decide: an empty layer is just
+                # the leading conv, so its *output* is what matches the frequency
+                # branch's frame count and can be injected.  Injecting the input
+                # instead makes the time axis differ by the conv stride
+                # ("size of tensor a (173) must match ... b (690)").
+                xt = tenc(xt)
+                if not tenc.empty:
+                    saved_t.append(xt)
+                else:
+                    inject = xt
             x = encode(x, inject)
             if index == 0 and self.freq_emb is not None: frs = torch.arange(x.shape[-2], device=x.device); emb = self.freq_emb(frs).t()[None, :, :, None].expand_as(x); x = x + self.freq_emb_scale * emb
             saved.append(x)
